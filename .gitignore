@@ -1,0 +1,47 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# Go workspace
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# Environment and local configs
+.env
+.env.local
+config.local.yaml
+
+# Data, uploads, cache
+data/
+storage/
+cache/
+uploads/
+*.db
+*.db-wal
+*.db-shm
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Frontend build artifacts
+web/dist/
+web/node_modules/

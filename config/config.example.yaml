@@ -1,0 +1,40 @@
+# UtopiaImages 配置文件示例
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  base_url: "http://localhost:8080" # 对外访问域名
+  mode: "debug" # debug | release
+
+# 数据库配置（支持 sqlite / postgres）
+database:
+  driver: "sqlite" # sqlite 或 postgres
+  dsn: "data/utopiaimages.db" # postgres: "postgres://user:password@localhost:5432/utopiaimages?sslmode=disable"
+
+# 存储后端
+storage:
+  driver: "local"
+  local:
+    base_path: "storage"
+
+# 缓存配置
+cache:
+  dir: "cache"
+  max_size_mb: 5120 # 5GB
+
+# 安全与认证
+security:
+  secret_key: "CHANGE_ME_TO_A_SECURE_RANDOM_STRING"
+  session_timeout_days: 7
+  remember_me_days: 30
+  max_login_attempts: 5
+  lockout_minutes: 15
+  captcha:
+    provider: "altcha" # altcha (内置/离线可用) / turnstile / none
+    turnstile_site_key: ""
+    turnstile_secret_key: ""
+
+# 系统默认策略
+policy:
+  max_single_file_size: 52428800 # 50MB
+  max_process_image_size: 5242880 # 5MB（超过此大小的图片若无强制水印则不执行实时缩放）
