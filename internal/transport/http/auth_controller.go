@@ -211,7 +211,7 @@ func (ctrl *AuthController) SetupTOTP(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
 
-	secret, qrBase64, err := ctrl.authService.TOTPManager().GenerateSecret(user.Username, "UtopiaImages")
+	secret, qrBase64, err := ctrl.authService.TOTPManager().GenerateSecret(user.Username, "Utopia Images")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate TOTP secret"})
 		return

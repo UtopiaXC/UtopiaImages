@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
@@ -47,6 +48,8 @@ func (ctrl *FileController) RegisterRoutes(rg *gin.RouterGroup) {
 		files.DELETE("/:id", ctrl.DeleteFile)
 		files.POST("/batch-delete", ctrl.BatchDeleteFiles)
 		files.GET("/:id/raw", ctrl.DownloadRaw)
+		files.POST("/:id/temp-link", ctrl.CreateTempLink)
+		files.POST("/:id/revoke-links", ctrl.RevokeTempLinks)
 	}
 
 	rg.POST("/upload", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.Upload)
@@ -303,3 +306,55 @@ func (ctrl *FileController) ImportZip(c *gin.Context) {
 		"skipped":  skipped,
 	})
 }
+
+func (ctrl *FileController) CreateTempLink(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	fileID := c.Param("id")
+
+	var file model.FileRecord
+	query := ctrl.db.Where("id = ?", fileID)
+	if user.Role != "admin" {
+		query = query.Where("user_id = ?", user.ID)
+	}
+	if err := query.First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	var req struct {
+		ExpiresHours int `json:"expires_hours"` // e.g. 1, 24, 168
+	}
+	_ = c.ShouldBindJSON(&req)
+	if req.ExpiresHours <= 0 {
+		req.ExpiresHours = 24
+	}
+
+	tempPath := ctrl.dispatchService.CreateTempLink(&file, time.Duration(req.ExpiresHours)*time.Hour)
+	fullURL := fmt.Sprintf("%s%s", ctrl.baseURL, tempPath)
+
+	c.JSON(http.StatusOK, gin.H{
+		"temp_url":      fullURL,
+		"expires_hours": req.ExpiresHours,
+	})
+}
+
+func (ctrl *FileController) RevokeTempLinks(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	fileID := c.Param("id")
+
+	var file model.FileRecord
+	query := ctrl.db.Where("id = ?", fileID)
+	if user.Role != "admin" {
+		query = query.Where("user_id = ?", user.ID)
+	}
+	if err := query.First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	ctrl.db.Model(&file).Update("sign_version", gorm.Expr("sign_version + 1"))
+	c.JSON(http.StatusOK, gin.H{"message": "All previous temporary links have been revoked"})
+}
+

@@ -18,6 +18,15 @@ func DistFS() http.FileSystem {
 	return http.FS(sub)
 }
 
+// AssetsFS returns an http.FileSystem representing web/dist/assets
+func AssetsFS() http.FileSystem {
+	sub, err := fs.Sub(distFS, "dist/assets")
+	if err != nil {
+		panic(err)
+	}
+	return http.FS(sub)
+}
+
 // ReadIndexHTML returns the index.html content
 func ReadIndexHTML() ([]byte, error) {
 	return distFS.ReadFile("dist/index.html")

@@ -79,6 +79,14 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 	reqFmt := c.Query("fmt")
 
 	needsWatermark := file.WatermarkMode == "on"
+
+	// Check if valid temporary unwatermarked link (?e=timestamp) is provided
+	if expiresStr := c.Query("e"); expiresStr != "" {
+		if exp, err := strconv.ParseInt(expiresStr, 10, 64); err == nil && time.Now().Unix() <= exp {
+			needsWatermark = false
+		}
+	}
+
 	hasTransformParams := reqW > 0 || reqH > 0 || reqStyle != "" || reqFmt != ""
 
 	// If NOT an image, or no watermark and no resize requested: direct straight-through delivery
@@ -173,7 +181,7 @@ func (s *DispatchService) serveProcessed(
 
 		// Render text with variables
 		clientIP := c.ClientIP()
-		wmConfig.Text = fmt.Sprintf("UtopiaImages %s", time.Now().Format("2006-01-02"))
+		wmConfig.Text = fmt.Sprintf("Utopia Images %s", time.Now().Format("2006-01-02"))
 		if strings.Contains(wmConfig.Text, clientIP) {
 			isPrivateCache = true
 		}

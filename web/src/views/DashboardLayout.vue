@@ -8,7 +8,7 @@
       style="background: #18181c;"
     >
       <div style="padding: 20px; font-weight: bold; font-size: 18px; color: #63e2b7; text-align: center;">
-        UtopiaImages
+        Utopia Images
       </div>
       <n-menu
         :value="activeKey"
@@ -34,7 +34,7 @@
 
           <!-- User info -->
           <n-tag type="success" size="small" v-if="user">
-            {{ user.nickname || user.username }} ({{ user.role }})
+            {{ user.nickname || user.username }} · {{ user.role }}
           </n-tag>
 
           <n-button size="small" quaternary @click="handleLogout">
@@ -74,18 +74,23 @@ const activeKey = computed(() => route.path)
 const currentTitle = computed(() => {
   if (route.path.includes('/upload')) return t('nav.upload')
   if (route.path.includes('/files')) return t('nav.files')
+  if (route.path.includes('/watermarks')) return t('nav.watermarks')
   if (route.path.includes('/tokens')) return t('nav.tokens')
+  if (route.path.includes('/settings')) return t('nav.settings')
   if (route.path.includes('/admin/users')) return t('nav.adminUsers')
   if (route.path.includes('/admin/policies')) return t('nav.adminPolicies')
+  if (route.path.includes('/admin/settings')) return t('nav.adminSettings')
   if (route.path.includes('/admin/stats')) return t('nav.adminStats')
-  return 'UtopiaImages'
+  return 'Utopia Images'
 })
 
 const menuOptions = computed(() => {
   const items: any[] = [
     { label: () => t('nav.upload'), key: '/console/upload' },
     { label: () => t('nav.files'), key: '/console/files' },
-    { label: () => t('nav.tokens'), key: '/console/tokens' }
+    { label: () => t('nav.watermarks'), key: '/console/watermarks' },
+    { label: () => t('nav.tokens'), key: '/console/tokens' },
+    { label: () => t('nav.settings'), key: '/console/settings' }
   ]
 
   if (user.value && user.value.role === 'admin') {
@@ -93,6 +98,7 @@ const menuOptions = computed(() => {
       { type: 'divider', key: 'd1' },
       { label: () => t('nav.adminUsers'), key: '/console/admin/users' },
       { label: () => t('nav.adminPolicies'), key: '/console/admin/policies' },
+      { label: () => t('nav.adminSettings'), key: '/console/admin/settings' },
       { label: () => t('nav.adminStats'), key: '/console/admin/stats' }
     )
   }

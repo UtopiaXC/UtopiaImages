@@ -8,6 +8,9 @@ import TokensView from '../views/TokensView.vue'
 import AdminUsersView from '../views/AdminUsersView.vue'
 import AdminPoliciesView from '../views/AdminPoliciesView.vue'
 import AdminStatsView from '../views/AdminStatsView.vue'
+import WatermarksView from '../views/WatermarksView.vue'
+import UserSettingsView from '../views/UserSettingsView.vue'
+import AdminSettingsView from '../views/AdminSettingsView.vue'
 import { api } from '../api/client'
 
 const routes = [
@@ -20,9 +23,12 @@ const routes = [
       { path: '', redirect: '/console/upload' },
       { path: 'upload', component: UploadView },
       { path: 'files', component: FilesView },
+      { path: 'watermarks', component: WatermarksView },
       { path: 'tokens', component: TokensView },
+      { path: 'settings', component: UserSettingsView },
       { path: 'admin/users', component: AdminUsersView },
       { path: 'admin/policies', component: AdminPoliciesView },
+      { path: 'admin/settings', component: AdminSettingsView },
       { path: 'admin/stats', component: AdminStatsView },
     ],
   },

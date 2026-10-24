@@ -1,8 +1,8 @@
 <template>
   <div>
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-      <div style="font-size: 18px; font-weight: bold;">用户体系管理</div>
-      <n-button type="primary" @click="showCreateModal = true">添加新用户</n-button>
+      <div style="font-size: 18px; font-weight: bold;">{{ $t('adminUsers.title') }}</div>
+      <n-button type="primary" @click="showCreateModal = true">{{ $t('adminUsers.new') }}</n-button>
     </div>
 
     <n-card style="border-radius: 12px;">
@@ -10,12 +10,12 @@
         <thead>
           <tr>
             <th>ID</th>
-            <th>用户名 (URL前缀)</th>
-            <th>昵称</th>
-            <th>角色 / 分组</th>
-            <th>已用存储 / 配额</th>
-            <th>状态</th>
-            <th>创建时间</th>
+            <th>{{ $t('adminUsers.urlNamespace') }}</th>
+            <th>{{ $t('adminUsers.nickname') }}</th>
+            <th>{{ $t('adminUsers.role') }}</th>
+            <th>{{ $t('adminUsers.quota') }}</th>
+            <th>{{ $t('common.status') }}</th>
+            <th>{{ $t('common.createdAt') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -25,13 +25,13 @@
             <td>{{ u.nickname || '-' }}</td>
             <td>
               <n-tag :type="u.role === 'admin' ? 'warning' : 'info'" size="small">
-                {{ u.role }} ({{ u.group ? u.group.name : '默认' }})
+                {{ u.role === 'admin' ? $t('adminUsers.roleAdmin') : $t('adminUsers.roleUser') }}
               </n-tag>
             </td>
-            <td>{{ formatBytes(u.used_bytes) }} / {{ u.storage_limit ? formatBytes(u.storage_limit) : '无限制' }}</td>
+            <td>{{ formatBytes(u.used_bytes) }} / {{ u.storage_limit ? formatBytes(u.storage_limit) : $t('adminUsers.unlimited') }}</td>
             <td>
               <n-tag :type="u.status === 'active' ? 'success' : 'error'" size="small">
-                {{ u.status }}
+                {{ u.status === 'active' ? $t('common.enabled') : $t('common.disabled') }}
               </n-tag>
             </td>
             <td>{{ formatDate(u.created_at) }}</td>
@@ -41,47 +41,50 @@
     </n-card>
 
     <!-- Create User Modal -->
-    <n-modal v-model:show="showCreateModal" preset="dialog" title="添加新用户">
+    <n-modal v-model:show="showCreateModal" preset="dialog" :title="$t('adminUsers.createTitle')">
       <n-form :model="newUserForm">
-        <n-form-item label="用户名 (作为 URL 路径前缀，不可随意变动)">
-          <n-input v-model:value="newUserForm.username" placeholder="如：alice" />
+        <n-form-item :label="$t('adminUsers.username')">
+          <n-input v-model:value="newUserForm.username" :placeholder="$t('adminUsers.usernameTip')" />
         </n-form-item>
-        <n-form-item label="初始密码">
-          <n-input v-model:value="newUserForm.password" type="password" placeholder="至少6位" />
+        <n-form-item :label="$t('adminUsers.initialPassword')">
+          <n-input v-model:value="newUserForm.password" type="password" :placeholder="$t('adminUsers.passwordPlaceholder')" />
         </n-form-item>
-        <n-form-item label="显示昵称">
-          <n-input v-model:value="newUserForm.nickname" placeholder="如：爱丽丝" />
+        <n-form-item :label="$t('adminUsers.nickname')">
+          <n-input v-model:value="newUserForm.nickname" :placeholder="$t('adminUsers.nicknamePlaceholder')" />
         </n-form-item>
-        <n-form-item label="邮箱">
-          <n-input v-model:value="newUserForm.email" placeholder="alice@example.com" />
+        <n-form-item :label="$t('setup.email')">
+          <n-input v-model:value="newUserForm.email" :placeholder="$t('adminUsers.emailPlaceholder')" />
         </n-form-item>
-        <n-form-item label="角色">
+        <n-form-item :label="$t('adminUsers.quota')">
+          <n-input-number v-model:value="newUserQuotaMB" :placeholder="$t('adminUsers.quotaPlaceholder')" style="width: 100%;" :min="1" />
+        </n-form-item>
+        <n-form-item :label="$t('adminUsers.role')">
           <n-select
             v-model:value="newUserForm.role"
-            :options="[
-              { label: '普通上传者 (user)', value: 'user' },
-              { label: '管理员 (admin)', value: 'admin' }
-            ]"
+            :options="roleOptions"
           />
         </n-form-item>
       </n-form>
       <template #action>
-        <n-button @click="showCreateModal = false">取消</n-button>
-        <n-button type="primary" :loading="creating" @click="handleCreateUser">确认创建</n-button>
+        <n-button @click="showCreateModal = false">{{ $t('common.cancel') }}</n-button>
+        <n-button type="primary" :loading="creating" @click="handleCreateUser">{{ $t('common.confirm') }}</n-button>
       </template>
     </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
+import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 
 const message = useMessage()
+const { t } = useI18n()
 const users = ref<any[]>([])
 const showCreateModal = ref(false)
 const creating = ref(false)
+const newUserQuotaMB = ref<number | null>(null)
 
 const newUserForm = ref({
   username: '',
@@ -90,6 +93,11 @@ const newUserForm = ref({
   email: '',
   role: 'user'
 })
+
+const roleOptions = computed(() => [
+  { label: t('adminUsers.roleUser'), value: 'user' },
+  { label: t('adminUsers.roleAdmin'), value: 'admin' }
+])
 
 const loadUsers = async () => {
   try {
@@ -100,19 +108,24 @@ const loadUsers = async () => {
 
 const handleCreateUser = async () => {
   if (!newUserForm.value.username || !newUserForm.value.password) {
-    message.warning('请填写用户名与密码')
+    message.warning(t('setup.validation'))
     return
   }
 
   creating.value = true
   try {
-    await api.post('/admin/users', newUserForm.value)
-    message.success('用户创建成功')
+    const payload: any = { ...newUserForm.value }
+    if (newUserQuotaMB.value && newUserQuotaMB.value > 0) {
+      payload.storage_limit = newUserQuotaMB.value * 1024 * 1024
+    }
+    await api.post('/admin/users', payload)
+    message.success(t('adminUsers.createSuccess'))
     showCreateModal.value = false
     newUserForm.value = { username: '', password: '', nickname: '', email: '', role: 'user' }
+    newUserQuotaMB.value = null
     loadUsers()
   } catch (err: any) {
-    message.error(err.response?.data?.error || '创建失败')
+    message.error(err.response?.data?.error || t('common.save'))
   } finally {
     creating.value = false
   }

@@ -44,7 +44,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("UtopiaImages server listening", "addr", addr, "mode", cfg.Server.Mode)
+		slog.Info("Utopia Images server listening", "addr", addr, "mode", cfg.Server.Mode)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("HTTP server error", "error", err)
 			os.Exit(1)

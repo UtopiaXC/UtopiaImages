@@ -1,26 +1,20 @@
 <template>
   <div>
-    <div style="font-size: 18px; font-weight: bold; margin-bottom: 20px;">系统看板与监控</div>
+    <div style="font-size: 18px; font-weight: bold; margin-bottom: 20px;">{{ $t('adminStats.title') }}</div>
     <n-grid :cols="3" :x-gap="16" :y-gap="16">
       <n-grid-item>
         <n-card style="border-radius: 12px; text-align: center;">
-          <n-statistic label="总用户数" :value="stats.users_count">
-            <template #prefix>👥</template>
-          </n-statistic>
+          <n-statistic :label="$t('adminStats.userCount')" :value="stats.users_count" />
         </n-card>
       </n-grid-item>
       <n-grid-item>
         <n-card style="border-radius: 12px; text-align: center;">
-          <n-statistic label="文件总数量" :value="stats.files_count">
-            <template #prefix>🖼️</template>
-          </n-statistic>
+          <n-statistic :label="$t('adminStats.fileCount')" :value="stats.files_count" />
         </n-card>
       </n-grid-item>
       <n-grid-item>
         <n-card style="border-radius: 12px; text-align: center;">
-          <n-statistic label="已消耗存储空间" :value="formatBytes(stats.total_bytes)">
-            <template #prefix>💾</template>
-          </n-statistic>
+          <n-statistic :label="$t('adminStats.storageUsed')" :value="formatBytes(stats.total_bytes)" />
         </n-card>
       </n-grid-item>
     </n-grid>

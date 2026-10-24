@@ -1,17 +1,17 @@
 <template>
   <div>
-    <div style="font-size: 18px; font-weight: bold; margin-bottom: 20px;">存储策略与路由挂载</div>
+    <div style="font-size: 18px; font-weight: bold; margin-bottom: 20px;">{{ $t('adminPolicies.title') }}</div>
     <n-card style="border-radius: 12px;">
       <n-table :bordered="false" :single-line="false">
         <thead>
           <tr>
             <th>ID</th>
-            <th>策略名称</th>
-            <th>归属用户ID</th>
-            <th>根路径映射 (UseRoot)</th>
-            <th>URL 路径前缀</th>
-            <th>文件命名规则</th>
-            <th>默认策略</th>
+            <th>{{ $t('adminPolicies.policyName') }}</th>
+            <th>{{ $t('adminPolicies.userId') }}</th>
+            <th>{{ $t('adminPolicies.rootMapping') }}</th>
+            <th>{{ $t('adminPolicies.pathPrefix') }}</th>
+            <th>{{ $t('adminPolicies.namingRule') }}</th>
+            <th>{{ $t('adminPolicies.isDefault') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -21,12 +21,12 @@
             <td>{{ p.user_id }}</td>
             <td>
               <n-tag :type="p.use_root ? 'warning' : 'default'" size="small">
-                {{ p.use_root ? '是 (根路径 direct)' : '否 (/{username}/)' }}
+                {{ p.use_root ? $t('adminPolicies.rootDirect') : $t('common.no') }}
               </n-tag>
             </td>
             <td><code>/{{ p.path_prefix || '' }}</code></td>
             <td><code>{{ p.naming_rule }}</code></td>
-            <td>{{ p.is_default ? '✅ 是' : '-' }}</td>
+            <td>{{ p.is_default ? $t('common.yes') : $t('common.no') }}</td>
           </tr>
         </tbody>
       </n-table>

@@ -62,6 +62,8 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	authController := NewAuthController(authService)
 	fileController := NewFileController(db, uploadService, dispatchService, importService, cfg.Server.BaseURL)
 	adminController := NewAdminController(db)
+	watermarkController := NewWatermarkController(db, processor)
+	settingsController := NewSettingsController(db, derivedCache)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -77,7 +79,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		dispatchService: dispatchService,
 	}
 
-	s.setupRoutes(authController, fileController, adminController)
+	s.setupRoutes(authController, fileController, adminController, watermarkController, settingsController)
 	return s, nil
 }
 
@@ -85,6 +87,8 @@ func (s *Server) setupRoutes(
 	authCtrl *AuthController,
 	fileCtrl *FileController,
 	adminCtrl *AdminController,
+	wmCtrl *WatermarkController,
+	setCtrl *SettingsController,
 ) {
 	// Health check
 	s.engine.GET("/healthz", func(c *gin.Context) {
@@ -99,7 +103,7 @@ func (s *Server) setupRoutes(
 	{
 		api.GET("/site", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
-				"site_name":   "UtopiaImages",
+				"site_name":   "Utopia Images",
 				"description": "Next-generation self-hosted image & static asset host",
 				"version":     "v0.3.0",
 				"base_url":    s.cfg.Server.BaseURL,
@@ -109,10 +113,12 @@ func (s *Server) setupRoutes(
 		authCtrl.RegisterRoutes(api)
 		fileCtrl.RegisterRoutes(api)
 		adminCtrl.RegisterRoutes(api)
+		wmCtrl.RegisterRoutes(api)
+		setCtrl.RegisterRoutes(api)
 	}
 
 	// 1. Static assets from embedded Vue 3 SPA
-	s.engine.StaticFS("/assets", web.DistFS())
+	s.engine.StaticFS("/assets", web.AssetsFS())
 
 	// 2. SPA routes
 	serveIndex := func(c *gin.Context) {
@@ -128,6 +134,9 @@ func (s *Server) setupRoutes(
 	s.engine.GET("/setup", serveIndex)
 	s.engine.GET("/login", serveIndex)
 	s.engine.GET("/console/*filepath", serveIndex)
+	s.engine.GET("/favicon.ico", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
 
 	// 3. NoRoute handler:
 	// Matches any URL that doesn't start with /api or SPA pages,

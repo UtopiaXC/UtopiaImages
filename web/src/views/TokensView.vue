@@ -1,30 +1,30 @@
 <template>
   <div style="max-width: 800px; margin: 0 auto;">
-    <n-card title="API 个人访问令牌 (PAT)" style="border-radius: 12px; margin-bottom: 24px;">
+    <n-card :title="$t('tokens.title')" style="border-radius: 12px; margin-bottom: 24px;">
       <p style="color: #999; margin-bottom: 20px;">
-        可用于 PicGo、自动化脚本、外部系统调用 UtopiaImages 上传和管理接口。
+        {{ $t('tokens.subtitle') }}
       </p>
 
       <div style="display: flex; gap: 12px; margin-bottom: 20px;">
-        <n-input v-model:value="newTokenName" placeholder="令牌备注名称（如：PicGo 客户端）" />
-        <n-button type="primary" :loading="creating" @click="handleCreate">创建新令牌</n-button>
+        <n-input v-model:value="newTokenName" :placeholder="$t('tokens.namePlaceholder')" />
+        <n-button type="primary" :loading="creating" @click="handleCreate">{{ $t('tokens.create') }}</n-button>
       </div>
 
-      <n-alert v-if="justCreatedToken" type="success" title="请妥善复制并保存您的新令牌（仅显示一次）：" style="margin-bottom: 20px;">
+      <n-alert v-if="justCreatedToken" type="success" :title="$t('tokens.createdNotice')" style="margin-bottom: 20px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
           <code style="font-size: 14px; background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 4px;">{{ justCreatedToken }}</code>
-          <n-button size="small" type="primary" @click="copyToken(justCreatedToken)">复制</n-button>
+          <n-button size="small" type="primary" @click="copyToken(justCreatedToken)">{{ $t('common.copy') }}</n-button>
         </div>
       </n-alert>
 
       <n-table :bordered="false" :single-line="false">
         <thead>
           <tr>
-            <th>名称</th>
-            <th>前缀</th>
-            <th>创建时间</th>
-            <th>最后使用</th>
-            <th>操作</th>
+            <th>{{ $t('tokens.name') }}</th>
+            <th>{{ $t('tokens.prefix') }}</th>
+            <th>{{ $t('common.createdAt') }}</th>
+            <th>{{ $t('tokens.lastUsed') }}</th>
+            <th>{{ $t('common.actions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -32,13 +32,13 @@
             <td>{{ t.name }}</td>
             <td><code>{{ t.prefix }}***</code></td>
             <td>{{ formatDate(t.created_at) }}</td>
-            <td>{{ t.last_used_at ? formatDate(t.last_used_at) : '从未' }}</td>
+            <td>{{ t.last_used_at ? formatDate(t.last_used_at) : $t('tokens.never') }}</td>
             <td>
               <n-popconfirm @positive-click="deleteToken(t.id)">
                 <template #trigger>
-                  <n-button size="tiny" type="error" quaternary>吊销</n-button>
+                  <n-button size="tiny" type="error" quaternary>{{ $t('tokens.revoke') }}</n-button>
                 </template>
-                确认吊销此令牌？吊销后使用此令牌的客户端将无法访问。
+                {{ $t('tokens.confirmRevoke') }}
               </n-popconfirm>
             </td>
           </tr>
@@ -51,9 +51,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
+import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 
 const message = useMessage()
+const { t } = useI18n()
 const tokens = ref<any[]>([])
 const newTokenName = ref('')
 const creating = ref(false)
@@ -68,7 +70,7 @@ const loadTokens = async () => {
 
 const handleCreate = async () => {
   if (!newTokenName.value) {
-    message.warning('请输入令牌名称')
+    message.warning(t('tokens.namePlaceholder'))
     return
   }
 
@@ -76,14 +78,14 @@ const handleCreate = async () => {
   try {
     const res = await api.post('/me/tokens', {
       name: newTokenName.value,
-      expires_days: 0 // permanent
+      expires_days: 0
     })
     justCreatedToken.value = res.data.token
     newTokenName.value = ''
     loadTokens()
-    message.success('令牌创建成功')
+    message.success(t('tokens.createSuccess'))
   } catch (err: any) {
-    message.error(err.response?.data?.error || '创建失败')
+    message.error(err.response?.data?.error || t('common.delete'))
   } finally {
     creating.value = false
   }
@@ -92,14 +94,14 @@ const handleCreate = async () => {
 const deleteToken = async (id: number) => {
   try {
     await api.delete(`/me/tokens/${id}`)
-    message.success('已吊销')
+    message.success(t('tokens.revokeSuccess'))
     loadTokens()
   } catch {}
 }
 
 const copyToken = (text: string) => {
   navigator.clipboard.writeText(text)
-  message.success('已复制到剪贴板')
+  message.success(t('common.copied'))
 }
 
 const formatDate = (isoStr: string) => {
