@@ -42,6 +42,6 @@ uploads/
 .DS_Store
 Thumbs.db
 
-# Frontend build artifacts
-web/dist/
+# Frontend dependencies
 web/node_modules/
+

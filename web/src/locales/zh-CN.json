@@ -1,0 +1,44 @@
+{
+  "common": {
+    "login": "登录",
+    "logout": "退出登录",
+    "setup": "系统初始化",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "copy": "复制",
+    "copied": "已复制到剪贴板",
+    "search": "搜索",
+    "actions": "操作",
+    "status": "状态",
+    "createdAt": "创建时间"
+  },
+  "nav": {
+    "upload": "图片上传",
+    "files": "图库管理",
+    "tokens": "API 令牌",
+    "adminUsers": "用户管理",
+    "adminPolicies": "存储策略",
+    "adminStats": "系统看板"
+  },
+  "upload": {
+    "title": "上传文件",
+    "dragTip": "点击或拖拽文件到此处，或使用 Ctrl+V 粘贴剪贴板图片",
+    "convertToWebP": "自动转为 WebP 省流格式",
+    "watermark": "启用防盗水印",
+    "directLink": "直链 URL",
+    "markdown": "Markdown",
+    "html": "HTML",
+    "bbcode": "BBCode"
+  },
+  "files": {
+    "title": "图库管理",
+    "displayName": "图片昵称",
+    "publicPath": "访问路径",
+    "size": "大小",
+    "rename": "修改昵称",
+    "downloadRaw": "下载无水印原图",
+    "confirmDelete": "确定要删除选中的文件吗？此操作无法撤销。"
+  }
+}

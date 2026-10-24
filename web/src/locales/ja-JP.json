@@ -1,0 +1,44 @@
+{
+  "common": {
+    "login": "ログイン",
+    "logout": "ログアウト",
+    "setup": "初期設定",
+    "save": "保存",
+    "cancel": "キャンセル",
+    "delete": "削除",
+    "edit": "編集",
+    "copy": "コピー",
+    "copied": "クリップボードにコピーしました",
+    "search": "検索",
+    "actions": "操作",
+    "status": "ステータス",
+    "createdAt": "作成日時"
+  },
+  "nav": {
+    "upload": "画像アップロード",
+    "files": "画像管理",
+    "tokens": "APIトークン",
+    "adminUsers": "ユーザー管理",
+    "adminPolicies": "ストレージポリシー",
+    "adminStats": "ダッシュボード"
+  },
+  "upload": {
+    "title": "ファイルアップロード",
+    "dragTip": "ここにファイルをドロップするか、Ctrl+Vで貼り付けてください",
+    "convertToWebP": "WebP形式に自動変換",
+    "watermark": "透かし（ウォーターマーク）を適用",
+    "directLink": "直リンク URL",
+    "markdown": "Markdown",
+    "html": "HTML",
+    "bbcode": "BBCode"
+  },
+  "files": {
+    "title": "画像管理",
+    "displayName": "表示名",
+    "publicPath": "アクセスパス",
+    "size": "サイズ",
+    "rename": "名前変更",
+    "downloadRaw": "元画像をダウンロード",
+    "confirmDelete": "このファイルを削除してもよろしいですか？"
+  }
+}

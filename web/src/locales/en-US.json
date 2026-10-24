@@ -1,0 +1,44 @@
+{
+  "common": {
+    "login": "Login",
+    "logout": "Logout",
+    "setup": "Initial Setup",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "copy": "Copy",
+    "copied": "Copied to clipboard",
+    "search": "Search",
+    "actions": "Actions",
+    "status": "Status",
+    "createdAt": "Created At"
+  },
+  "nav": {
+    "upload": "Upload",
+    "files": "Files",
+    "tokens": "API Tokens",
+    "adminUsers": "Users",
+    "adminPolicies": "Policies",
+    "adminStats": "Dashboard"
+  },
+  "upload": {
+    "title": "Upload Files",
+    "dragTip": "Drag and drop files here, or paste from clipboard (Ctrl+V)",
+    "convertToWebP": "Convert to WebP",
+    "watermark": "Apply Watermark",
+    "directLink": "Direct URL",
+    "markdown": "Markdown",
+    "html": "HTML",
+    "bbcode": "BBCode"
+  },
+  "files": {
+    "title": "File Manager",
+    "displayName": "Display Name",
+    "publicPath": "Public URL Path",
+    "size": "Size",
+    "rename": "Rename",
+    "downloadRaw": "Download Unwatermarked Original",
+    "confirmDelete": "Are you sure you want to delete this file?"
+  }
+}
