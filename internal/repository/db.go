@@ -116,7 +116,7 @@ func seedDefaults(db *gorm.DB) error {
 			ID:               1,
 			Name:             "管理员本地存储",
 			Driver:           "local",
-			Config:           `{"base_path":"storage"}`,
+			Config:           `{"base_path":"data/storage"}`,
 			MaxCapacityBytes: 0, // unlimited
 			IsDefault:        true,
 			PathPrefix:       "uploads",
@@ -126,7 +126,7 @@ func seedDefaults(db *gorm.DB) error {
 			ID:               2,
 			Name:             "用户本地存储",
 			Driver:           "local",
-			Config:           `{"base_path":"storage"}`,
+			Config:           `{"base_path":"data/storage"}`,
 			MaxCapacityBytes: 10737418240, // 10 GB (Requirement 4)
 			IsDefault:        true,
 			PathPrefix:       "{username}/uploads",
@@ -144,7 +144,8 @@ func seedDefaults(db *gorm.DB) error {
 		db.FirstOrCreate(&model.RolePolicy{RoleID: 2, PolicyID: 2}, model.RolePolicy{RoleID: 2, PolicyID: 2})
 	}
 
-	// Ensure policy capacities: User local storage is 10G, Admin is unlimited (0)
+	// Ensure policy base paths and capacities: User local storage is 10G, Admin is unlimited (0)
+	db.Model(&model.StoragePolicy{}).Where("config = '{\"base_path\":\"storage\"}'").Update("config", `{"base_path":"data/storage"}`)
 	db.Model(&model.StoragePolicy{}).Where("id = 1 OR name = '管理员本地存储'").Update("max_capacity_bytes", 0)
 	db.Model(&model.StoragePolicy{}).Where("id = 2 OR name = '用户本地存储'").Update("max_capacity_bytes", 10737418240)
 

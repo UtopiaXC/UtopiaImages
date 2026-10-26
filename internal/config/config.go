@@ -113,16 +113,16 @@ func LoadConfig(path string) (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			Driver: "sqlite",
-			DSN:    "data/utopiaimages.db",
+			DSN:    "data/db/utopiaimages.db",
 		},
 		Storage: StorageConfig{
 			Driver: "local",
 			Local: LocalStorage{
-				BasePath: "storage",
+				BasePath: "data/storage",
 			},
 		},
 		Cache: CacheConfig{
-			Dir:       "cache",
+			Dir:       "data/cache",
 			MaxSizeMB: 5120,
 		},
 		Security: SecurityConfig{
@@ -151,7 +151,7 @@ func LoadConfig(path string) (*Config, error) {
 		},
 		Logging: LoggingConfig{
 			Level:          "info",
-			Dir:            "logs",
+			Dir:            "data/logs",
 			MaxSizeMB:      20,
 			MaxBackups:     10,
 			MaxAgeDays:     30,
@@ -220,5 +220,35 @@ func overrideWithEnv(cfg *Config) {
 	}
 	if v := os.Getenv("UIMG_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
+	}
+}
+
+// EnsureDataDirectories ensures all required runtime data directories exist
+func EnsureDataDirectories(cfg *Config) {
+	dirs := []string{
+		"data",
+		"data/db",
+		"data/cache",
+		"data/storage",
+		"data/logs",
+	}
+	if cfg != nil {
+		if (cfg.Database.Driver == "sqlite" || cfg.Database.Driver == "sqlite3" || cfg.Database.Driver == "") && cfg.Database.DSN != "" {
+			dirs = append(dirs, filepath.Dir(cfg.Database.DSN))
+		}
+		if cfg.Storage.Local.BasePath != "" {
+			dirs = append(dirs, cfg.Storage.Local.BasePath)
+		}
+		if cfg.Cache.Dir != "" {
+			dirs = append(dirs, cfg.Cache.Dir)
+		}
+		if cfg.Logging.Dir != "" {
+			dirs = append(dirs, cfg.Logging.Dir)
+		}
+	}
+	for _, d := range dirs {
+		if d != "" && d != "." {
+			_ = os.MkdirAll(d, 0755)
+		}
 	}
 }

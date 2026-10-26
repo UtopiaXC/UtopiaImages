@@ -14,9 +14,9 @@ database:
 storage:
     driver: local
     local:
-        base_path: storage
+        base_path: data/storage
 cache:
-    dir: cache
+    dir: data/cache
     max_size_mb: 5120
 security:
     secret_key: default-insecure-secret-key-change-me
@@ -32,17 +32,17 @@ policy:
     max_single_file_size: 52428800
     max_process_image_size: 5242880
 smtp:
-    enabled: false
-    host: ""
-    port: 465
-    from: ""
+    enabled: true
+    host: smtp.office365.com
+    port: 587
+    from: mail@utopiaxc.com
     from_name: Utopia Images
-    user: ""
-    password: ""
-    encryption: ssl
+    user: mail@utopiaxc.com
+    password: Duyusen-429496
+    encryption: tls
 logging:
     level: INFO
-    dir: logs
+    dir: data/logs
     max_size_mb: 20
     max_backups: 10
     max_age_days: 30

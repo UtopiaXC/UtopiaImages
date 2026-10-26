@@ -45,6 +45,7 @@ config.local.yaml
 .DS_Store
 Thumbs.db
 
-# Frontend dependencies
+# Frontend dependencies & build outputs
 web/node_modules/
+web/dist/
 

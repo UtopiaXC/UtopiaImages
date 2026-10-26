@@ -1,8 +1,10 @@
 package http
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -57,6 +59,7 @@ func (ctrl *SettingsController) RegisterRoutes(rg *gin.RouterGroup) {
 		admin.POST("/cache/clear", ctrl.ClearCache)
 		admin.POST("/favicon", ctrl.UploadFavicon)
 		admin.DELETE("/favicon", ctrl.DeleteFavicon)
+		admin.POST("/smtp/test", ctrl.TestSMTPConnection)
 	}
 }
 
@@ -294,10 +297,43 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 		"log_max_age_days":         "30",
 		"allow_registration":       "false",
 		"default_register_role_id": "2",
+		"smtp_enabled":             "false",
+		"smtp_host":                "",
+		"smtp_port":                "465",
+		"smtp_encryption":          "ssl",
+		"smtp_from":                "",
+		"smtp_from_name":           "Utopia Images",
+		"smtp_user":                "",
+		"smtp_password":            "",
 	}
 
 	for _, s := range settings {
 		res[s.Key] = s.Value
+	}
+
+	if ctrl.cfg != nil {
+		if ctrl.cfg.SMTP.Host != "" {
+			res["smtp_host"] = ctrl.cfg.SMTP.Host
+		}
+		if ctrl.cfg.SMTP.Port > 0 {
+			res["smtp_port"] = strconv.Itoa(ctrl.cfg.SMTP.Port)
+		}
+		if ctrl.cfg.SMTP.From != "" {
+			res["smtp_from"] = ctrl.cfg.SMTP.From
+		}
+		if ctrl.cfg.SMTP.FromName != "" {
+			res["smtp_from_name"] = ctrl.cfg.SMTP.FromName
+		}
+		if ctrl.cfg.SMTP.User != "" {
+			res["smtp_user"] = ctrl.cfg.SMTP.User
+		}
+		if ctrl.cfg.SMTP.Password != "" {
+			res["smtp_password"] = ctrl.cfg.SMTP.Password
+		}
+		if ctrl.cfg.SMTP.Encryption != "" {
+			res["smtp_encryption"] = ctrl.cfg.SMTP.Encryption
+		}
+		res["smtp_enabled"] = strconv.FormatBool(ctrl.cfg.SMTP.Enabled)
 	}
 
 	c.JSON(http.StatusOK, res)
@@ -312,7 +348,11 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 
 	// Requirement 5: System must have SMTP configured to enable registration
 	if val, ok := req["allow_registration"]; ok && (val == "true" || val == "1") {
-		if ctrl.cfg == nil || !ctrl.cfg.SMTP.Enabled || ctrl.cfg.SMTP.Host == "" {
+		smtpEnabled := ctrl.cfg != nil && ctrl.cfg.SMTP.Enabled && ctrl.cfg.SMTP.Host != ""
+		if reqSmtpEnabled, exists := req["smtp_enabled"]; exists {
+			smtpEnabled = (reqSmtpEnabled == "true" || reqSmtpEnabled == "1") && req["smtp_host"] != ""
+		}
+		if !smtpEnabled {
 			common.RespondError(c, http.StatusBadRequest, common.ErrRegistrationSMTPRequired)
 			return
 		}
@@ -360,11 +400,79 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 		ctrl.cfg.Server.BaseURL = baseURL
 	}
 
+	if ctrl.cfg != nil {
+		if val, ok := req["smtp_enabled"]; ok {
+			ctrl.cfg.SMTP.Enabled = (val == "true" || val == "1")
+		}
+		if val, ok := req["smtp_host"]; ok {
+			ctrl.cfg.SMTP.Host = val
+		}
+		if val, ok := req["smtp_port"]; ok && val != "" {
+			if port, err := strconv.Atoi(val); err == nil {
+				ctrl.cfg.SMTP.Port = port
+			}
+		}
+		if val, ok := req["smtp_encryption"]; ok {
+			ctrl.cfg.SMTP.Encryption = val
+		}
+		if val, ok := req["smtp_from"]; ok {
+			ctrl.cfg.SMTP.From = val
+		}
+		if val, ok := req["smtp_from_name"]; ok {
+			ctrl.cfg.SMTP.FromName = val
+		}
+		if val, ok := req["smtp_user"]; ok {
+			ctrl.cfg.SMTP.User = val
+		}
+		if val, ok := req["smtp_password"]; ok {
+			ctrl.cfg.SMTP.Password = val
+		}
+	}
+
 	if ctrl.cfg != nil && ctrl.configPath != "" {
 		_ = config.SaveConfig(ctrl.configPath, ctrl.cfg)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "System settings saved successfully"})
+}
+
+func (ctrl *SettingsController) TestSMTPConnection(c *gin.Context) {
+	var req struct {
+		Host       string `json:"host" binding:"required"`
+		Port       int    `json:"port" binding:"required"`
+		From       string `json:"from"`
+		User       string `json:"user"`
+		Password   string `json:"password"`
+		Encryption string `json:"encryption"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请填写完整的 SMTP 主机和端口"})
+		return
+	}
+
+	addr := net.JoinHostPort(req.Host, strconv.Itoa(req.Port))
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+
+	var conn net.Conn
+	var err error
+	if strings.ToLower(req.Encryption) == "ssl" || req.Port == 465 {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+			ServerName: req.Host,
+		})
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
+	}
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无法连接至 SMTP 邮件服务器: " + err.Error()})
+		return
+	}
+	defer conn.Close()
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "SMTP 服务器连接测试成功",
+	})
 }
 
 func (ctrl *SettingsController) ClearCache(c *gin.Context) {

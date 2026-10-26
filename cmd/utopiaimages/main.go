@@ -27,6 +27,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	config.EnsureDataDirectories(cfg)
+
 	logCfg := appLogger.Config{
 		Level:          cfg.Logging.Level,
 		Dir:            cfg.Logging.Dir,

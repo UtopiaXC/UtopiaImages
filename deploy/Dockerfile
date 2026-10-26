@@ -41,7 +41,7 @@ COPY config/config.example.yaml /app/config/config.yaml
 
 EXPOSE 8080
 
-VOLUME ["/app/config", "/app/data", "/app/storage", "/app/cache"]
+VOLUME ["/app/config", "/app/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD [ "wget", "-qO-", "http://localhost:8080/healthz" ] || exit 1

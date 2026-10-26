@@ -57,12 +57,16 @@ Utopia Images 是一个现代、高性能且开箱即用的自托管图床与静
 
 ### 方式二：Docker 部署
 
+#### 1. 使用预编译镜像运行
+
+所有持久化数据统一归集在 `/app/data` 目录下，包含数据库、图片存储、派生缓存与运行日志，只需单挂载点即可完整持久化：
+
 ```bash
 docker run -d \
   --name utopiaimages \
   -p 8080:8080 \
   -v $(pwd)/data:/app/data \
-  -v $(pwd)/storage:/app/storage \
+  -v $(pwd)/config:/app/config \
   utopiaxc/utopiaimages:latest
 ```
 
@@ -79,8 +83,33 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/app/data
-      - ./storage:/app/storage
-      - ./config.yaml:/app/config.yaml
+      - ./config:/app/config
+    environment:
+      - TZ=Asia/Shanghai
+```
+
+> **挂载目录说明**：
+> - `/app/data`：包含 `db/`（数据库文件）、`storage/`（原始图片存储）、`cache/`（派生图片缓存）及 `logs/`（服务运行与轮转日志）。宿主机一键备份此目录即可迁移整站数据。
+> - `/app/config`：配置文件保存目录，可选挂载。
+
+#### 2. 自行编译 Docker 镜像
+
+如需基于源码自行构建容器镜像，可直接执行：
+
+```bash
+# 克隆代码仓库
+git clone https://github.com/UtopiaXC/UtopiaImages.git
+cd UtopiaImages
+
+# 本地直接构建镜像
+docker build -t utopiaimages:latest -f deploy/Dockerfile .
+
+# 启动自行编译的容器
+docker run -d \
+  --name utopiaimages \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  utopiaimages:latest
 ```
 
 ---

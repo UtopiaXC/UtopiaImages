@@ -243,6 +243,64 @@
       </n-form>
     </n-card>
 
+    <!-- Section 3.7: Mail Notification Service -->
+    <n-card :title="$t('adminSettings.smtpTitle')" style="border-radius: 8px; margin-bottom: 16px;">
+      <p style="font-size: 13px; color: #aaa; margin-top: 0; margin-bottom: 16px;">
+        {{ $t('adminSettings.smtpDesc') }}
+      </p>
+      <n-form label-placement="left" label-width="150">
+        <n-form-item :label="$t('adminSettings.enableSmtp')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-switch v-model:value="smtpEnabled" />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.smtpOptionalTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
+        <template v-if="smtpEnabled">
+          <n-form-item :label="$t('setup.smtpHost')">
+            <n-input v-model:value="settings.smtp_host" placeholder="smtp.example.com" style="max-width: 400px;" />
+          </n-form-item>
+
+          <n-form-item :label="$t('setup.smtpPort')">
+            <n-input-number v-model:value="smtpPort" :min="1" :max="65535" style="max-width: 200px;" />
+          </n-form-item>
+
+          <n-form-item :label="$t('setup.smtpEncryption')">
+            <n-select v-model:value="settings.smtp_encryption" :options="encryptionOptions" style="max-width: 200px;" />
+          </n-form-item>
+
+          <n-form-item :label="$t('setup.smtpFrom')">
+            <n-input v-model:value="settings.smtp_from" placeholder="noreply@example.com" style="max-width: 400px;" />
+          </n-form-item>
+
+          <n-form-item :label="$t('setup.smtpFromName')">
+            <n-input v-model:value="settings.smtp_from_name" placeholder="Utopia Images" style="max-width: 400px;" />
+          </n-form-item>
+
+          <n-form-item :label="$t('setup.smtpUser')">
+            <n-input v-model:value="settings.smtp_user" placeholder="username@example.com" style="max-width: 400px;" />
+          </n-form-item>
+
+          <n-form-item :label="$t('setup.smtpPassword')">
+            <n-input v-model:value="settings.smtp_password" type="password" show-password-on="click" placeholder="••••••••" style="max-width: 400px;" />
+          </n-form-item>
+
+          <n-form-item label=" ">
+            <n-button type="info" ghost :loading="testingSmtp" @click="handleTestSmtp">
+              {{ $t('setup.testSmtp') }}
+            </n-button>
+          </n-form-item>
+        </template>
+      </n-form>
+    </n-card>
+
 
     <!-- Section 5: Logging Settings -->
     <n-card :title="$t('adminSettings.loggingTitle')" style="border-radius: 8px; margin-bottom: 16px;">
@@ -382,7 +440,15 @@ const settings = ref<any>({
   log_max_backups: '10',
   log_max_age_days: '30',
   allow_registration: 'false',
-  default_register_role_id: '2'
+  default_register_role_id: '2',
+  smtp_enabled: 'false',
+  smtp_host: '',
+  smtp_port: '587',
+  smtp_encryption: 'none',
+  smtp_from: '',
+  smtp_from_name: 'Utopia Images',
+  smtp_user: '',
+  smtp_password: ''
 })
 
 const faviconTimestamp = ref(Date.now())
@@ -508,6 +574,46 @@ const defaultRegisterRoleId = computed({
   get: () => parseInt(settings.value.default_register_role_id) || 2,
   set: (v) => { settings.value.default_register_role_id = String(v) }
 })
+
+const smtpEnabled = computed({
+  get: () => settings.value.smtp_enabled === 'true',
+  set: (v) => { settings.value.smtp_enabled = v ? 'true' : 'false' }
+})
+
+const smtpPort = computed({
+  get: () => parseInt(settings.value.smtp_port) || 587,
+  set: (v) => { settings.value.smtp_port = String(v) }
+})
+
+const encryptionOptions = computed(() => [
+  { label: 'SSL / TLS', value: 'ssl' },
+  { label: 'STARTTLS', value: 'tls' },
+  { label: t('common.disabled'), value: 'none' }
+])
+
+const testingSmtp = ref(false)
+const handleTestSmtp = async () => {
+  if (!settings.value.smtp_host) {
+    message.warning(t('setup.fillSmtpHost'))
+    return
+  }
+  testingSmtp.value = true
+  try {
+    const res = await api.post('/admin/smtp/test', {
+      host: settings.value.smtp_host,
+      port: parseInt(settings.value.smtp_port) || 25,
+      from: settings.value.smtp_from,
+      user: settings.value.smtp_user,
+      password: settings.value.smtp_password,
+      encryption: settings.value.smtp_encryption || 'none'
+    })
+    message.success(res.data?.message || t('setup.testSmtpSuccess'))
+  } catch (err: any) {
+    message.error(getApiErrorMessage(err) || t('setup.testSmtpFailed'))
+  } finally {
+    testingSmtp.value = false
+  }
+}
 
 const logLevelOptions = computed(() => [
   { label: 'DEBUG (调试详细)', value: 'debug' },

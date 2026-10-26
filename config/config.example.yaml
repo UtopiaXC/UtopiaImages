@@ -9,17 +9,17 @@ server:
 # 数据库配置（支持 sqlite / postgres）
 database:
   driver: "sqlite" # sqlite 或 postgres
-  dsn: "data/utopiaimages.db" # postgres: "postgres://user:password@localhost:5432/utopiaimages?sslmode=disable"
+  dsn: "data/db/utopiaimages.db" # postgres: "postgres://user:password@localhost:5432/utopiaimages?sslmode=disable"
 
 # 存储后端
 storage:
   driver: "local"
   local:
-    base_path: "storage"
+    base_path: "data/storage"
 
 # 缓存配置
 cache:
-  dir: "cache"
+  dir: "data/cache"
   max_size_mb: 5120 # 5GB
 
 # 安全与认证
