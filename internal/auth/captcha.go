@@ -176,7 +176,7 @@ func (t *LoginAttemptsTracker) RecordSuccess(key string) {
 }
 
 func (t *LoginAttemptsTracker) RequiresCaptcha(key string) bool {
-	return t.attempts[key] >= 3
+	return t.attempts[key] >= 1
 }
 
 func (t *LoginAttemptsTracker) GetDelay(key string) time.Duration {

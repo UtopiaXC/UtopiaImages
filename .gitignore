@@ -1,5 +1,5 @@
 # Binaries
-bin/
+/bin/
 *.exe
 *.exe~
 *.dll
@@ -16,18 +16,21 @@ go.work
 go.work.sum
 
 # Dependency directories
-vendor/
+/vendor/
 
 # Environment and local configs
 .env
 .env.local
 config.local.yaml
 
-# Data, uploads, cache
-data/
-storage/
-cache/
-uploads/
+# Runtime Data, uploads, cache, logs
+/data/
+/storage/
+/cache/
+/uploads/
+/logs/
+!internal/cache/
+!internal/storage/
 *.db
 *.db-wal
 *.db-shm

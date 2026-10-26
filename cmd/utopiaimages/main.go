@@ -11,15 +11,11 @@ import (
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/config"
+	appLogger "github.com/UtopiaXC/UtopiaImages/internal/logger"
 	transportHttp "github.com/UtopiaXC/UtopiaImages/internal/transport/http"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
-	slog.SetDefault(logger)
-
 	configPath := "config/config.yaml"
 	if p := os.Getenv("UIMG_CONFIG_PATH"); p != "" {
 		configPath = p
@@ -31,7 +27,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	server, err := transportHttp.NewServer(cfg)
+	logCfg := appLogger.Config{
+		Level:          cfg.Logging.Level,
+		Dir:            cfg.Logging.Dir,
+		MaxSizeMB:      cfg.Logging.MaxSizeMB,
+		MaxBackups:     cfg.Logging.MaxBackups,
+		MaxAgeDays:     cfg.Logging.MaxAgeDays,
+		Compress:       cfg.Logging.Compress,
+		PermanentLevel: cfg.Logging.PermanentLevel,
+	}
+	_ = appLogger.InitLogger(logCfg)
+
+	server, err := transportHttp.NewServer(cfg, configPath)
 	if err != nil {
 		slog.Error("Failed to initialize server", "error", err)
 		os.Exit(1)

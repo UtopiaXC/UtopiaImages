@@ -6,18 +6,53 @@
           {{ $t('upload.archiveImport') }}
         </n-button>
       </template>
+
       <!-- Options Bar -->
       <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; align-items: center;">
-        <n-checkbox v-model:checked="convertToWebP">
-          {{ $t('upload.convertToWebP') }}
-        </n-checkbox>
-
-        <n-checkbox v-model:checked="keepOriginal">
-          {{ $t('upload.keepOriginal') }}
-        </n-checkbox>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.storagePolicy') }}</span>
+          <span style="color: #666;">:</span>
+          <n-select
+            v-model:value="selectedPolicyId"
+            :options="policyOptions"
+            size="small"
+            :loading="loadingPolicies"
+            :placeholder="$t('upload.storagePolicy')"
+            style="width: 170px;"
+          />
+          <!-- Storage Policy Remaining Capacity Indicator (Requirement 6) -->
+          <div
+            v-if="currentPolicy"
+            style="display: flex; align-items: center; background: rgba(255,255,255,0.03); padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);"
+          >
+            <div style="display: flex; flex-direction: column; min-width: 140px; width: auto;">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 11px; margin-bottom: 3px; white-space: nowrap;">
+                <span style="color: #888;">{{ $t('upload.policyRemaining') }}</span>
+                <span style="color: #63e2b7; font-weight: 500;">
+                  {{ currentPolicy.max_capacity_bytes === 0 ? $t('common.unlimited') : formatBytes(Math.max(0, currentPolicy.max_capacity_bytes - currentPolicy.used_bytes)) }}
+                </span>
+              </div>
+              <n-progress
+                type="line"
+                :percentage="currentPolicyPercentage"
+                :status="currentPolicyPercentage >= 90 ? 'error' : currentPolicyPercentage >= 75 ? 'warning' : 'success'"
+                :show-indicator="false"
+              />
+            </div>
+          </div>
+        </div>
 
         <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.watermark') }}：</span>
+          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.watermark') }}</span>
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-icon size="16" style="color: #888; cursor: pointer; vertical-align: middle;">
+                <InformationCircleOutline />
+              </n-icon>
+            </template>
+            {{ $t('upload.watermarkTip') }}
+          </n-tooltip>
+          <span style="color: #666;">:</span>
           <n-select
             v-model:value="watermarkMode"
             :options="watermarkModeOptions"
@@ -27,13 +62,14 @@
         </div>
 
         <div v-if="watermarkMode === 'on'" style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.template') }}：</span>
+          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.template') }}</span>
+          <span style="color: #666;">:</span>
           <n-select
             v-model:value="selectedTemplateId"
             :options="templateOptions"
             size="small"
             :placeholder="$t('upload.defaultTemplate')"
-            style="width: 160px;"
+            style="width: 180px;"
           />
         </div>
       </div>
@@ -49,6 +85,9 @@
           <div style="font-size: 16px; margin-bottom: 8px; font-weight: 500;">
             {{ $t('upload.dragTip') }}
           </div>
+          <div style="font-size: 13px; color: #777;">
+            {{ $t('upload.alwaysOriginalTip') }}
+          </div>
         </n-upload-dragger>
       </n-upload>
     </n-card>
@@ -60,48 +99,45 @@
         :key="index"
         style="margin-bottom: 16px; border-radius: 12px;"
       >
-        <div style="display: flex; gap: 20px; align-items: center;">
-          <img
-            v-if="item.file.is_image"
-            :src="item.links.url"
-            style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; border: 1px solid #333;"
-          />
-          <div style="flex: 1;">
+        <div style="display: flex; gap: 20px; align-items: flex-start;">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <img
+              v-if="item.file.is_image"
+              :src="item.links.url"
+              style="width: 110px; height: 110px; object-fit: contain; background: #0c0d12; border-radius: 8px; border: 1px solid #333;"
+            />
+            <n-button
+              v-if="item.file.is_image"
+              size="tiny"
+              type="info"
+              quaternary
+              style="width: 110px;"
+              @click="openImageEditor(item.file, index)"
+            >
+              {{ $t('files.editImage') }}
+            </n-button>
+          </div>
+          <div style="flex: 1; min-width: 0;">
             <div style="font-weight: bold; font-size: 15px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px;">
-              <span>{{ item.file.display_name }}</span>
+              <span style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{{ item.file.display_name }}</span>
               <n-tag size="small" :bordered="false">{{ formatBytes(item.file.size) }}</n-tag>
+              <n-tag v-if="item.file.width && item.file.height" size="small" type="info" :bordered="false">
+                {{ item.file.width }} × {{ item.file.height }}
+              </n-tag>
             </div>
             
-            <n-tabs type="line" size="small">
-              <n-tab-pane name="url" :tab="$t('upload.directLink')">
-                <n-input-group>
-                  <n-input :value="item.links.url" readonly />
-                  <n-button type="primary" @click="copyText(item.links.url)">{{ $t('common.copy') }}</n-button>
-                </n-input-group>
-              </n-tab-pane>
-              <n-tab-pane name="markdown" :tab="$t('upload.markdown')">
-                <n-input-group>
-                  <n-input :value="item.links.markdown" readonly />
-                  <n-button type="primary" @click="copyText(item.links.markdown)">{{ $t('common.copy') }}</n-button>
-                </n-input-group>
-              </n-tab-pane>
-              <n-tab-pane name="html" :tab="$t('upload.html')">
-                <n-input-group>
-                  <n-input :value="item.links.html" readonly />
-                  <n-button type="primary" @click="copyText(item.links.html)">{{ $t('common.copy') }}</n-button>
-                </n-input-group>
-              </n-tab-pane>
-              <n-tab-pane name="bbcode" :tab="$t('upload.bbcode')">
-                <n-input-group>
-                  <n-input :value="item.links.bbcode" readonly />
-                  <n-button type="primary" @click="copyText(item.links.bbcode)">{{ $t('common.copy') }}</n-button>
-                </n-input-group>
-              </n-tab-pane>
-            </n-tabs>
+            <FileLinksPanel :file="item.file" :initial-url="item.links.url" />
           </div>
         </div>
       </n-card>
     </div>
+
+    <!-- Image Editor Modal -->
+    <ImageEditorModal
+      v-model:show="showEditorModal"
+      :file="editingFile"
+      @saved="handleEditorSaved"
+    />
 
     <!-- ZIP Archive Import Modal -->
     <n-modal v-model:show="showImportModal" preset="card" :title="$t('upload.archiveImport')" style="width: 520px; border-radius: 12px;">
@@ -110,8 +146,29 @@
       </p>
 
       <n-form label-placement="left" label-width="120">
-        <n-form-item :label="$t('upload.selectZipFile')">
-          <input type="file" accept=".zip" @change="handleZipFileChange" style="color: #ccc;" />
+        <n-form-item :label="$t('upload.selectArchiveFile')">
+          <input type="file" accept=".zip,.tar,.gz,.tgz,.7z" @change="handleZipFileChange" style="color: #ccc;" />
+        </n-form-item>
+
+        <n-form-item :label="$t('upload.storagePolicy')">
+          <n-select
+            v-model:value="importOptions.policy_id"
+            :options="policyOptions"
+            :loading="loadingPolicies"
+            :placeholder="$t('upload.storagePolicy')"
+          />
+        </n-form-item>
+
+        <n-form-item :label="$t('upload.watermark')">
+          <n-select v-model:value="importOptions.watermark_mode" :options="watermarkModeOptions" />
+        </n-form-item>
+
+        <n-form-item v-if="importOptions.watermark_mode === 'on'" :label="$t('upload.template')">
+          <n-select v-model:value="importOptions.watermark_template_id" :options="templateOptions" clearable :placeholder="$t('upload.defaultTemplate')" />
+        </n-form-item>
+
+        <n-form-item :label="$t('files.hotlinkSetting')">
+          <n-select v-model:value="importOptions.hotlink_mode" :options="hotlinkModeOptions" />
         </n-form-item>
 
         <n-form-item :label="$t('upload.preservePath')">
@@ -143,29 +200,57 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useMessage, type UploadCustomRequestOptions } from 'naive-ui'
+import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
+import FileLinksPanel from '../components/FileLinksPanel.vue'
+import ImageEditorModal from '../components/ImageEditorModal.vue'
 
 const message = useMessage()
 const { t } = useI18n()
 
-const convertToWebP = ref(true)
-const keepOriginal = ref(true)
 const watermarkMode = ref('inherit')
 const selectedTemplateId = ref<string | null>(null)
 const templateOptions = ref<any[]>([])
 const results = ref<any[]>([])
 
+const selectedPolicyId = ref<number | null>(null)
+const policyOptions = ref<any[]>([])
+
 const showImportModal = ref(false)
 const selectedZipFile = ref<File | null>(null)
 const importing = ref(false)
 const importOptions = ref({
+  policy_id: null as number | null,
+  watermark_mode: 'inherit',
+  watermark_template_id: null as string | null,
+  hotlink_mode: 'inherit',
   preserve_path: true,
   strip_top_dir: false,
   conflict_action: 'skip'
 })
+
+const showEditorModal = ref(false)
+const editingFile = ref<any>(null)
+const editingIndex = ref<number>(-1)
+
+const openImageEditor = (file: any, index: number) => {
+  editingFile.value = file
+  editingIndex.value = index
+  showEditorModal.value = true
+}
+
+const handleEditorSaved = (updatedFile: any) => {
+  if (editingIndex.value >= 0 && results.value[editingIndex.value]) {
+    results.value[editingIndex.value].file = updatedFile
+    if (results.value[editingIndex.value].links?.url) {
+      const orig = results.value[editingIndex.value].links.url.split('?')[0]
+      results.value[editingIndex.value].links.url = `${orig}?v=${Date.now()}`
+    }
+  }
+}
 
 const handleZipFileChange = (e: Event) => {
   const target = e.target as HTMLInputElement
@@ -174,17 +259,32 @@ const handleZipFileChange = (e: Event) => {
   }
 }
 
+const hotlinkModeOptions = computed(() => [
+  { label: t('files.hotlinkInherit'), value: 'inherit' },
+  { label: t('files.hotlinkOn'), value: 'on' },
+  { label: t('files.hotlinkOff'), value: 'off' }
+])
+
 const handleImportZip = async () => {
   if (!selectedZipFile.value) return
   importing.value = true
   const formData = new FormData()
-  formData.append('file', selectedZipFile.value)
+  formData.append('archive_file', selectedZipFile.value)
   formData.append('preserve_path', importOptions.value.preserve_path ? 'true' : 'false')
   formData.append('strip_top_dir', importOptions.value.strip_top_dir ? 'true' : 'false')
   formData.append('conflict_action', importOptions.value.conflict_action)
+  formData.append('watermark_mode', importOptions.value.watermark_mode)
+  formData.append('hotlink_mode', importOptions.value.hotlink_mode)
+  if (importOptions.value.watermark_template_id) {
+    formData.append('watermark_template_id', importOptions.value.watermark_template_id)
+  }
+  const policyToUse = importOptions.value.policy_id || selectedPolicyId.value
+  if (policyToUse) {
+    formData.append('policy_id', String(policyToUse))
+  }
 
   try {
-    const res = await api.post('/import/zip', formData)
+    const res = await api.post('/import/archive', formData)
     message.success(`${t('upload.importSuccess')}: ${res.data.imported} / ${res.data.total}`)
     showImportModal.value = false
     selectedZipFile.value = null
@@ -211,14 +311,66 @@ const loadTemplates = async () => {
   } catch {}
 }
 
+const policiesList = ref<any[]>([])
+const currentPolicy = computed(() => {
+  return policiesList.value.find((p: any) => p.id === selectedPolicyId.value)
+})
+
+const currentPolicyPercentage = computed(() => {
+  if (!currentPolicy.value || !currentPolicy.value.max_capacity_bytes) return 0
+  return Math.min(100, Math.round((currentPolicy.value.used_bytes / currentPolicy.value.max_capacity_bytes) * 100))
+})
+
+const loadingPolicies = ref(false)
+
+const loadPolicies = async () => {
+  loadingPolicies.value = true
+  try {
+    const res = await api.get('/me/policies')
+    const list = res.data || []
+    policiesList.value = list
+    policyOptions.value = list.map((item: any) => ({
+      label: item.name,
+      value: item.id
+    }))
+    if (list.length > 0) {
+      const def = list.find((p: any) => p.is_default) || list[0]
+      if (!selectedPolicyId.value) {
+        selectedPolicyId.value = def.id
+      }
+      if (!importOptions.value.policy_id) {
+        importOptions.value.policy_id = def.id
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load storage policies', err)
+  } finally {
+    loadingPolicies.value = false
+  }
+}
+
+watch(showImportModal, (show) => {
+  if (show) {
+    if (!importOptions.value.policy_id && selectedPolicyId.value) {
+      importOptions.value.policy_id = selectedPolicyId.value
+    } else if (!importOptions.value.policy_id && policyOptions.value.length > 0) {
+      importOptions.value.policy_id = policyOptions.value[0].value
+    }
+    if (policyOptions.value.length === 0) {
+      loadPolicies()
+    }
+  }
+})
+
 const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomRequestOptions) => {
   const formData = new FormData()
   formData.append('file', file.file as File)
-  formData.append('convert_webp', convertToWebP.value ? 'true' : 'false')
-  formData.append('keep_original', keepOriginal.value ? 'true' : 'false')
   formData.append('watermark_mode', watermarkMode.value)
   if (selectedTemplateId.value) {
     formData.append('watermark_template_id', selectedTemplateId.value)
+  }
+  if (selectedPolicyId.value) {
+    formData.append('policy_id', String(selectedPolicyId.value))
   }
 
   try {
@@ -250,11 +402,12 @@ const handlePaste = (e: ClipboardEvent) => {
 const uploadBlob = async (blob: File, name: string) => {
   const formData = new FormData()
   formData.append('file', blob, name)
-  formData.append('convert_webp', convertToWebP.value ? 'true' : 'false')
-  formData.append('keep_original', keepOriginal.value ? 'true' : 'false')
   formData.append('watermark_mode', watermarkMode.value)
   if (selectedTemplateId.value) {
     formData.append('watermark_template_id', selectedTemplateId.value)
+  }
+  if (selectedPolicyId.value) {
+    formData.append('policy_id', String(selectedPolicyId.value))
   }
 
   try {
@@ -281,6 +434,7 @@ const formatBytes = (bytes: number) => {
 
 onMounted(() => {
   loadTemplates()
+  loadPolicies()
   window.addEventListener('paste', handlePaste)
 })
 

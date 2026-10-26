@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -10,28 +11,38 @@ import (
 )
 
 type Config struct {
+	Site     SiteConfig     `yaml:"site"`
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Cache    CacheConfig    `yaml:"cache"`
 	Security SecurityConfig `yaml:"security"`
 	Policy   PolicyConfig   `yaml:"policy"`
+	SMTP     SMTPConfig     `yaml:"smtp"`
+	Logging  LoggingConfig  `yaml:"logging"`
+}
+
+type SiteConfig struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	BaseURL     string `yaml:"base_url"`
+	Locale      string `yaml:"locale"`
 }
 
 type ServerConfig struct {
 	Host    string `yaml:"host"`
 	Port    int    `yaml:"port"`
 	BaseURL string `yaml:"base_url"`
-	Mode    string `yaml:"mode"`
+	Mode    string `yaml:"mode"` // release | debug
 }
 
 type DatabaseConfig struct {
-	Driver string `yaml:"driver"` // sqlite | postgres
+	Driver string `yaml:"driver"` // sqlite | postgres | mysql
 	DSN    string `yaml:"dsn"`
 }
 
 type StorageConfig struct {
-	Driver string      `yaml:"driver"`
+	Driver string       `yaml:"driver"`
 	Local  LocalStorage `yaml:"local"`
 }
 
@@ -64,14 +75,41 @@ type PolicyConfig struct {
 	MaxProcessImageSize int64 `yaml:"max_process_image_size"`
 }
 
+type SMTPConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	Host       string `yaml:"host"`
+	Port       int    `yaml:"port"`
+	From       string `yaml:"from"`
+	FromName   string `yaml:"from_name"`
+	User       string `yaml:"user"`
+	Password   string `yaml:"password"`
+	Encryption string `yaml:"encryption"` // ssl | tls | none
+}
+
+type LoggingConfig struct {
+	Level          string `yaml:"level"`        // debug | info | warn | error
+	Dir            string `yaml:"dir"`          // logs
+	MaxSizeMB      int    `yaml:"max_size_mb"`  // 20 MB
+	MaxBackups     int    `yaml:"max_backups"`  // 10
+	MaxAgeDays     int    `yaml:"max_age_days"` // 30
+	Compress       bool   `yaml:"compress"`
+	PermanentLevel string `yaml:"permanent_level"` // error | warn | none
+}
+
 // LoadConfig loads configuration from path and overrides with environment variables
 func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
+		Site: SiteConfig{
+			Name:        "Utopia Images",
+			Description: "又一个Utopia Images自部署图床",
+			BaseURL:     "http://localhost:8080",
+			Locale:      "zh-CN",
+		},
 		Server: ServerConfig{
 			Host:    "0.0.0.0",
 			Port:    8080,
 			BaseURL: "http://localhost:8080",
-			Mode:    "debug",
+			Mode:    "release",
 		},
 		Database: DatabaseConfig{
 			Driver: "sqlite",
@@ -101,6 +139,25 @@ func LoadConfig(path string) (*Config, error) {
 			MaxSingleFileSize:   52428800, // 50MB
 			MaxProcessImageSize: 5242880,  // 5MB
 		},
+		SMTP: SMTPConfig{
+			Enabled:    false,
+			Host:       "",
+			Port:       465,
+			From:       "",
+			FromName:   "Utopia Images",
+			User:       "",
+			Password:   "",
+			Encryption: "ssl",
+		},
+		Logging: LoggingConfig{
+			Level:          "info",
+			Dir:            "logs",
+			MaxSizeMB:      20,
+			MaxBackups:     10,
+			MaxAgeDays:     30,
+			Compress:       true,
+			PermanentLevel: "error",
+		},
 	}
 
 	data, err := os.ReadFile(path)
@@ -116,6 +173,26 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// SaveConfig writes the in-memory configuration back to yaml file
+func SaveConfig(path string, cfg *Config) error {
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create config dir: %w", err)
+		}
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config to yaml: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+	return nil
+}
+
 func overrideWithEnv(cfg *Config) {
 	if v := os.Getenv("UIMG_SERVER_PORT"); v != "" {
 		if port, err := strconv.Atoi(v); err == nil {
@@ -124,6 +201,7 @@ func overrideWithEnv(cfg *Config) {
 	}
 	if v := os.Getenv("UIMG_SERVER_BASE_URL"); v != "" {
 		cfg.Server.BaseURL = strings.TrimRight(v, "/")
+		cfg.Site.BaseURL = cfg.Server.BaseURL
 	}
 	if v := os.Getenv("UIMG_SERVER_MODE"); v != "" {
 		cfg.Server.Mode = v
@@ -139,5 +217,8 @@ func overrideWithEnv(cfg *Config) {
 	}
 	if v := os.Getenv("UIMG_SECURITY_SECRET_KEY"); v != "" {
 		cfg.Security.SecretKey = v
+	}
+	if v := os.Getenv("UIMG_LOG_LEVEL"); v != "" {
+		cfg.Logging.Level = v
 	}
 }

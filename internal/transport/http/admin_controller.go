@@ -1,14 +1,21 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
+	"github.com/UtopiaXC/UtopiaImages/internal/common"
+	"github.com/UtopiaXC/UtopiaImages/internal/logger"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+var serverStartTime = time.Now()
 
 type AdminController struct {
 	db *gorm.DB
@@ -28,26 +35,40 @@ func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
 		admin.GET("/users", ctrl.ListUsers)
 		admin.POST("/users", ctrl.CreateUser)
 		admin.PATCH("/users/:id", ctrl.UpdateUser)
+		admin.DELETE("/users/:id", ctrl.DeleteUser)
+		admin.POST("/users/:id/ban", ctrl.BanUser)
+		admin.POST("/users/:id/unfreeze", ctrl.UnfreezeUser)
 
-		// Storage policies
+		// Roles management (Requirement 8)
+		admin.GET("/roles", ctrl.ListRoles)
+		admin.POST("/roles", ctrl.CreateRole)
+		admin.PATCH("/roles/:id", ctrl.UpdateRole)
+		admin.DELETE("/roles/:id", ctrl.DeleteRole)
+
+		// Storage policies management (Requirement 8)
 		admin.GET("/policies", ctrl.ListPolicies)
 		admin.POST("/policies", ctrl.CreatePolicy)
+		admin.PATCH("/policies/:id", ctrl.UpdatePolicy)
 		admin.DELETE("/policies/:id", ctrl.DeletePolicy)
 
 		// Image Presets
 		admin.GET("/presets", ctrl.ListPresets)
 		admin.POST("/presets", ctrl.CreatePreset)
 		admin.DELETE("/presets/:id", ctrl.DeletePreset)
+
+		// Database status
+		admin.GET("/database/status", ctrl.GetDatabaseStatus)
 	}
 }
 
 func (ctrl *AdminController) GetStats(c *gin.Context) {
-	var userCount int64
-	var fileCount int64
+	var userCount, fileCount, roleCount, policyCount int64
 	var totalBytes int64
 
 	ctrl.db.Model(&model.User{}).Count(&userCount)
 	ctrl.db.Model(&model.FileRecord{}).Count(&fileCount)
+	ctrl.db.Model(&model.Role{}).Count(&roleCount)
+	ctrl.db.Model(&model.StoragePolicy{}).Count(&policyCount)
 
 	type Result struct {
 		Total int64
@@ -56,32 +77,185 @@ func (ctrl *AdminController) GetStats(c *gin.Context) {
 	ctrl.db.Model(&model.FileRecord{}).Select("COALESCE(SUM(size), 0) as total").Scan(&res)
 	totalBytes = res.Total
 
+	// 14 days activity trend
+	type DayStat struct {
+		Date       string `json:"date"`
+		FilesCount int64  `json:"files_count"`
+		BytesCount int64  `json:"bytes_count"`
+	}
+	daysMap := make(map[string]*DayStat)
+	var daysList []DayStat
+	now := time.Now()
+	for i := 13; i >= 0; i-- {
+		dStr := now.AddDate(0, 0, -i).Format("2006-01-02")
+		ds := &DayStat{Date: dStr, FilesCount: 0, BytesCount: 0}
+		daysMap[dStr] = ds
+	}
+
+	type FileSimple struct {
+		CreatedAt time.Time
+		Size      int64
+	}
+	var recentRecords []FileSimple
+	ctrl.db.Model(&model.FileRecord{}).
+		Where("created_at >= ?", now.AddDate(0, 0, -14).Truncate(24*time.Hour)).
+		Select("created_at, size").
+		Find(&recentRecords)
+
+	for _, rec := range recentRecords {
+		dStr := rec.CreatedAt.Format("2006-01-02")
+		if stat, ok := daysMap[dStr]; ok {
+			stat.FilesCount++
+			stat.BytesCount += rec.Size
+		}
+	}
+
+	for i := 13; i >= 0; i-- {
+		dStr := now.AddDate(0, 0, -i).Format("2006-01-02")
+		daysList = append(daysList, *daysMap[dStr])
+	}
+
+	// Mime type distribution
+	type MimeStat struct {
+		Mime      string `json:"mime"`
+		Count     int64  `json:"count"`
+		TotalSize int64  `json:"total_size"`
+	}
+	var mimeStats []MimeStat
+	ctrl.db.Model(&model.FileRecord{}).
+		Select("mime_type as mime, count(*) as count, COALESCE(sum(size), 0) as total_size").
+		Group("mime_type").
+		Order("count DESC").
+		Limit(10).
+		Scan(&mimeStats)
+
+	// Recent 10 uploaded files with user info
+	var recentFiles []model.FileRecord
+	ctrl.db.Order("id DESC").Limit(10).Find(&recentFiles)
+
+	userIDs := make([]uint, 0)
+	policyIDs := make([]uint, 0)
+	for _, f := range recentFiles {
+		userIDs = append(userIDs, f.UserID)
+		policyIDs = append(policyIDs, f.PolicyID)
+	}
+
+	var users []model.User
+	if len(userIDs) > 0 {
+		ctrl.db.Where("id IN ?", userIDs).Find(&users)
+	}
+	userMap := make(map[uint]string)
+	for _, u := range users {
+		if u.Nickname != "" {
+			userMap[u.ID] = u.Nickname
+		} else {
+			userMap[u.ID] = u.Username
+		}
+	}
+
+	var policies []model.StoragePolicy
+	if len(policyIDs) > 0 {
+		ctrl.db.Where("id IN ?", policyIDs).Find(&policies)
+	}
+	policyMap := make(map[uint]string)
+	for _, p := range policies {
+		policyMap[p.ID] = p.Name
+	}
+
+	type RecentFileDTO struct {
+		ID            uint      `json:"id"`
+		DisplayName   string    `json:"display_name"`
+		PublicPath    string    `json:"public_path"`
+		Size          int64     `json:"size"`
+		MimeType      string    `json:"mime_type"`
+		StoragePolicy string    `json:"storage_policy"`
+		Uploader      string    `json:"uploader"`
+		CreatedAt     time.Time `json:"created_at"`
+	}
+	recentFilesDTO := make([]RecentFileDTO, 0, len(recentFiles))
+	for _, f := range recentFiles {
+		policyName := "默认策略"
+		if name, ok := policyMap[f.PolicyID]; ok && name != "" {
+			policyName = name
+		}
+		uploaderName := "系统"
+		if name, ok := userMap[f.UserID]; ok && name != "" {
+			uploaderName = name
+		}
+		recentFilesDTO = append(recentFilesDTO, RecentFileDTO{
+			ID:            f.ID,
+			DisplayName:   f.DisplayName,
+			PublicPath:    f.PublicPath,
+			Size:          f.Size,
+			MimeType:      f.MimeType,
+			StoragePolicy: policyName,
+			Uploader:      uploaderName,
+			CreatedAt:     f.CreatedAt,
+		})
+	}
+
+	// Recent 10 users
+	var recentUsers []model.User
+	ctrl.db.Preload("Role").Order("id DESC").Limit(10).Find(&recentUsers)
+
+	// System Runtime Info
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	sysInfo := gin.H{
+		"go_version":            runtime.Version(),
+		"os":                    runtime.GOOS,
+		"arch":                  runtime.GOARCH,
+		"goroutines":            runtime.NumGoroutine(),
+		"alloc_bytes":           mem.Alloc,
+		"total_alloc_bytes":     mem.TotalAlloc,
+		"sys_bytes":             mem.Sys,
+		"num_gc":                mem.NumGC,
+		"server_uptime_seconds": int64(time.Since(serverStartTime).Seconds()),
+		"log_level":             logger.GetLevel(),
+		"log_permanent_level":   logger.GetPermanentLevel(),
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"users_count": userCount,
-		"files_count": fileCount,
-		"total_bytes": totalBytes,
+		"users_count":       userCount,
+		"files_count":       fileCount,
+		"total_bytes":       totalBytes,
+		"roles_count":       roleCount,
+		"policies_count":    policyCount,
+		"daily_trends":      daysList,
+		"mime_distribution": mimeStats,
+		"recent_files":      recentFilesDTO,
+		"recent_users":      recentUsers,
+		"system_info":       sysInfo,
+		"recent_logs":       logger.GetRecentLogs(50),
+		"recent_errors":     logger.GetRecentErrors(50),
 	})
 }
 
+// -------------------------------------------------------------
+// Users Management
+// -------------------------------------------------------------
+
 func (ctrl *AdminController) ListUsers(c *gin.Context) {
 	var users []model.User
-	ctrl.db.Preload("Group").Order("id ASC").Find(&users)
+	ctrl.db.Preload("Role").Order("id ASC").Find(&users)
 	c.JSON(http.StatusOK, users)
 }
 
 func (ctrl *AdminController) CreateUser(c *gin.Context) {
 	var req struct {
-		Username     string `json:"username" binding:"required"`
-		Password     string `json:"password" binding:"required,min=6"`
-		Nickname     string `json:"nickname"`
-		Email        string `json:"email"`
-		Role         string `json:"role"`
-		GroupID      uint   `json:"group_id"`
-		StorageLimit *int64 `json:"storage_limit"`
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required,min=6"`
+		Nickname string `json:"nickname"`
+		Email    string `json:"email"`
+		RoleID   uint   `json:"role_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if req.RoleID == 0 {
+		req.RoleID = 2 // Default regular user role
 	}
 
 	hash, err := auth.HashPassword(req.Password)
@@ -90,45 +264,29 @@ func (ctrl *AdminController) CreateUser(c *gin.Context) {
 		return
 	}
 
-	if req.Role == "" {
-		req.Role = "user"
-	}
-	if req.GroupID == 0 {
-		req.GroupID = 2 // Uploader group
+	var emailPtr *string
+	if strings.TrimSpace(req.Email) != "" {
+		em := strings.TrimSpace(req.Email)
+		emailPtr = &em
 	}
 
 	user := model.User{
 		Username:     req.Username,
 		Nickname:     req.Nickname,
-		Email:        req.Email,
+		Email:        emailPtr,
 		PasswordHash: hash,
-		Role:         req.Role,
-		GroupID:      req.GroupID,
+		RoleID:       req.RoleID,
 		Status:       "active",
-		StorageLimit: req.StorageLimit,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
 
 	if err := ctrl.db.Create(&user).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": common.SanitizeError(err)})
 		return
 	}
 
-	// Create default user storage policy (namespaced under username)
-	policy := model.StoragePolicy{
-		UserID:     user.ID,
-		BackendID:  1,
-		Name:       "Default Policy",
-		UseRoot:    false,
-		PathPrefix: "upload",
-		NamingRule: "{Y}/{m}/{d}/{random:16}.{ext}",
-		IsDefault:  true,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
-	}
-	ctrl.db.Create(&policy)
-
+	ctrl.db.Preload("Role").First(&user, user.ID)
 	c.JSON(http.StatusOK, user)
 }
 
@@ -141,11 +299,11 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 	}
 
 	var req struct {
-		Nickname     string `json:"nickname"`
-		Status       string `json:"status"`
-		GroupID      uint   `json:"group_id"`
-		StorageLimit *int64 `json:"storage_limit"`
-		Password     string `json:"password"`
+		Nickname string `json:"nickname"`
+		Email    string `json:"email"`
+		RoleID   uint   `json:"role_id"`
+		Status   string `json:"status"`
+		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -156,14 +314,15 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 	if req.Nickname != "" {
 		updates["nickname"] = req.Nickname
 	}
+	if req.Email != "" {
+		em := strings.TrimSpace(req.Email)
+		updates["email"] = &em
+	}
+	if req.RoleID > 0 {
+		updates["role_id"] = req.RoleID
+	}
 	if req.Status != "" {
 		updates["status"] = req.Status
-	}
-	if req.GroupID > 0 {
-		updates["group_id"] = req.GroupID
-	}
-	if req.StorageLimit != nil {
-		updates["storage_limit"] = req.StorageLimit
 	}
 	if req.Password != "" {
 		h, _ := auth.HashPassword(req.Password)
@@ -171,59 +330,436 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 		updates["token_version"] = gorm.Expr("token_version + 1")
 	}
 
-	ctrl.db.Model(&user).Updates(updates)
-	c.JSON(http.StatusOK, gin.H{"message": "User updated"})
+	if err := ctrl.db.Model(&user).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": common.SanitizeError(err)})
+		return
+	}
+	ctrl.db.Preload("Role").Where("id = ?", user.ID).First(&user)
+	c.JSON(http.StatusOK, gin.H{"message": "User updated", "user": user})
 }
 
-func (ctrl *AdminController) ListPolicies(c *gin.Context) {
-	var policies []model.StoragePolicy
-	ctrl.db.Find(&policies)
-	c.JSON(http.StatusOK, policies)
+func (ctrl *AdminController) DeleteUser(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	uVal, _ := c.Get(auth.CtxUserKey)
+	currentAdmin := uVal.(*model.User)
+	if id == currentAdmin.ID {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_DELETE_SELF")
+		return
+	}
+	if id == 1 {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_DELETE_ADMIN")
+		return
+	}
+
+	var targetUser model.User
+	if err := ctrl.db.Preload("Role").First(&targetUser, id).Error; err == nil {
+		if targetUser.RoleID == 1 || (targetUser.Role != nil && targetUser.Role.Name == "admin") {
+			common.RespondError(c, http.StatusBadRequest, "CANNOT_DELETE_ADMIN")
+			return
+		}
+	}
+
+	res := ctrl.db.Where("id = ?", id).Delete(&model.User{})
+	if res.RowsAffected == 0 {
+		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
 }
 
-func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
+func (ctrl *AdminController) BanUser(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
+		return
+	}
+	uVal, _ := c.Get(auth.CtxUserKey)
+	currentAdmin := uVal.(*model.User)
+	if id == currentAdmin.ID {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_BAN_SELF")
+		return
+	}
+	if id == 1 {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_BAN_ADMIN")
+		return
+	}
+	var user model.User
+	if err := ctrl.db.Preload("Role").First(&user, id).Error; err != nil {
+		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
+		return
+	}
+	if user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin") {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_BAN_ADMIN")
+		return
+	}
+	user.Status = "banned"
+	user.TokenVersion++
+	if err := ctrl.db.Save(&user).Error; err != nil {
+		slog.Error("Failed to ban user", "user_id", user.ID, "error", err)
+		common.RespondError(c, http.StatusInternalServerError, common.ErrInternalServerError)
+		return
+	}
+	slog.Warn("User banned by admin", "admin_id", currentAdmin.ID, "target_user_id", user.ID, "username", user.Username)
+	c.JSON(http.StatusOK, gin.H{"message": "User banned successfully", "status": user.Status})
+}
+
+func (ctrl *AdminController) UnfreezeUser(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
+		return
+	}
+	var user model.User
+	if err := ctrl.db.First(&user, id).Error; err != nil {
+		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
+		return
+	}
+	user.Status = "active"
+	user.FailedLoginAttempts = 0
+	user.LockoutUntil = nil
+	if err := ctrl.db.Save(&user).Error; err != nil {
+		slog.Error("Failed to unfreeze user", "user_id", user.ID, "error", err)
+		common.RespondError(c, http.StatusInternalServerError, common.ErrInternalServerError)
+		return
+	}
+	slog.Info("User unfreezed and activated by admin", "target_user_id", user.ID, "username", user.Username)
+	c.JSON(http.StatusOK, gin.H{"message": "User unlocked and activated successfully", "status": user.Status})
+}
+
+// -------------------------------------------------------------
+// Roles Management (Requirement 8)
+// -------------------------------------------------------------
+
+type RoleDTO struct {
+	ID          uint      `json:"id"`
+	Name        string    `json:"name"`
+	DisplayName string    `json:"display_name"`
+	QuotaBytes  int64     `json:"quota_bytes"`
+	IsSystem    bool      `json:"is_system"`
+	UserCount   int64     `json:"user_count"`
+	PolicyIDs   []uint    `json:"policy_ids"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (ctrl *AdminController) ListRoles(c *gin.Context) {
+	var roles []model.Role
+	ctrl.db.Preload("Policies").Order("id ASC").Find(&roles)
+
+	dtos := make([]RoleDTO, 0, len(roles))
+	for _, r := range roles {
+		var uCount int64
+		ctrl.db.Model(&model.User{}).Where("role_id = ?", r.ID).Count(&uCount)
+
+		policyIDs := make([]uint, 0, len(r.Policies))
+		for _, p := range r.Policies {
+			policyIDs = append(policyIDs, p.ID)
+		}
+
+		dtos = append(dtos, RoleDTO{
+			ID:          r.ID,
+			Name:        r.Name,
+			DisplayName: r.DisplayName,
+			QuotaBytes:  r.QuotaBytes,
+			IsSystem:    r.IsSystem,
+			UserCount:   uCount,
+			PolicyIDs:   policyIDs,
+			CreatedAt:   r.CreatedAt,
+			UpdatedAt:   r.UpdatedAt,
+		})
+	}
+
+	c.JSON(http.StatusOK, dtos)
+}
+
+func (ctrl *AdminController) CreateRole(c *gin.Context) {
 	var req struct {
-		UserID     uint   `json:"user_id"`
-		BackendID  uint   `json:"backend_id"`
-		Name       string `json:"name" binding:"required"`
-		UseRoot    bool   `json:"use_root"`
-		PathPrefix string `json:"path_prefix"`
-		NamingRule string `json:"naming_rule"`
-		IsDefault  bool   `json:"is_default"`
+		Name        string `json:"name" binding:"required"`
+		DisplayName string `json:"display_name" binding:"required"`
+		QuotaBytes  int64  `json:"quota_bytes"`
+		PolicyIDs   []uint `json:"policy_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if req.BackendID == 0 {
-		req.BackendID = 1
+	role := model.Role{
+		Name:        req.Name,
+		DisplayName: req.DisplayName,
+		QuotaBytes:  req.QuotaBytes,
+		IsSystem:    false,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := ctrl.db.Create(&role).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create role: " + err.Error()})
+		return
+	}
+
+	for _, pid := range req.PolicyIDs {
+		ctrl.db.Create(&model.RolePolicy{RoleID: role.ID, PolicyID: pid})
+	}
+
+	c.JSON(http.StatusOK, role)
+}
+
+func (ctrl *AdminController) UpdateRole(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var role model.Role
+	if err := ctrl.db.Where("id = ?", id).First(&role).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Role not found"})
+		return
+	}
+
+	var req struct {
+		DisplayName string `json:"display_name"`
+		QuotaBytes  *int64 `json:"quota_bytes"`
+		PolicyIDs   []uint `json:"policy_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]any{"updated_at": time.Now()}
+	if req.DisplayName != "" {
+		updates["display_name"] = req.DisplayName
+	}
+	if req.QuotaBytes != nil {
+		updates["quota_bytes"] = *req.QuotaBytes
+	}
+
+	ctrl.db.Model(&role).Updates(updates)
+
+	// Update role policy associations
+	if req.PolicyIDs != nil {
+		ctrl.db.Where("role_id = ?", role.ID).Delete(&model.RolePolicy{})
+		for _, pid := range req.PolicyIDs {
+			ctrl.db.Create(&model.RolePolicy{RoleID: role.ID, PolicyID: pid})
+		}
+	}
+
+	ctrl.db.Preload("Policies").First(&role, role.ID)
+	c.JSON(http.StatusOK, role)
+}
+
+func (ctrl *AdminController) DeleteRole(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var role model.Role
+	if err := ctrl.db.Where("id = ?", id).First(&role).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Role not found"})
+		return
+	}
+
+	if role.IsSystem || role.Name == "admin" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "System administrator role cannot be deleted"})
+		return
+	}
+
+	var userCount int64
+	ctrl.db.Model(&model.User{}).Where("role_id = ?", role.ID).Count(&userCount)
+	if userCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete role while users are still assigned to it"})
+		return
+	}
+
+	ctrl.db.Where("role_id = ?", role.ID).Delete(&model.RolePolicy{})
+	ctrl.db.Delete(&role)
+	c.JSON(http.StatusOK, gin.H{"message": "Role deleted successfully"})
+}
+
+// -------------------------------------------------------------
+// Storage Policies Management (Requirement 8)
+// -------------------------------------------------------------
+
+type PolicyDTO struct {
+	ID               uint      `json:"id"`
+	Name             string    `json:"name"`
+	Driver           string    `json:"driver"`
+	Config           string    `json:"config"`
+	MaxCapacityBytes int64     `json:"max_capacity_bytes"`
+	UsedBytes        int64     `json:"used_bytes"`
+	IsDefault        bool      `json:"is_default"`
+	PathPrefix       string    `json:"path_prefix"`
+	NamingRule       string    `json:"naming_rule"`
+	RoleIDs          []uint    `json:"role_ids"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+func (ctrl *AdminController) ListPolicies(c *gin.Context) {
+	var policies []model.StoragePolicy
+	ctrl.db.Preload("Roles").Order("id ASC").Find(&policies)
+
+	dtos := make([]PolicyDTO, 0, len(policies))
+	for _, p := range policies {
+		roleIDs := make([]uint, 0, len(p.Roles))
+		for _, r := range p.Roles {
+			roleIDs = append(roleIDs, r.ID)
+		}
+		dtos = append(dtos, PolicyDTO{
+			ID:               p.ID,
+			Name:             p.Name,
+			Driver:           p.Driver,
+			Config:           p.Config,
+			MaxCapacityBytes: p.MaxCapacityBytes,
+			UsedBytes:        p.UsedBytes,
+			IsDefault:        p.IsDefault,
+			PathPrefix:       p.PathPrefix,
+			NamingRule:       p.NamingRule,
+			RoleIDs:          roleIDs,
+			CreatedAt:        p.CreatedAt,
+			UpdatedAt:        p.UpdatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, dtos)
+}
+
+func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
+	var req struct {
+		Name             string  `json:"name" binding:"required"`
+		Driver           string  `json:"driver"`
+		MaxCapacityBytes int64   `json:"max_capacity_bytes"`
+		IsDefault        bool    `json:"is_default"`
+		PathPrefix       *string `json:"path_prefix"`
+		NamingRule       string  `json:"naming_rule"`
+		RoleIDs          []uint  `json:"role_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Currently only "local" driver is supported
+	driver := "local"
+	if req.NamingRule == "" {
+		req.NamingRule = "{Y}/{m}/{d}/{random:16}.{ext}"
+	}
+	pathPrefix := "uploads"
+	if req.PathPrefix != nil {
+		pathPrefix = strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
+	}
+
+	if req.IsDefault {
+		ctrl.db.Model(&model.StoragePolicy{}).Where("1 = 1").Update("is_default", false)
 	}
 
 	policy := model.StoragePolicy{
-		UserID:     req.UserID,
-		BackendID:  req.BackendID,
-		Name:       req.Name,
-		UseRoot:    req.UseRoot,
-		PathPrefix: req.PathPrefix,
-		NamingRule: req.NamingRule,
-		IsDefault:  req.IsDefault,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		Name:             req.Name,
+		Driver:           driver,
+		Config:           `{"base_path":"storage"}`,
+		MaxCapacityBytes: req.MaxCapacityBytes,
+		IsDefault:        req.IsDefault,
+		PathPrefix:       pathPrefix,
+		NamingRule:       req.NamingRule,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
 	}
 
 	if err := ctrl.db.Create(&policy).Error; err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	for _, rid := range req.RoleIDs {
+		ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
+	}
+
+	c.JSON(http.StatusOK, policy)
+}
+
+func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var policy model.StoragePolicy
+	if err := ctrl.db.Where("id = ?", id).First(&policy).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Policy not found"})
+		return
+	}
+
+	var req struct {
+		Name             string  `json:"name"`
+		MaxCapacityBytes *int64  `json:"max_capacity_bytes"`
+		IsDefault        bool    `json:"is_default"`
+		PathPrefix       *string `json:"path_prefix"`
+		NamingRule       string  `json:"naming_rule"`
+		RoleIDs          []uint  `json:"role_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.IsDefault {
+		ctrl.db.Model(&model.StoragePolicy{}).Where("id != ?", policy.ID).Update("is_default", false)
+	}
+
+	updates := map[string]any{
+		"updated_at": time.Now(),
+		"is_default": req.IsDefault,
+	}
+	if req.Name != "" {
+		updates["name"] = req.Name
+	}
+	if req.MaxCapacityBytes != nil {
+		updates["max_capacity_bytes"] = *req.MaxCapacityBytes
+	}
+	if req.PathPrefix != nil {
+		updates["path_prefix"] = strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
+	}
+	if req.NamingRule != "" {
+		updates["naming_rule"] = req.NamingRule
+	}
+
+	ctrl.db.Model(&policy).Updates(updates)
+
+	// Update role policy associations
+	if req.RoleIDs != nil {
+		ctrl.db.Where("policy_id = ?", policy.ID).Delete(&model.RolePolicy{})
+		for _, rid := range req.RoleIDs {
+			ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
+		}
+	}
+
+	ctrl.db.Preload("Roles").First(&policy, policy.ID)
 	c.JSON(http.StatusOK, policy)
 }
 
 func (ctrl *AdminController) DeletePolicy(c *gin.Context) {
-	id := c.Param("id")
-	ctrl.db.Where("id = ?", id).Delete(&model.StoragePolicy{})
-	c.JSON(http.StatusOK, gin.H{"message": "Policy deleted"})
+	id := ParseUintSafe(c.Param("id"), 0)
+	var policy model.StoragePolicy
+	if err := ctrl.db.Where("id = ?", id).First(&policy).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Policy not found"})
+		return
+	}
+
+	if policy.IsDefault {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Default storage policy cannot be deleted"})
+		return
+	}
+
+	var fileCount int64
+	ctrl.db.Model(&model.FileRecord{}).Where("policy_id = ?", policy.ID).Count(&fileCount)
+	if fileCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete storage policy that currently stores files"})
+		return
+	}
+
+	ctrl.db.Where("policy_id = ?", policy.ID).Delete(&model.RolePolicy{})
+	ctrl.db.Delete(&policy)
+	c.JSON(http.StatusOK, gin.H{"message": "Policy deleted successfully"})
 }
+
+// -------------------------------------------------------------
+// Image Presets
+// -------------------------------------------------------------
 
 func (ctrl *AdminController) ListPresets(c *gin.Context) {
 	var presets []model.ImagePreset
@@ -237,9 +773,10 @@ func (ctrl *AdminController) CreatePreset(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	preset.CreatedAt = time.Now()
-	preset.UpdatedAt = time.Now()
-	ctrl.db.Create(&preset)
+	if err := ctrl.db.Create(&preset).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, preset)
 }
 
@@ -247,4 +784,28 @@ func (ctrl *AdminController) DeletePreset(c *gin.Context) {
 	id := c.Param("id")
 	ctrl.db.Where("id = ?", id).Delete(&model.ImagePreset{})
 	c.JSON(http.StatusOK, gin.H{"message": "Preset deleted"})
+}
+
+// -------------------------------------------------------------
+// Database Status & Migration
+// -------------------------------------------------------------
+
+func (ctrl *AdminController) GetDatabaseStatus(c *gin.Context) {
+	var userCount, fileCount, policyCount, roleCount int64
+	ctrl.db.Model(&model.User{}).Count(&userCount)
+	ctrl.db.Model(&model.FileRecord{}).Count(&fileCount)
+	ctrl.db.Model(&model.StoragePolicy{}).Count(&policyCount)
+	ctrl.db.Model(&model.Role{}).Count(&roleCount)
+
+	currentDriver := ctrl.db.Dialector.Name()
+
+	c.JSON(http.StatusOK, gin.H{
+		"driver": currentDriver,
+		"counts": gin.H{
+			"users":            userCount,
+			"files":            fileCount,
+			"roles":            roleCount,
+			"storage_policies": policyCount,
+		},
+	})
 }

@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -10,9 +9,9 @@ import (
 )
 
 const (
-	CtxUserKey   = "current_user"
-	CtxUserIDKey = "current_user_id"
-	CtxRoleKey   = "current_role"
+	CtxUserKey        = "current_user"
+	CtxUserIDKey      = "current_user_id"
+	CtxRoleKey        = "current_role"
 	SessionCookieName = "uimg_session"
 )
 
@@ -46,9 +45,15 @@ func AuthMiddleware(sm *SessionManager) gin.HandlerFunc {
 		}
 
 		if user != nil {
+			roleName := "user"
+			if user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin") {
+				roleName = "admin"
+			} else if user.Role != nil && user.Role.Name != "" {
+				roleName = user.Role.Name
+			}
 			c.Set(CtxUserKey, user)
 			c.Set(CtxUserIDKey, user.ID)
-			c.Set(CtxRoleKey, user.Role)
+			c.Set(CtxRoleKey, roleName)
 		}
 
 		c.Next()
@@ -95,21 +100,15 @@ func RequirePermission(permission string) gin.HandlerFunc {
 		}
 
 		user := uVal.(*model.User)
-		if user.Role == "admin" {
+		if user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin") {
 			c.Next()
 			return
 		}
 
-		if user.Group != nil && user.Group.Permissions != "" {
-			var perms []string
-			if err := json.Unmarshal([]byte(user.Group.Permissions), &perms); err == nil {
-				for _, p := range perms {
-					if p == "*" || p == permission {
-						c.Next()
-						return
-					}
-				}
-			}
+		// Standard user permissions for active users
+		if user.Status == "active" {
+			c.Next()
+			return
 		}
 
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{

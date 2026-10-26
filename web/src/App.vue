@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="darkTheme">
+  <n-config-provider :theme="darkTheme" :locale="naiveLocale" :date-locale="naiveDateLocale">
     <n-loading-bar-provider>
       <n-dialog-provider>
         <n-notification-provider>
@@ -13,7 +13,23 @@
 </template>
 
 <script setup lang="ts">
-import { darkTheme } from 'naive-ui'
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { darkTheme, zhCN, dateZhCN, enUS, dateEnUS, jaJP, dateJaJP } from 'naive-ui'
+
+const { locale } = useI18n()
+
+const naiveLocale = computed(() => {
+  if (locale.value === 'zh-CN') return zhCN
+  if (locale.value === 'ja-JP') return jaJP
+  return enUS
+})
+
+const naiveDateLocale = computed(() => {
+  if (locale.value === 'zh-CN') return dateZhCN
+  if (locale.value === 'ja-JP') return dateJaJP
+  return dateEnUS
+})
 </script>
 
 <style>

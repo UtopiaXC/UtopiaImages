@@ -68,7 +68,7 @@ func (sm *SessionManager) ValidateSession(rawToken string) (*model.User, *model.
 	tokenHash := HashToken(rawToken)
 
 	var session model.Session
-	err := sm.db.Preload("User").Preload("User.Group").Where("id = ? AND expires_at > ?", tokenHash, time.Now()).First(&session).Error
+	err := sm.db.Preload("User").Preload("User.Role").Where("id = ? AND expires_at > ?", tokenHash, time.Now()).First(&session).Error
 	if err != nil {
 		return nil, nil, errors.New("invalid or expired session")
 	}
@@ -111,7 +111,7 @@ func (sm *SessionManager) ValidateApiToken(rawToken string) (*model.User, *model
 	}
 
 	var user model.User
-	if err := sm.db.Preload("Group").Where("id = ? AND status = 'active'", token.UserID).First(&user).Error; err != nil {
+	if err := sm.db.Preload("Role").Where("id = ? AND status = 'active'", token.UserID).First(&user).Error; err != nil {
 		return nil, nil, errors.New("user not found or inactive")
 	}
 

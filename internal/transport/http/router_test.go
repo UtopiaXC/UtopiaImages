@@ -34,7 +34,7 @@ func TestAssetsRoute(t *testing.T) {
 		},
 	}
 
-	server, err := NewServer(cfg)
+	server, err := NewServer(cfg, "")
 	if err != nil {
 		t.Fatalf("failed to init server: %v", err)
 	}

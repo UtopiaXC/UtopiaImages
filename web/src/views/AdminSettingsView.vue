@@ -7,14 +7,20 @@
           {{ $t('adminSettings.subtitle') }}
         </p>
       </div>
-      <n-button type="primary" :loading="saving" @click="saveSettings">
-        {{ $t('adminSettings.saveAll') }}
-      </n-button>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span v-if="saving" style="font-size: 13px; color: #63e2b7; display: flex; align-items: center; gap: 6px;">
+          <n-spin size="small" />
+          {{ $t('adminSettings.autoSaving') }}
+        </span>
+        <span v-else style="font-size: 12px; color: #666;">
+          {{ $t('adminSettings.autoSaved') }}
+        </span>
+      </div>
     </div>
 
     <!-- Section 1: Site Info -->
     <n-card :title="$t('adminSettings.siteInfo')" style="border-radius: 8px; margin-bottom: 16px;">
-      <n-form label-placement="left" label-width="140">
+      <n-form label-placement="left" label-width="150">
         <n-form-item :label="$t('adminSettings.siteName')">
           <n-input v-model:value="settings.site_name" placeholder="Utopia Images" style="max-width: 400px;" />
         </n-form-item>
@@ -22,28 +28,104 @@
           <n-input v-model:value="settings.site_description" style="max-width: 400px;" />
         </n-form-item>
         <n-form-item :label="$t('adminSettings.baseUrl')">
-          <n-input v-model:value="settings.base_url" placeholder="https://imgs.example.com" style="max-width: 400px;" />
+          <n-input v-model:value="settings.base_url" placeholder="http://localhost:8080" style="max-width: 400px;" />
+        </n-form-item>
+        <n-form-item :label="$t('adminSettings.faviconTitle')">
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <div
+              style="width: 48px; height: 48px; border-radius: 50%; background: #ffffff; border: 1px solid rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"
+            >
+              <img
+                :src="faviconUrl"
+                style="width: 38px; height: 38px; object-fit: contain;"
+              />
+            </div>
+            <div style="display: flex; gap: 10px; align-items: center;">
+              <n-upload
+                :custom-request="handleFaviconUpload"
+                :show-file-list="false"
+                accept=".ico,.png,.svg,.jpg,.jpeg,.webp"
+              >
+                <n-button size="small" type="primary" secondary :loading="uploadingFavicon">
+                  {{ $t('adminSettings.uploadFavicon') }}
+                </n-button>
+              </n-upload>
+              <n-button size="small" quaternary @click="handleRestoreDefaultFavicon" :loading="restoringFavicon">
+                {{ $t('adminSettings.restoreDefaultFavicon') }}
+              </n-button>
+            </div>
+          </div>
         </n-form-item>
       </n-form>
     </n-card>
 
-    <!-- Section 2: Technical Limits -->
-    <n-card :title="$t('adminSettings.limits')" style="border-radius: 8px; margin-bottom: 16px;">
-      <n-form label-placement="left" label-width="140">
-        <n-form-item :label="$t('adminSettings.maxFileSize')">
-          <n-input-number v-model:value="maxFileSize" :min="1" :max="1024" style="max-width: 200px;" />
-          <span style="margin-left: 10px; color: #888; font-size: 12px;">{{ $t('adminSettings.maxFileSizeTip') }}</span>
+    <!-- Section 2: Technical Limits & Formats -->
+    <n-card :title="$t('adminSettings.limitsAndConversion')" style="border-radius: 8px; margin-bottom: 16px;">
+      <n-form label-placement="left" label-width="150">
+        <n-form-item :label="$t('adminSettings.enableFormatConversion')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-switch v-model:value="enableFormatConversion" />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.enableFormatConversionTip') }}
+            </n-tooltip>
+          </div>
         </n-form-item>
+
+        <n-form-item v-if="enableFormatConversion" :label="$t('adminSettings.defaultFormat')">
+          <n-select
+            v-model:value="settings.default_convert_format"
+            :options="formatOptions"
+            style="max-width: 200px;"
+          />
+        </n-form-item>
+
+        <n-form-item v-if="enableFormatConversion" :label="$t('adminSettings.convertQuality')">
+          <div style="display: flex; align-items: center; gap: 16px; width: 100%; max-width: 320px;">
+            <n-slider v-model:value="convertQuality" :min="1" :max="100" style="flex: 1;" />
+            <span style="width: 45px; text-align: right;">{{ convertQuality }}%</span>
+          </div>
+        </n-form-item>
+
+        <n-form-item :label="$t('adminSettings.maxFileSize')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-input-number v-model:value="maxFileSize" :min="1" :max="1024" style="max-width: 200px;" />
+            <span style="color: #888; font-size: 13px;">MB</span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.maxFileSizeTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
         <n-form-item :label="$t('adminSettings.maxProcessSize')">
-          <n-input-number v-model:value="maxProcessSize" :min="1" :max="100" style="max-width: 200px;" />
-          <span style="margin-left: 10px; color: #888; font-size: 12px;">{{ $t('adminSettings.maxProcessSizeTip') }}</span>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-input-number v-model:value="maxProcessSize" :min="1" :max="100" style="max-width: 200px;" />
+            <span style="color: #888; font-size: 13px;">MB</span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.maxProcessSizeTip') }}
+            </n-tooltip>
+          </div>
         </n-form-item>
       </n-form>
     </n-card>
 
     <!-- Section 3: Security -->
     <n-card :title="$t('adminSettings.security')" style="border-radius: 8px; margin-bottom: 16px;">
-      <n-form label-placement="left" label-width="140">
+      <n-form label-placement="left" label-width="150">
         <n-form-item :label="$t('adminSettings.captchaProvider')">
           <n-select
             v-model:value="settings.captcha_provider"
@@ -52,17 +134,206 @@
           />
         </n-form-item>
         <n-form-item :label="$t('adminSettings.sessionTimeout')">
-          <n-input-number v-model:value="sessionDays" :min="1" :max="90" style="max-width: 200px;" />
-          <span style="margin-left: 10px; color: #888; font-size: 12px;">{{ $t('adminSettings.daysUnit') }}</span>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-input-number v-model:value="sessionDays" :min="1" :max="90" style="max-width: 200px;" />
+            <span style="color: #888; font-size: 13px;">{{ $t('adminSettings.daysUnit') }}</span>
+          </div>
         </n-form-item>
         <n-form-item :label="$t('adminSettings.force2fa')">
-          <n-switch v-model:value="require2FA" />
-          <span style="margin-left: 10px; color: #888; font-size: 12px;">{{ $t('adminSettings.force2faTip') }}</span>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-switch v-model:value="require2FA" />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.force2faTip') }}
+            </n-tooltip>
+          </div>
         </n-form-item>
       </n-form>
     </n-card>
 
-    <!-- Section 4: Cache Management -->
+    <!-- Section 3.5: Hotlink Protection -->
+    <n-card :title="$t('adminSettings.hotlinkTitle')" style="border-radius: 8px; margin-bottom: 16px;">
+      <n-form label-placement="left" label-width="150">
+        <n-form-item :label="$t('adminSettings.enableHotlink')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-switch v-model:value="enableHotlink" />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.enableHotlinkTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
+        <n-form-item v-if="enableHotlink" :label="$t('adminSettings.allowEmptyReferer')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-switch v-model:value="allowEmptyReferer" />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.allowEmptyRefererTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
+        <n-form-item v-if="enableHotlink" :label="$t('adminSettings.allowedDomains')">
+          <n-input
+            v-model:value="settings.hotlink_allowed_domains"
+            type="textarea"
+            :rows="3"
+            :placeholder="$t('adminSettings.allowedDomainsPlaceholder')"
+            style="max-width: 500px;"
+          />
+        </n-form-item>
+
+        <n-form-item v-if="enableHotlink" :label="$t('adminSettings.hotlinkAction')">
+          <n-select
+            v-model:value="settings.hotlink_action"
+            :options="hotlinkActionOptions"
+            style="max-width: 300px;"
+          />
+        </n-form-item>
+      </n-form>
+    </n-card>
+
+    <!-- Section 3.6: User Registration & Permissions -->
+    <n-card :title="$t('adminSettings.registrationTitle')" style="border-radius: 8px; margin-bottom: 16px;">
+      <n-form label-placement="left" label-width="150">
+        <n-form-item :label="$t('adminSettings.allowRegistration')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-switch v-model:value="allowRegistration" />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.allowRegistrationTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
+        <n-form-item v-if="allowRegistration" :label="$t('adminSettings.defaultRegisterRole')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-select
+              v-model:value="defaultRegisterRoleId"
+              :options="roleOptions"
+              style="width: 280px;"
+            />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.defaultRegisterRoleTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+      </n-form>
+    </n-card>
+
+
+    <!-- Section 5: Logging Settings -->
+    <n-card :title="$t('adminSettings.loggingTitle')" style="border-radius: 8px; margin-bottom: 16px;">
+      <p style="font-size: 13px; color: #aaa; margin-top: 0; margin-bottom: 16px;">
+        {{ $t('adminSettings.loggingDesc') }}
+      </p>
+      <n-form label-placement="left" label-width="150">
+        <n-form-item :label="$t('adminSettings.logLevel')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-select
+              v-model:value="settings.log_level"
+              :options="logLevelOptions"
+              style="width: 280px;"
+            />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.logLevelTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
+        <n-form-item :label="$t('adminSettings.logPermanentLevel')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-select
+              v-model:value="settings.log_permanent_level"
+              :options="permanentLogLevelOptions"
+              style="width: 280px;"
+            />
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.logPermanentLevelTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
+        <n-form-item :label="$t('adminSettings.logMaxSize')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-input-number v-model:value="logMaxSize" :min="1" :max="500" style="max-width: 200px;" />
+            <span style="color: #888; font-size: 13px;">MB</span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.logMaxSizeTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
+        <n-form-item :label="$t('adminSettings.logMaxBackups')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-input-number v-model:value="logMaxBackups" :min="1" :max="100" style="max-width: 200px;" />
+            <span style="color: #888; font-size: 13px;">{{ $t('adminSettings.backupUnits') }}</span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.logMaxBackupsTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+
+        <n-form-item :label="$t('adminSettings.logMaxAge')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <n-input-number v-model:value="logMaxAge" :min="1" :max="365" style="max-width: 200px;" />
+            <span style="color: #888; font-size: 13px;">{{ $t('adminSettings.daysUnit') }}</span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.logMaxAgeTip') }}
+            </n-tooltip>
+          </div>
+        </n-form-item>
+      </n-form>
+    </n-card>
+
+    <!-- Section 6: Cache Management -->
     <n-card :title="$t('adminSettings.cacheTitle')" style="border-radius: 8px;">
       <p style="font-size: 13px; color: #aaa; margin-top: 0;">
         {{ $t('adminSettings.cacheDesc') }}
@@ -82,10 +353,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useMessage } from 'naive-ui'
+import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
-import { api } from '../api/client'
+import { api, getApiErrorMessage } from '../api/client'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -100,7 +372,60 @@ const settings = ref<any>({
   max_process_image_size: '5',
   captcha_provider: 'altcha',
   session_timeout_days: '7',
-  require_2fa: 'false'
+  require_2fa: 'false',
+  enable_format_conversion: 'true',
+  default_convert_format: 'webp',
+  convert_quality: '85',
+  log_level: 'info',
+  log_permanent_level: 'ERROR',
+  log_max_size_mb: '20',
+  log_max_backups: '10',
+  log_max_age_days: '30',
+  allow_registration: 'false',
+  default_register_role_id: '2'
+})
+
+const faviconTimestamp = ref(Date.now())
+const faviconUrl = computed(() => `/favicon.ico?v=${faviconTimestamp.value}`)
+const uploadingFavicon = ref(false)
+const restoringFavicon = ref(false)
+
+const handleFaviconUpload = async ({ file, onFinish, onError }: any) => {
+  uploadingFavicon.value = true
+  const formData = new FormData()
+  formData.append('file', file.file as File)
+  try {
+    await api.post('/admin/favicon', formData)
+    faviconTimestamp.value = Date.now()
+    message.success(t('adminSettings.faviconUpdated'))
+    onFinish()
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.save'))
+    onError()
+  } finally {
+    uploadingFavicon.value = false
+  }
+}
+
+const handleRestoreDefaultFavicon = async () => {
+  restoringFavicon.value = true
+  try {
+    await api.delete('/admin/favicon')
+    faviconTimestamp.value = Date.now()
+    message.success(t('adminSettings.faviconRestored'))
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.save'))
+  } finally {
+    restoringFavicon.value = false
+  }
+}
+
+const rolesList = ref<any[]>([])
+const roleOptions = computed(() => {
+  return rolesList.value.map(r => ({
+    label: `${r.display_name} (${r.name})`,
+    value: r.id
+  }))
 })
 
 const maxFileSize = computed({
@@ -118,10 +443,34 @@ const sessionDays = computed({
   set: (v) => { settings.value.session_timeout_days = String(v) }
 })
 
+const convertQuality = computed({
+  get: () => parseInt(settings.value.convert_quality) || 85,
+  set: (v) => { settings.value.convert_quality = String(v) }
+})
+
 const require2FA = computed({
   get: () => settings.value.require_2fa === 'true',
   set: (v) => { settings.value.require_2fa = v ? 'true' : 'false' }
 })
+
+const enableFormatConversion = computed({
+  get: () => settings.value.enable_format_conversion !== 'false' && settings.value.enable_format_conversion !== '0',
+  set: (v) => { settings.value.enable_format_conversion = v ? 'true' : 'false' }
+})
+
+const enableHotlink = computed({
+  get: () => settings.value.enable_hotlink === 'true',
+  set: (v) => { settings.value.enable_hotlink = v ? 'true' : 'false' }
+})
+
+const allowEmptyReferer = computed({
+  get: () => settings.value.hotlink_allow_empty !== 'false',
+  set: (v) => { settings.value.hotlink_allow_empty = v ? 'true' : 'false' }
+})
+
+const hotlinkActionOptions = computed(() => [
+  { label: t('adminSettings.actionForbidden'), value: 'forbidden' }
+])
 
 const captchaOptions = computed(() => [
   { label: t('adminSettings.captchaAltcha'), value: 'altcha' },
@@ -129,32 +478,104 @@ const captchaOptions = computed(() => [
   { label: t('adminSettings.captchaNone'), value: 'none' }
 ])
 
+const formatOptions = computed(() => [
+  { label: 'WebP', value: 'webp' },
+  { label: 'PNG', value: 'png' },
+  { label: 'JPEG', value: 'jpeg' }
+])
+
+const logMaxSize = computed({
+  get: () => parseInt(settings.value.log_max_size_mb) || 20,
+  set: (v) => { settings.value.log_max_size_mb = String(v) }
+})
+
+const logMaxBackups = computed({
+  get: () => parseInt(settings.value.log_max_backups) || 10,
+  set: (v) => { settings.value.log_max_backups = String(v) }
+})
+
+const logMaxAge = computed({
+  get: () => parseInt(settings.value.log_max_age_days) || 30,
+  set: (v) => { settings.value.log_max_age_days = String(v) }
+})
+
+const allowRegistration = computed({
+  get: () => settings.value.allow_registration === 'true',
+  set: (v) => { settings.value.allow_registration = v ? 'true' : 'false' }
+})
+
+const defaultRegisterRoleId = computed({
+  get: () => parseInt(settings.value.default_register_role_id) || 2,
+  set: (v) => { settings.value.default_register_role_id = String(v) }
+})
+
+const logLevelOptions = computed(() => [
+  { label: 'DEBUG (调试详细)', value: 'debug' },
+  { label: 'INFO (标准信息)', value: 'info' },
+  { label: 'WARN (异常告警)', value: 'warn' },
+  { label: 'ERROR (故障错误)', value: 'error' }
+])
+
+const permanentLogLevelOptions = computed(() => [
+  { label: 'ERROR (仅持久化错误日志)', value: 'ERROR' },
+  { label: 'WARN (持久化告警与错误)', value: 'WARN' },
+  { label: t('adminSettings.logLevelNone'), value: 'none' }
+])
+
+const loadRoles = async () => {
+  try {
+    const res = await api.get('/admin/roles')
+    rolesList.value = res.data || []
+  } catch {}
+}
+
 const loadSettings = async () => {
   try {
     const res = await api.get('/admin/settings')
     settings.value = { ...settings.value, ...res.data }
+    loadRoles()
+    await nextTick()
+    isLoaded = true
   } catch (err: any) {
-    message.error(t('common.save'))
+    message.error(getApiErrorMessage(err))
   }
 }
 
-const saveSettings = async () => {
-  saving.value = true
-  try {
-    await api.post('/admin/settings', settings.value)
-    message.success(t('adminSettings.saveSuccess'))
-  } catch (err: any) {
-    message.error(err.response?.data?.error || t('common.save'))
-  } finally {
-    saving.value = false
-  }
+let autoSaveTimer: any = null
+let isLoaded = false
+
+const autoSave = (immediate = false) => {
+  if (!isLoaded) return
+  if (autoSaveTimer) clearTimeout(autoSaveTimer)
+  const delay = immediate ? 0 : 400
+  autoSaveTimer = setTimeout(async () => {
+    saving.value = true
+    try {
+      await api.post('/admin/settings', settings.value)
+    } catch (err: any) {
+      message.error(getApiErrorMessage(err))
+      if (err.response?.data?.code === 'REGISTRATION_SMTP_REQUIRED') {
+        settings.value.allow_registration = 'false'
+      }
+    } finally {
+      saving.value = false
+    }
+  }, delay)
 }
+
+watch(
+  settings,
+  () => {
+    autoSave(false)
+  },
+  { deep: true }
+)
 
 const clearDerivedCache = async () => {
   clearingCache.value = true
   try {
     const res = await api.post('/admin/cache/clear')
-    message.success(`${t('adminSettings.cacheCleared')}：${res.data.cleared}`)
+    message.success(`${t('adminSettings.cacheCleared')}: ${res.data.cleared}`)
   } catch {
     message.error(t('common.save'))
   } finally {
