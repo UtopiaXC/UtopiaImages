@@ -139,6 +139,12 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 	if req.WatermarkTemplateID != "" {
 		ctrl.setSettingVal("user_wm_tmpl_"+strconvUint(userID), req.WatermarkTemplateID)
 	}
+	if req.WatermarkMode != "" || req.WatermarkTemplateID != "" {
+		if ctrl.derivedCache != nil {
+			ctrl.derivedCache.Clear()
+		}
+		ctrl.db.Model(&model.FileRecord{}).Where("user_id = ?", userID).Update("sign_version", gorm.Expr("sign_version + 1"))
+	}
 	if req.DefaultLinkFormat != "" {
 		ctrl.setSettingVal("user_link_fmt_"+strconvUint(userID), req.DefaultLinkFormat)
 	}
@@ -362,7 +368,11 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 }
 
 func (ctrl *SettingsController) ClearCache(c *gin.Context) {
-	count := ctrl.derivedCache.Clear()
+	count := 0
+	if ctrl.derivedCache != nil {
+		count = ctrl.derivedCache.Clear()
+	}
+	ctrl.db.Model(&model.FileRecord{}).Where("1 = 1").Update("sign_version", gorm.Expr("sign_version + 1"))
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Derived image cache cleared",
 		"cleared": count,

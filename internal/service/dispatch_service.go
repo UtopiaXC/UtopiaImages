@@ -172,7 +172,7 @@ func (s *DispatchService) isFormatConversionEnabled() bool {
 
 func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord) {
 	c.Header("Content-Type", file.MimeType)
-	c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
+	c.Header("Cache-Control", "public, no-cache, must-revalidate")
 	etag := fmt.Sprintf("\"%s-%d\"", file.Sha256[:16], file.SignVersion)
 	c.Header("ETag", etag)
 	c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
@@ -305,7 +305,14 @@ func (s *DispatchService) serveProcessed(
 
 	// If no watermark needed: serve base image directly
 	if !watermark {
-		c.Header("Cache-Control", "public, max-age=604800")
+		etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-nowm\"", file.Sha256[:16], file.SignVersion, targetFormat, targetW, targetH, targetQuality)
+		c.Header("Cache-Control", "public, no-cache, must-revalidate")
+		c.Header("ETag", etag)
+		c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
+		if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
+			c.Status(http.StatusNotModified)
+			return
+		}
 		c.Header("Content-Type", baseMime)
 		c.Data(http.StatusOK, baseMime, baseBytes)
 		return
@@ -341,6 +348,13 @@ func (s *DispatchService) serveProcessed(
 				tmplID = &uID
 			}
 		}
+		// Fallback to first available template for this user or global template
+		if tmplID == nil {
+			var fallbackTmpl model.WatermarkTemplate
+			if err := s.db.Where("owner_id = ? OR owner_id IS NULL", file.UserID).Order("id ASC").First(&fallbackTmpl).Error; err == nil {
+				tmplID = &fallbackTmpl.ID
+			}
+		}
 	}
 
 	if tmplID != nil {
@@ -349,6 +363,11 @@ func (s *DispatchService) serveProcessed(
 			_ = json.Unmarshal([]byte(tmpl.Layers), wmConfig)
 			wmConfig.Enabled = true
 		}
+	}
+
+	// Force angle to 0 for position layout (must be straight, not slanted)
+	if wmConfig.Layout == "position" {
+		wmConfig.Angle = 0
 	}
 
 	// Check if watermark text contains dynamic elements: {...}
@@ -380,8 +399,17 @@ func (s *DispatchService) serveProcessed(
 	wmCacheKey := s.cache.GenerateKey(file.PublicPath, wmParam, strconv.FormatInt(file.SignVersion, 10))
 	wmCacheExt := "." + targetFormat
 
+	etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-wm\"", file.Sha256[:16], file.SignVersion, targetFormat, targetW, targetH, targetQuality)
+	c.Header("Cache-Control", "public, no-cache, must-revalidate")
+	c.Header("ETag", etag)
+	c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
+
+	if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
 	if cachedPath, hit := s.cache.Get(wmCacheKey, wmCacheExt); hit {
-		c.Header("Cache-Control", "public, max-age=604800")
 		http.ServeFile(c.Writer, c.Request, cachedPath)
 		return
 	}
@@ -399,7 +427,6 @@ func (s *DispatchService) serveProcessed(
 	}
 
 	s.cache.Put(wmCacheKey, wmCacheExt, watermarkedBytes)
-	c.Header("Cache-Control", "public, max-age=604800")
 	c.Header("Content-Type", outMime)
 	c.Data(http.StatusOK, outMime, watermarkedBytes)
 }

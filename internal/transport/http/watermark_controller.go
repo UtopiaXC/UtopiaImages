@@ -68,6 +68,19 @@ func (ctrl *WatermarkController) CreateWatermark(c *gin.Context) {
 		return
 	}
 
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name cannot be empty"})
+		return
+	}
+
+	var count int64
+	ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ?", req.Name).Count(&count)
+	if count > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name already exists"})
+		return
+	}
+
 	tmpl := model.WatermarkTemplate{
 		Name:      req.Name,
 		Layers:    req.Layers,
@@ -86,6 +99,12 @@ func (ctrl *WatermarkController) CreateWatermark(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Invalidate derived caches and bump file versions so new watermark applies immediately
+	if ctrl.derivedCache != nil {
+		ctrl.derivedCache.Clear()
+	}
+	ctrl.db.Model(&model.FileRecord{}).Where("1 = 1").Update("sign_version", gorm.Expr("sign_version + 1"))
 
 	c.JSON(http.StatusOK, tmpl)
 }
@@ -132,6 +151,13 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 		"version":    gorm.Expr("version + 1"),
 	}
 	if req.Name != "" {
+		req.Name = strings.TrimSpace(req.Name)
+		var count int64
+		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ?", req.Name, id).Count(&count)
+		if count > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name already exists"})
+			return
+		}
 		updates["name"] = req.Name
 	}
 	if req.Layers != "" {
@@ -145,7 +171,7 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 	if ctrl.derivedCache != nil {
 		ctrl.derivedCache.Clear()
 	}
-	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ? OR watermark_mode = 'on' OR watermark_mode = 'inherit'", tmpl.ID).Update("sign_version", gorm.Expr("sign_version + 1"))
+	ctrl.db.Model(&model.FileRecord{}).Where("1 = 1").Update("sign_version", gorm.Expr("sign_version + 1"))
 
 	c.JSON(http.StatusOK, tmpl)
 }
@@ -171,8 +197,8 @@ func (ctrl *WatermarkController) DeleteWatermark(c *gin.Context) {
 	}
 	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ?", id).Updates(map[string]any{
 		"watermark_template_id": nil,
-		"sign_version":          gorm.Expr("sign_version + 1"),
 	})
+	ctrl.db.Model(&model.FileRecord{}).Where("1 = 1").Update("sign_version", gorm.Expr("sign_version + 1"))
 
 	c.JSON(http.StatusOK, gin.H{"message": "Watermark template deleted"})
 }
@@ -249,6 +275,10 @@ func (ctrl *WatermarkController) PreviewWatermark(c *gin.Context) {
 	draw.Draw(img, image.Rect(40, 40, 480, 280), &image.Uniform{C: color.RGBA{R: 35, G: 42, B: 60, A: 255}}, image.Point{}, draw.Src)
 
 	// Process watermark directly on sample
+	angle := req.Angle
+	if req.Layout == "position" {
+		angle = 0
+	}
 	outBytes, _, err := ctrl.processor.Process(bytes.NewReader(imgToJpegBytes(img)), imaging.ProcessOptions{
 		Quality: 90,
 		Watermark: &imaging.WatermarkConfig{
@@ -258,7 +288,7 @@ func (ctrl *WatermarkController) PreviewWatermark(c *gin.Context) {
 			Layout:          req.Layout,
 			Position:        req.Position,
 			Opacity:         req.Opacity,
-			Angle:           req.Angle,
+			Angle:           angle,
 			SpacingX:        req.SpacingX,
 			SpacingY:        req.SpacingY,
 			FontSize:        req.FontSize,

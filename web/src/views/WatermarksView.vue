@@ -282,7 +282,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
@@ -429,6 +429,17 @@ const debouncedPreview = () => {
   timer = setTimeout(fetchPreview, 300)
 }
 
+watch(() => editForm.value.layout, (newLayout) => {
+  if (!isEditing.value) {
+    const tileName = t('watermarks.tileName')
+    const posName = t('watermarks.positionName')
+    if (editForm.value.name === tileName || editForm.value.name === posName || !editForm.value.name.trim()) {
+      editForm.value.name = newLayout === 'position' ? posName : tileName
+    }
+  }
+  debouncedPreview()
+})
+
 const fetchPreview = async () => {
   try {
     const res = await api.post('/watermarks/preview', {
@@ -437,7 +448,7 @@ const fetchPreview = async () => {
       layout: editForm.value.layout,
       position: editForm.value.position,
       opacity: editForm.value.opacityPercent / 100,
-      angle: editForm.value.angle,
+      angle: editForm.value.layout === 'position' ? 0 : editForm.value.angle,
       spacing_x: editForm.value.spacing_x,
       spacing_y: editForm.value.spacing_y,
       font_size: editForm.value.font_size,
@@ -453,8 +464,16 @@ const fetchPreview = async () => {
 }
 
 const handleSaveTemplate = async () => {
-  if (!editForm.value.name) {
-    message.warning(t('watermarks.namePlaceholder'))
+  const trimmedName = editForm.value.name.trim()
+  if (!trimmedName) {
+    message.warning(t('watermarks.nameRequired'))
+    return
+  }
+
+  // Check unique name constraint
+  const isDuplicate = templates.value.some((item: any) => item.name === trimmedName && item.id !== editTargetId.value)
+  if (isDuplicate) {
+    message.error(t('watermarks.nameDuplicate'))
     return
   }
 
@@ -466,7 +485,7 @@ const handleSaveTemplate = async () => {
       layout: editForm.value.layout,
       position: editForm.value.position,
       opacity: editForm.value.opacityPercent / 100,
-      angle: editForm.value.angle,
+      angle: editForm.value.layout === 'position' ? 0 : editForm.value.angle,
       spacing_x: editForm.value.spacing_x,
       spacing_y: editForm.value.spacing_y,
       font_size: editForm.value.font_size,
@@ -480,12 +499,12 @@ const handleSaveTemplate = async () => {
 
     if (isEditing.value && editTargetId.value) {
       await api.patch(`/watermarks/${editTargetId.value}`, {
-        name: editForm.value.name,
+        name: trimmedName,
         layers: layers
       })
     } else {
       await api.post('/watermarks', {
-        name: editForm.value.name,
+        name: trimmedName,
         layers: layers,
         is_global: editForm.value.is_global
       })

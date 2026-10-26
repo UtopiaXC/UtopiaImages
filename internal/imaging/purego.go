@@ -559,7 +559,7 @@ func (p *PureGoProcessor) renderPositionText(dst *image.RGBA, wm *WatermarkConfi
 		y = b.Dy() - bh - margin
 	}
 
-	drawRotated(dst, badge, x+bw/2, y+bh/2, wm.Angle)
+	drawRotated(dst, badge, x+bw/2, y+bh/2, 0)
 }
 
 func (p *PureGoProcessor) renderWatermarkImage(dst *image.RGBA, wmImg image.Image, position string, opacity float64) {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
+	"github.com/UtopiaXC/UtopiaImages/internal/cache"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/UtopiaXC/UtopiaImages/internal/service"
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,7 @@ type FileController struct {
 	dispatchService *service.DispatchService
 	importService   *service.ImportService
 	baseURL         string
+	derivedCache    *cache.DerivedCache
 }
 
 func NewFileController(
@@ -31,6 +33,7 @@ func NewFileController(
 	ds *service.DispatchService,
 	is *service.ImportService,
 	baseURL string,
+	dc *cache.DerivedCache,
 ) *FileController {
 	return &FileController{
 		db:              db,
@@ -38,6 +41,7 @@ func NewFileController(
 		dispatchService: ds,
 		importService:   is,
 		baseURL:         baseURL,
+		derivedCache:    dc,
 	}
 }
 
@@ -320,6 +324,13 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 	}
 	updates["hotlink_allowed_domains"] = req.HotlinkAllowedDomains
 
+	if req.WatermarkMode != "" || req.WatermarkTemplateID != nil {
+		updates["sign_version"] = gorm.Expr("sign_version + 1")
+		if ctrl.derivedCache != nil {
+			ctrl.derivedCache.Clear()
+		}
+	}
+
 	ctrl.db.Model(&file).Updates(updates)
 	ctrl.db.Where("id = ?", file.ID).First(&file)
 	c.JSON(http.StatusOK, gin.H{"message": "File updated successfully", "file": file, "links": ctrl.buildFileLinks(&file)})
@@ -387,6 +398,12 @@ func (ctrl *FileController) BatchUpdateFiles(c *gin.Context) {
 	}
 	if req.HotlinkMode != nil {
 		updates["hotlink_mode"] = *req.HotlinkMode
+	}
+	if req.WatermarkMode != nil || req.WatermarkTemplateID != nil {
+		updates["sign_version"] = gorm.Expr("sign_version + 1")
+		if ctrl.derivedCache != nil {
+			ctrl.derivedCache.Clear()
+		}
 	}
 
 	query := ctrl.db.Model(&model.FileRecord{}).Where("id IN ?", req.IDs)
