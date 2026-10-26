@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
@@ -18,6 +19,11 @@ import (
 	"gorm.io/gorm"
 )
 
+type setupTokenEntry struct {
+	UserID    uint
+	ExpiresAt time.Time
+}
+
 type AuthService struct {
 	db             *gorm.DB
 	sessionManager *auth.SessionManager
@@ -25,6 +31,8 @@ type AuthService struct {
 	captchaManager *auth.CaptchaManager
 	passkeyManager *auth.PasskeyManager
 	tracker        *auth.LoginAttemptsTracker
+	setupTokens    map[string]setupTokenEntry
+	setupLock      sync.RWMutex
 }
 
 func NewAuthService(
@@ -41,6 +49,7 @@ func NewAuthService(
 		captchaManager: cm,
 		passkeyManager: pm,
 		tracker:        auth.NewLoginAttemptsTracker(),
+		setupTokens:    make(map[string]setupTokenEntry),
 	}
 }
 
@@ -98,10 +107,46 @@ func (s *AuthService) SetupInitialAdmin(username, password, nickname, email stri
 }
 
 type LoginResult struct {
-	RequiresMFA     bool        `json:"requires_mfa"`
-	RequiresCaptcha bool        `json:"requires_captcha"`
-	SessionToken    string      `json:"session_token,omitempty"`
-	User            *model.User `json:"user,omitempty"`
+	RequiresMFA      bool        `json:"requires_mfa"`
+	HasTOTP          bool        `json:"has_totp"`
+	HasPasskey       bool        `json:"has_passkey"`
+	Requires2FASetup bool        `json:"requires_2fa_setup"`
+	SetupToken       string      `json:"setup_token,omitempty"`
+	RequiresCaptcha  bool        `json:"requires_captcha"`
+	SessionToken     string      `json:"session_token,omitempty"`
+	User             *model.User `json:"user,omitempty"`
+}
+
+func (s *AuthService) GenerateSetupToken(userID uint) string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	tok := hex.EncodeToString(b)
+	s.setupLock.Lock()
+	s.setupTokens[tok] = setupTokenEntry{
+		UserID:    userID,
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+	}
+	s.setupLock.Unlock()
+	return tok
+}
+
+func (s *AuthService) VerifySetupToken(token string) (uint, error) {
+	if token == "" {
+		return 0, errors.New("missing setup token")
+	}
+	s.setupLock.RLock()
+	entry, ok := s.setupTokens[token]
+	s.setupLock.RUnlock()
+	if !ok || time.Now().After(entry.ExpiresAt) {
+		return 0, errors.New("setup token expired or invalid")
+	}
+	return entry.UserID, nil
+}
+
+func (s *AuthService) RevokeSetupToken(token string) {
+	s.setupLock.Lock()
+	delete(s.setupTokens, token)
+	s.setupLock.Unlock()
 }
 
 // Login authenticates user with anti-brute-force protection, progressive freeze, and immediate captcha
@@ -187,10 +232,30 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 	// 7. Check 2FA
 	var totpSec model.TOTPSecret
 	hasConfirmedTOTP := s.db.Where("user_id = ? AND confirmed_at IS NOT NULL", user.ID).First(&totpSec).Error == nil
-	if hasConfirmedTOTP || user.Require2FA {
+
+	var passkeyCount int64
+	s.db.Model(&model.WebAuthnCredential{}).Where("user_id = ?", user.ID).Count(&passkeyCount)
+	hasPasskey := passkeyCount > 0
+
+	var sysReq2FA model.Setting
+	s.db.Where("key = ?", "require_2fa").First(&sysReq2FA)
+	forced2FA := user.Require2FA || sysReq2FA.Value == "true"
+
+	if hasConfirmedTOTP || hasPasskey {
 		return &LoginResult{
 			RequiresMFA: true,
+			HasTOTP:     hasConfirmedTOTP,
+			HasPasskey:  hasPasskey,
 			User:        &user,
+		}, ""
+	}
+
+	if forced2FA {
+		setupToken := s.GenerateSetupToken(user.ID)
+		return &LoginResult{
+			Requires2FASetup: true,
+			SetupToken:       setupToken,
+			User:             &user,
 		}, ""
 	}
 
@@ -322,15 +387,19 @@ func (s *AuthService) ActivateAccount(tokenStr string) string {
 	return ""
 }
 
-// RequestPasswordReset creates a password reset token (Requirement 3 & 10)
-func (s *AuthService) RequestPasswordReset(email string) (*model.User, string, string) {
-	email = strings.TrimSpace(email)
-	if email == "" {
+// RequestPasswordReset creates a password reset token (supports email or username)
+func (s *AuthService) RequestPasswordReset(accountOrEmail string) (*model.User, string, string) {
+	accountOrEmail = strings.TrimSpace(accountOrEmail)
+	if accountOrEmail == "" {
 		return nil, "", common.ErrValidationFailed
 	}
 
 	var user model.User
-	if err := s.db.Where("email = ?", email).First(&user).Error; err != nil {
+	if err := s.db.Where("email = ? OR username = ?", accountOrEmail, accountOrEmail).First(&user).Error; err != nil {
+		return nil, "", common.ErrAuthUserNotFound
+	}
+
+	if user.Email == nil || *user.Email == "" {
 		return nil, "", common.ErrAuthUserNotFound
 	}
 
@@ -343,6 +412,40 @@ func (s *AuthService) RequestPasswordReset(email string) (*model.User, string, s
 		UserID:    user.ID,
 		Token:     tokenStr,
 		TokenType: "password",
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+		Used:      false,
+		CreatedAt: time.Now(),
+	}
+	if err := s.db.Create(&tokenRecord).Error; err != nil {
+		return nil, "", common.ErrDatabaseError
+	}
+
+	return &user, tokenStr, ""
+}
+
+// Request2FAResetByID creates a 2FA reset token for a user by their user ID
+func (s *AuthService) Request2FAResetByID(userID uint) (*model.User, string, string) {
+	if userID == 0 {
+		return nil, "", common.ErrValidationFailed
+	}
+
+	var user model.User
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return nil, "", common.ErrAuthUserNotFound
+	}
+
+	if user.Email == nil || *user.Email == "" {
+		return nil, "", common.ErrAuthUserNotFound
+	}
+
+	randBytes := make([]byte, 24)
+	_, _ = rand.Read(randBytes)
+	tokenStr := hex.EncodeToString(randBytes)
+
+	tokenRecord := model.PasswordResetToken{
+		UserID:    user.ID,
+		Token:     tokenStr,
+		TokenType: "2fa",
 		ExpiresAt: time.Now().Add(15 * time.Minute),
 		Used:      false,
 		CreatedAt: time.Now(),
@@ -408,6 +511,12 @@ func (s *AuthService) Reset2FAWithToken(tokenStr string) string {
 
 	// Delete TOTP Secret
 	s.db.Where("user_id = ?", user.ID).Delete(&model.TOTPSecret{})
+
+	// Delete WebAuthn Passkeys
+	s.db.Where("user_id = ?", user.ID).Delete(&model.WebAuthnCredential{})
+
+	// Delete Recovery Codes
+	s.db.Where("user_id = ?", user.ID).Delete(&model.RecoveryCode{})
 
 	// Disable Require2FA on user and bump token version
 	s.db.Model(&user).Updates(map[string]any{

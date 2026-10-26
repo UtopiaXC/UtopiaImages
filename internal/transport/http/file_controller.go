@@ -211,11 +211,7 @@ func (ctrl *FileController) ListFiles(c *gin.Context) {
 		pageSize = 24
 	}
 
-	query := ctrl.db.Model(&model.FileRecord{})
-	if !isUserAdmin(user) {
-		query = query.Where("user_id = ?", user.ID)
-	}
-
+	query := ctrl.db.Model(&model.FileRecord{}).Where("user_id = ?", user.ID)
 	query = ctrl.applyFileFilters(query, c)
 
 	var total int64
@@ -237,11 +233,7 @@ func (ctrl *FileController) ListFileIDs(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
 
-	query := ctrl.db.Model(&model.FileRecord{})
-	if !isUserAdmin(user) {
-		query = query.Where("user_id = ?", user.ID)
-	}
-
+	query := ctrl.db.Model(&model.FileRecord{}).Where("user_id = ?", user.ID)
 	query = ctrl.applyFileFilters(query, c)
 
 	var ids []uint
@@ -258,10 +250,7 @@ func (ctrl *FileController) GetFile(c *gin.Context) {
 	fileID := c.Param("id")
 
 	var file model.FileRecord
-	query := ctrl.db.Where("id = ?", fileID)
-	if !isUserAdmin(user) {
-		query = query.Where("user_id = ?", user.ID)
-	}
+	query := ctrl.db.Where("id = ? AND user_id = ?", fileID, user.ID)
 
 	if err := query.First(&file).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
@@ -288,10 +277,7 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 	fileID := c.Param("id")
 
 	var file model.FileRecord
-	query := ctrl.db.Where("id = ?", fileID)
-	if !isUserAdmin(user) {
-		query = query.Where("user_id = ?", user.ID)
-	}
+	query := ctrl.db.Where("id = ? AND user_id = ?", fileID, user.ID)
 	if err := query.First(&file).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 		return
@@ -341,7 +327,7 @@ func (ctrl *FileController) DeleteFile(c *gin.Context) {
 	user := uVal.(*model.User)
 	fileID := ParseUintSafe(c.Param("id"), 0)
 
-	err := ctrl.uploadService.DeleteFile(c.Request.Context(), fileID, user.ID, isUserAdmin(user))
+	err := ctrl.uploadService.DeleteFile(c.Request.Context(), fileID, user.ID, false)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -364,7 +350,7 @@ func (ctrl *FileController) BatchDeleteFiles(c *gin.Context) {
 
 	deletedCount := 0
 	for _, id := range req.IDs {
-		if err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, user.ID, isUserAdmin(user)); err == nil {
+		if err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, user.ID, false); err == nil {
 			deletedCount++
 		}
 	}

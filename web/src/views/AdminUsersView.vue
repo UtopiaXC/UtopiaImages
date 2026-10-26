@@ -9,7 +9,8 @@
     </div>
 
     <n-card style="border-radius: 12px;">
-      <n-table :bordered="false" :single-line="false">
+      <div class="table-responsive">
+        <n-table :bordered="false" :single-line="false">
         <thead>
           <tr>
             <th>ID</th>
@@ -87,10 +88,11 @@
           </tr>
         </tbody>
       </n-table>
+      </div>
     </n-card>
 
     <!-- Create User Modal -->
-    <n-modal v-model:show="showCreateModal" preset="card" :title="$t('adminUsers.createTitle')" style="width: 520px; border-radius: 12px;">
+    <n-modal v-model:show="showCreateModal" preset="card" :title="$t('adminUsers.createTitle')" style="width: 520px; max-width: 95vw; border-radius: 12px;">
       <n-form :model="newUserForm" label-placement="left" label-width="110">
         <n-form-item :label="$t('adminUsers.username')">
           <n-input v-model:value="newUserForm.username" :placeholder="$t('adminUsers.usernameTip')" />
@@ -120,7 +122,7 @@
     </n-modal>
 
     <!-- Edit User Modal -->
-    <n-modal v-model:show="showEditModal" preset="card" :title="$t('adminUsers.editTitle')" style="width: 520px; border-radius: 12px;">
+    <n-modal v-model:show="showEditModal" preset="card" :title="$t('adminUsers.editTitle')" style="width: 520px; max-width: 95vw; border-radius: 12px;">
       <n-form :model="editUserForm" label-placement="left" label-width="110">
         <n-form-item :label="$t('adminUsers.username')">
           <n-input :value="editTargetUser?.username" disabled />

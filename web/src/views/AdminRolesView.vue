@@ -9,7 +9,8 @@
     </div>
 
     <n-card style="border-radius: 12px;">
-      <n-table :bordered="false" :single-line="false">
+      <div class="table-responsive">
+        <n-table :bordered="false" :single-line="false">
         <thead>
           <tr>
             <th>ID</th>
@@ -64,6 +65,7 @@
           </tr>
         </tbody>
       </n-table>
+      </div>
     </n-card>
 
     <!-- Create Role Modal -->

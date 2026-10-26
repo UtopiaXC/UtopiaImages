@@ -17,33 +17,35 @@
         </div>
       </n-alert>
 
-      <n-table :bordered="false" :single-line="false">
-        <thead>
-          <tr>
-            <th>{{ $t('tokens.name') }}</th>
-            <th>{{ $t('tokens.prefix') }}</th>
-            <th>{{ $t('common.createdAt') }}</th>
-            <th>{{ $t('tokens.lastUsed') }}</th>
-            <th>{{ $t('common.actions') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="t in tokens" :key="t.id">
-            <td>{{ t.name }}</td>
-            <td><code>{{ t.prefix }}***</code></td>
-            <td>{{ formatDate(t.created_at) }}</td>
-            <td>{{ t.last_used_at ? formatDate(t.last_used_at) : $t('tokens.never') }}</td>
-            <td>
-              <n-popconfirm @positive-click="deleteToken(t.id)">
-                <template #trigger>
-                  <n-button size="tiny" type="error" quaternary>{{ $t('tokens.revoke') }}</n-button>
-                </template>
-                {{ $t('tokens.confirmRevoke') }}
-              </n-popconfirm>
-            </td>
-          </tr>
-        </tbody>
-      </n-table>
+      <div class="table-responsive">
+        <n-table :bordered="false" :single-line="false">
+          <thead>
+            <tr>
+              <th>{{ $t('tokens.name') }}</th>
+              <th>{{ $t('tokens.prefix') }}</th>
+              <th>{{ $t('common.createdAt') }}</th>
+              <th>{{ $t('tokens.lastUsed') }}</th>
+              <th>{{ $t('common.actions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in tokens" :key="t.id">
+              <td>{{ t.name }}</td>
+              <td><code>{{ t.prefix }}***</code></td>
+              <td>{{ formatDate(t.created_at) }}</td>
+              <td>{{ t.last_used_at ? formatDate(t.last_used_at) : $t('tokens.never') }}</td>
+              <td>
+                <n-popconfirm @positive-click="deleteToken(t.id)">
+                  <template #trigger>
+                    <n-button size="tiny" type="error" quaternary>{{ $t('tokens.revoke') }}</n-button>
+                  </template>
+                  {{ $t('tokens.confirmRevoke') }}
+                </n-popconfirm>
+              </td>
+            </tr>
+          </tbody>
+        </n-table>
+      </div>
     </n-card>
   </div>
 </template>

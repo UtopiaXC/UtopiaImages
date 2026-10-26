@@ -67,7 +67,7 @@
                 {{ $t('setup.dbSqliteDesc') }}
               </n-alert>
               <n-form-item :label="$t('setup.dbPath')">
-                <n-input v-model:value="dbFields.sqlitePath" placeholder="data/utopiaimages.db" />
+                <n-input v-model:value="dbFields.sqlitePath" placeholder="data/db/utopiaimages.db" />
               </n-form-item>
             </template>
 
@@ -302,7 +302,7 @@ const form = ref({
   },
   database: {
     driver: 'sqlite',
-    dsn: 'data/utopiaimages.db'
+    dsn: 'data/db/utopiaimages.db'
   },
   smtp: {
     enabled: false,
@@ -323,7 +323,7 @@ const form = ref({
 })
 
 const dbFields = ref({
-  sqlitePath: 'data/utopiaimages.db',
+  sqlitePath: 'data/db/utopiaimages.db',
   host: 'localhost',
   pgPort: 5432,
   mysqlPort: 3306,
@@ -343,7 +343,7 @@ const changeLocale = (val: string) => {
 const buildDsn = () => {
   const driver = form.value.database.driver
   if (driver === 'sqlite') {
-    return dbFields.value.sqlitePath || 'data/utopiaimages.db'
+    return dbFields.value.sqlitePath || 'data/db/utopiaimages.db'
   }
   if (driver === 'postgres') {
     return `host=${dbFields.value.host} port=${dbFields.value.pgPort} user=${dbFields.value.user} password=${dbFields.value.password} dbname=${dbFields.value.dbName} sslmode=${dbFields.value.sslmode}`

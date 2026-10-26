@@ -64,7 +64,7 @@
         <!-- TOTP Section -->
         <n-card :title="$t('settings.totpTitle')" style="border-radius: 8px; margin-top: 12px; margin-bottom: 16px;">
           <template #header-extra>
-            <n-tag v-if="profile.require_2fa" type="success" size="small">{{ $t('settings.totpActive') }}</n-tag>
+            <n-tag v-if="totpActive" type="success" size="small">{{ $t('settings.totpActive') }}</n-tag>
             <n-tag v-else type="default" size="small">{{ $t('settings.totpInactive') }}</n-tag>
           </template>
 
@@ -73,7 +73,7 @@
           </div>
 
           <div>
-            <n-button v-if="!profile.require_2fa" type="primary" @click="startTotpSetup">
+            <n-button v-if="!totpActive" type="primary" @click="startTotpSetup">
               {{ $t('settings.enableTotp') }}
             </n-button>
             <n-popconfirm v-else @positive-click="disableTotp">
@@ -97,31 +97,33 @@
             {{ $t('settings.passkeyDesc') }}
           </div>
 
-          <n-table v-if="passkeys.length > 0" :bordered="false" :single-line="false" size="small">
-            <thead>
-              <tr>
-                <th>{{ $t('settings.passkeyName') }}</th>
-                <th>{{ $t('settings.passkeyCreated') }}</th>
-                <th>{{ $t('settings.passkeyLastUsed') }}</th>
-                <th>{{ $t('common.actions') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="pk in passkeys" :key="pk.id">
-                <td><strong>{{ pk.name }}</strong></td>
-                <td>{{ formatDate(pk.created_at) }}</td>
-                <td>{{ pk.last_used_at ? formatDate(pk.last_used_at) : $t('tokens.never') }}</td>
-                <td>
-                  <n-popconfirm @positive-click="deletePasskey(pk.id)">
-                    <template #trigger>
-                      <n-button size="tiny" quaternary type="error">{{ $t('common.delete') }}</n-button>
-                    </template>
-                    {{ $t('settings.confirmDeletePasskey') }}
-                  </n-popconfirm>
-                </td>
-              </tr>
-            </tbody>
-          </n-table>
+          <div v-if="passkeys.length > 0" class="table-responsive">
+            <n-table :bordered="false" :single-line="false" size="small">
+              <thead>
+                <tr>
+                  <th>{{ $t('settings.passkeyName') }}</th>
+                  <th>{{ $t('settings.passkeyCreated') }}</th>
+                  <th>{{ $t('settings.passkeyLastUsed') }}</th>
+                  <th>{{ $t('common.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="pk in passkeys" :key="pk.id">
+                  <td><strong>{{ pk.name }}</strong></td>
+                  <td>{{ formatDate(pk.created_at) }}</td>
+                  <td>{{ pk.last_used_at ? formatDate(pk.last_used_at) : $t('tokens.never') }}</td>
+                  <td>
+                    <n-popconfirm @positive-click="deletePasskey(pk.id)">
+                      <template #trigger>
+                        <n-button size="tiny" quaternary type="error">{{ $t('common.delete') }}</n-button>
+                      </template>
+                      {{ $t('settings.confirmDeletePasskey') }}
+                    </n-popconfirm>
+                  </td>
+                </tr>
+              </tbody>
+            </n-table>
+          </div>
 
           <div v-else style="color: #777; font-size: 13px; padding: 12px 0;">
             {{ $t('settings.noPasskeys') }}
@@ -218,7 +220,7 @@
       v-model:show="showChangeUsernameModal"
       preset="card"
       :title="$t('settings.changeUsernameModalTitle')"
-      style="width: 480px; border-radius: 12px;"
+      style="width: 480px; max-width: 95vw; border-radius: 12px;"
     >
       <p style="color: #bbb; font-size: 13px;">
         {{ $t('settings.changeUsernameModalDesc') }}
@@ -237,7 +239,7 @@
       v-model:show="showTotpModal"
       preset="card"
       :title="$t('settings.totpModalTitle')"
-      style="width: 440px; border-radius: 12px;"
+      style="width: 440px; max-width: 95vw; border-radius: 12px;"
     >
       <div style="text-align: center;">
         <p style="font-size: 13px; color: #aaa;">{{ $t('settings.scanQr') }}</p>
@@ -320,6 +322,7 @@ const totpQr = ref('')
 const totpSecret = ref('')
 const totpCode = ref('')
 const verifyingTotp = ref(false)
+const totpActive = ref(false)
 
 const loadData = async () => {
   try {
@@ -328,6 +331,7 @@ const loadData = async () => {
       api.get('/me/settings')
     ])
     profile.value = userRes.data
+    totpActive.value = Boolean(userRes.data?.totp_enabled || userRes.data?.has_totp)
     preferences.value.default_policy_id = prefRes.data.default_policy_id || '1'
     preferences.value.watermark_mode = prefRes.data.watermark_mode === 'on' ? 'on' : 'off'
     preferences.value.watermark_template_id = prefRes.data.watermark_template_id || ''
@@ -431,7 +435,11 @@ const verifyAndEnableTotp = async () => {
   try {
     await api.post('/me/totp/enable', { code: totpCode.value })
     message.success(t('settings.totpEnabled'))
-    profile.value.require_2fa = true
+    totpActive.value = true
+    if (profile.value) {
+      profile.value.has_totp = true
+      profile.value.totp_enabled = true
+    }
     showTotpModal.value = false
   } catch (err: any) {
     message.error(err.response?.data?.error || t('login.mfaFailed'))
@@ -444,9 +452,13 @@ const disableTotp = async () => {
   try {
     await api.post('/me/totp/disable')
     message.success(t('settings.totpDisabled'))
-    profile.value.require_2fa = false
+    totpActive.value = false
+    if (profile.value) {
+      profile.value.has_totp = false
+      profile.value.totp_enabled = false
+    }
   } catch (err: any) {
-    message.error(t('common.save'))
+    message.error(t('settings.disableTotp'))
   }
 }
 

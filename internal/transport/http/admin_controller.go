@@ -1,16 +1,21 @@
 package http
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
+	"github.com/UtopiaXC/UtopiaImages/internal/cache"
 	"github.com/UtopiaXC/UtopiaImages/internal/common"
 	"github.com/UtopiaXC/UtopiaImages/internal/logger"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
+	"github.com/UtopiaXC/UtopiaImages/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -18,11 +23,19 @@ import (
 var serverStartTime = time.Now()
 
 type AdminController struct {
-	db *gorm.DB
+	db            *gorm.DB
+	uploadService *service.UploadService
+	baseURL       string
+	derivedCache  *cache.DerivedCache
 }
 
-func NewAdminController(db *gorm.DB) *AdminController {
-	return &AdminController{db: db}
+func NewAdminController(db *gorm.DB, us *service.UploadService, baseURL string, dc *cache.DerivedCache) *AdminController {
+	return &AdminController{
+		db:            db,
+		uploadService: us,
+		baseURL:       baseURL,
+		derivedCache:  dc,
+	}
 }
 
 func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
@@ -30,6 +43,12 @@ func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
 	admin.Use(auth.RequireAuth(), auth.RequireAdmin())
 	{
 		admin.GET("/stats", ctrl.GetStats)
+
+		// All-site Files management
+		admin.GET("/files", ctrl.ListAllFiles)
+		admin.GET("/files/:id/details", ctrl.GetAllFileDetails)
+		admin.DELETE("/files/:id", ctrl.DeleteSiteFile)
+		admin.POST("/files/batch-delete", ctrl.BatchDeleteSiteFiles)
 
 		// Users management
 		admin.GET("/users", ctrl.ListUsers)
@@ -808,4 +827,288 @@ func (ctrl *AdminController) GetDatabaseStatus(c *gin.Context) {
 			"storage_policies": policyCount,
 		},
 	})
+}
+
+// -------------------------------------------------------------
+// Site-wide Files Management (Requirement 1)
+// -------------------------------------------------------------
+
+type AdminFileItem struct {
+	ID            uint      `json:"id"`
+	PublicPath    string    `json:"public_path"`
+	StorageKey    string    `json:"storage_key"`
+	DisplayName   string    `json:"display_name"`
+	MimeType      string    `json:"mime_type"`
+	Size          int64     `json:"size"`
+	Width         int       `json:"width"`
+	Height        int       `json:"height"`
+	Sha256        string    `json:"sha256"`
+	IsImage       bool      `json:"is_image"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	URL           string    `json:"url"`
+	ThumbnailURL  string    `json:"thumbnail_url"`
+	TempLinkCount int64     `json:"temp_link_count"`
+	User          struct {
+		ID       uint   `json:"id"`
+		Username string `json:"username"`
+		Nickname string `json:"nickname"`
+		Email    string `json:"email"`
+	} `json:"user"`
+	Policy struct {
+		ID     uint   `json:"id"`
+		Name   string `json:"name"`
+		Driver string `json:"driver"`
+	} `json:"policy"`
+}
+
+func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	query := ctrl.db.Model(&model.FileRecord{})
+
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		like := "%" + search + "%"
+		var matchingUserIDs []uint
+		ctrl.db.Model(&model.User{}).Where("username LIKE ? OR nickname LIKE ? OR email LIKE ?", like, like, like).Pluck("id", &matchingUserIDs)
+		if len(matchingUserIDs) > 0 {
+			query = query.Where("display_name LIKE ? OR public_path LIKE ? OR user_id IN (?)", like, like, matchingUserIDs)
+		} else {
+			query = query.Where("display_name LIKE ? OR public_path LIKE ?", like, like)
+		}
+	}
+
+	if policyID := c.Query("policy_id"); policyID != "" && policyID != "all" {
+		query = query.Where("policy_id = ?", policyID)
+	}
+
+	if uid := c.Query("user_id"); uid != "" && uid != "all" {
+		query = query.Where("user_id = ?", uid)
+	}
+
+	if format := strings.ToLower(c.Query("format")); format != "" && format != "all" {
+		switch format {
+		case "jpeg", "jpg":
+			query = query.Where("mime_type IN ('image/jpeg', 'image/jpg') OR public_path LIKE '%.jpg' OR public_path LIKE '%.jpeg'")
+		case "png":
+			query = query.Where("mime_type = 'image/png' OR public_path LIKE '%.png'")
+		case "webp":
+			query = query.Where("mime_type = 'image/webp' OR public_path LIKE '%.webp'")
+		case "gif":
+			query = query.Where("mime_type = 'image/gif' OR public_path LIKE '%.gif'")
+		case "svg":
+			query = query.Where("mime_type = 'image/svg+xml' OR public_path LIKE '%.svg'")
+		case "other":
+			query = query.Where("is_image = 0")
+		}
+	}
+
+	if timeRange := c.Query("time_range"); timeRange != "" && timeRange != "all" {
+		now := time.Now()
+		switch timeRange {
+		case "today":
+			startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			query = query.Where("created_at >= ?", startOfDay)
+		case "7d":
+			query = query.Where("created_at >= ?", now.Add(-7*24*time.Hour))
+		case "30d":
+			query = query.Where("created_at >= ?", now.Add(-30*24*time.Hour))
+		}
+	}
+
+	if hasLinks := c.Query("has_temp_links"); hasLinks == "true" {
+		query = query.Where("id IN (SELECT DISTINCT file_id FROM temporary_links WHERE revoked_at IS NULL AND expires_at > ?)", time.Now())
+	}
+
+	var total int64
+	query.Count(&total)
+
+	var files []model.FileRecord
+	query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
+
+	userIDs := make([]uint, 0, len(files))
+	policyIDs := make([]uint, 0, len(files))
+	fileIDs := make([]uint, 0, len(files))
+	for _, f := range files {
+		userIDs = append(userIDs, f.UserID)
+		policyIDs = append(policyIDs, f.PolicyID)
+		fileIDs = append(fileIDs, f.ID)
+	}
+
+	usersMap := make(map[uint]model.User)
+	if len(userIDs) > 0 {
+		var users []model.User
+		ctrl.db.Where("id IN (?)", userIDs).Find(&users)
+		for _, u := range users {
+			usersMap[u.ID] = u
+		}
+	}
+
+	policiesMap := make(map[uint]model.StoragePolicy)
+	if len(policyIDs) > 0 {
+		var policies []model.StoragePolicy
+		ctrl.db.Where("id IN (?)", policyIDs).Find(&policies)
+		for _, p := range policies {
+			policiesMap[p.ID] = p
+		}
+	}
+
+	linkCountMap := make(map[uint]int64)
+	if len(fileIDs) > 0 {
+		type countResult struct {
+			FileID uint  `gorm:"column:file_id"`
+			Cnt    int64 `gorm:"column:cnt"`
+		}
+		var counts []countResult
+		ctrl.db.Model(&model.TemporaryLink{}).
+			Select("file_id, count(*) as cnt").
+			Where("file_id IN (?) AND revoked_at IS NULL AND expires_at > ?", fileIDs, time.Now()).
+			Group("file_id").
+			Scan(&counts)
+		for _, cr := range counts {
+			linkCountMap[cr.FileID] = cr.Cnt
+		}
+	}
+
+	items := make([]AdminFileItem, 0, len(files))
+	for _, f := range files {
+		item := AdminFileItem{
+			ID:            f.ID,
+			PublicPath:    f.PublicPath,
+			StorageKey:    f.StorageKey,
+			DisplayName:   f.DisplayName,
+			MimeType:      f.MimeType,
+			Size:          f.Size,
+			Width:         f.Width,
+			Height:        f.Height,
+			Sha256:        f.Sha256,
+			IsImage:       f.IsImage,
+			CreatedAt:     f.CreatedAt,
+			UpdatedAt:     f.UpdatedAt,
+			URL:           fmt.Sprintf("%s/%s", ctrl.baseURL, f.PublicPath),
+			TempLinkCount: linkCountMap[f.ID],
+		}
+		if f.IsImage {
+			item.ThumbnailURL = fmt.Sprintf("%s/%s?preset=thumb", ctrl.baseURL, f.PublicPath)
+		} else {
+			item.ThumbnailURL = item.URL
+		}
+		if u, ok := usersMap[f.UserID]; ok {
+			item.User.ID = u.ID
+			item.User.Username = u.Username
+			item.User.Nickname = u.Nickname
+			if u.Email != nil {
+				item.User.Email = *u.Email
+			}
+		}
+		if p, ok := policiesMap[f.PolicyID]; ok {
+			item.Policy.ID = p.ID
+			item.Policy.Name = p.Name
+			item.Policy.Driver = p.Driver
+		}
+		items = append(items, item)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"items":     items,
+	})
+}
+
+func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
+	id := c.Param("id")
+	var file model.FileRecord
+	if err := ctrl.db.Where("id = ?", id).First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	var user model.User
+	ctrl.db.Where("id = ?", file.UserID).First(&user)
+
+	var policy model.StoragePolicy
+	ctrl.db.Where("id = ?", file.PolicyID).First(&policy)
+
+	var tempLinks []model.TemporaryLink
+	ctrl.db.Where("file_id = ?", file.ID).Order("id DESC").Find(&tempLinks)
+
+	rawURL := fmt.Sprintf("%s/%s", ctrl.baseURL, file.PublicPath)
+	ext := filepath.Ext(file.PublicPath)
+	baseNoExt := strings.TrimSuffix(file.PublicPath, ext)
+	webpURL := fmt.Sprintf("%s/%s.webp", ctrl.baseURL, baseNoExt)
+
+	links := map[string]string{
+		"url":           rawURL,
+		"webp_url":      webpURL,
+		"markdown":      fmt.Sprintf("![%s](%s)", file.DisplayName, rawURL),
+		"bbcode":        fmt.Sprintf("[img]%s[/img]", rawURL),
+		"html":          fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", rawURL, file.DisplayName),
+		"webp_markdown": fmt.Sprintf("![%s](%s)", file.DisplayName, webpURL),
+		"webp_html":     fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", webpURL, file.DisplayName),
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"file": file,
+		"user": gin.H{
+			"id":       user.ID,
+			"username": user.Username,
+			"nickname": user.Nickname,
+			"email":    user.Email,
+		},
+		"policy":     policy,
+		"links":      links,
+		"temp_links": tempLinks,
+	})
+}
+
+func (ctrl *AdminController) DeleteSiteFile(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file ID"})
+		return
+	}
+
+	err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if ctrl.derivedCache != nil {
+		ctrl.derivedCache.Clear()
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "File deleted successfully"})
+}
+
+func (ctrl *AdminController) BatchDeleteSiteFiles(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	deletedCount := 0
+	for _, id := range req.IDs {
+		if err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true); err == nil {
+			deletedCount++
+		}
+	}
+
+	if ctrl.derivedCache != nil {
+		ctrl.derivedCache.Clear()
+	}
+
+	c.JSON(http.StatusOK, gin.H{"deleted": deletedCount})
 }

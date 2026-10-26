@@ -1,10 +1,8 @@
 package http
 
 import (
-	"crypto/tls"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -17,6 +15,7 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/config"
 	appLogger "github.com/UtopiaXC/UtopiaImages/internal/logger"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
+	"github.com/UtopiaXC/UtopiaImages/internal/pkg/mailer"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -182,6 +181,20 @@ func (ctrl *SettingsController) GetUserQuota(c *gin.Context) {
 
 	var role model.Role
 	ctrl.db.Where("id = ?", current.RoleID).First(&role)
+
+	var totalSize int64
+	var count int64
+	ctrl.db.Model(&model.FileRecord{}).Where("user_id = ? AND deleted_at IS NULL", user.ID).Select("COALESCE(SUM(size), 0)").Scan(&totalSize)
+	ctrl.db.Model(&model.FileRecord{}).Where("user_id = ? AND deleted_at IS NULL", user.ID).Count(&count)
+
+	if current.UsedBytes != totalSize || current.FileCount != count {
+		ctrl.db.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+			"used_bytes": totalSize,
+			"file_count": count,
+		})
+		current.UsedBytes = totalSize
+		current.FileCount = count
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"used_bytes":  current.UsedBytes,
@@ -450,24 +463,20 @@ func (ctrl *SettingsController) TestSMTPConnection(c *gin.Context) {
 		return
 	}
 
-	addr := net.JoinHostPort(req.Host, strconv.Itoa(req.Port))
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-
-	var conn net.Conn
-	var err error
-	if strings.ToLower(req.Encryption) == "ssl" || req.Port == 465 {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
-			ServerName: req.Host,
-		})
-	} else {
-		conn, err = dialer.Dial("tcp", addr)
+	testCfg := config.SMTPConfig{
+		Enabled:    true,
+		Host:       req.Host,
+		Port:       req.Port,
+		From:       req.From,
+		User:       req.User,
+		Password:   req.Password,
+		Encryption: req.Encryption,
 	}
 
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无法连接至 SMTP 邮件服务器: " + err.Error()})
+	if err := mailer.TestConnection(testCfg); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "SMTP 服务器连接测试失败: " + err.Error()})
 		return
 	}
-	defer conn.Close()
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

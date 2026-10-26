@@ -1,13 +1,9 @@
 package http
 
 import (
-	"crypto/tls"
-	"encoding/base64"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/smtp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +12,7 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/common"
 	"github.com/UtopiaXC/UtopiaImages/internal/config"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
+	"github.com/UtopiaXC/UtopiaImages/internal/pkg/mailer"
 	"github.com/UtopiaXC/UtopiaImages/internal/repository"
 	"github.com/UtopiaXC/UtopiaImages/internal/service"
 	"github.com/gin-gonic/gin"
@@ -57,6 +54,10 @@ func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/auth/logout", ctrl.Logout)
 	rg.POST("/auth/passkey/login-begin", ctrl.BeginPasskeyLogin)
 	rg.POST("/auth/passkey/login-finish", ctrl.FinishPasskeyLogin)
+	rg.POST("/auth/setup-2fa/totp-secret", ctrl.Setup2FATOTPSecret)
+	rg.POST("/auth/setup-2fa/totp-verify", ctrl.Setup2FATOTPVerify)
+	rg.POST("/auth/setup-2fa/passkey-begin", ctrl.Setup2FAPasskeyBegin)
+	rg.POST("/auth/setup-2fa/passkey-finish", ctrl.Setup2FAPasskeyFinish)
 
 	me := rg.Group("/me")
 	me.Use(auth.RequireAuth())
@@ -113,7 +114,7 @@ func (ctrl *AuthController) TestDatabaseConnection(c *gin.Context) {
 	switch driver {
 	case "sqlite", "sqlite3":
 		if dsn == "" {
-			dsn = "data/utopiaimages.db"
+			dsn = "data/db/utopiaimages.db"
 		}
 	case "postgres", "postgresql":
 		if dsn == "" {
@@ -177,24 +178,20 @@ func (ctrl *AuthController) TestSMTPConnection(c *gin.Context) {
 		return
 	}
 
-	addr := net.JoinHostPort(req.Host, strconv.Itoa(req.Port))
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-
-	var conn net.Conn
-	var err error
-	if strings.ToLower(req.Encryption) == "ssl" || req.Port == 465 {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
-			ServerName: req.Host,
-		})
-	} else {
-		conn, err = dialer.Dial("tcp", addr)
+	testCfg := config.SMTPConfig{
+		Enabled:    true,
+		Host:       req.Host,
+		Port:       req.Port,
+		From:       req.From,
+		User:       req.User,
+		Password:   req.Password,
+		Encryption: req.Encryption,
 	}
 
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无法连接至 SMTP 邮件服务器: " + err.Error()})
+	if err := mailer.TestConnection(testCfg); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "SMTP 服务器连接测试失败: " + err.Error()})
 		return
 	}
-	defer conn.Close()
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -413,7 +410,20 @@ func (ctrl *AuthController) Login(c *gin.Context) {
 	if result.RequiresMFA {
 		c.JSON(http.StatusOK, gin.H{
 			"requires_mfa": true,
+			"has_totp":     result.HasTOTP,
+			"has_passkey":  result.HasPasskey,
 			"user_id":      result.User.ID,
+			"username":     result.User.Username,
+		})
+		return
+	}
+
+	if result.Requires2FASetup {
+		c.JSON(http.StatusOK, gin.H{
+			"requires_2fa_setup": true,
+			"setup_token":        result.SetupToken,
+			"user_id":            result.User.ID,
+			"username":           result.User.Username,
 		})
 		return
 	}
@@ -492,10 +502,20 @@ func (ctrl *AuthController) ActivateAccount(c *gin.Context) {
 
 func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
 	var req struct {
-		Email   string `json:"email" binding:"required"`
+		Email   string `json:"email"`
+		Account string `json:"account"`
 		Captcha string `json:"captcha"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
+		return
+	}
+
+	ident := strings.TrimSpace(req.Email)
+	if ident == "" {
+		ident = strings.TrimSpace(req.Account)
+	}
+	if ident == "" {
 		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
 		return
 	}
@@ -505,7 +525,7 @@ func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	user, token, errCode := ctrl.authService.RequestPasswordReset(req.Email)
+	user, token, errCode := ctrl.authService.RequestPasswordReset(ident)
 	if errCode != "" {
 		common.RespondError(c, http.StatusBadRequest, errCode)
 		return
@@ -550,7 +570,10 @@ func (ctrl *AuthController) ResetPassword(c *gin.Context) {
 
 func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 	var req struct {
-		Email string `json:"email" binding:"required"`
+		Email    string `json:"email"`
+		Username string `json:"username"`
+		Account  string `json:"account"`
+		UserID   uint   `json:"user_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
@@ -562,7 +585,29 @@ func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 		return
 	}
 
-	user, token, errCode := ctrl.authService.Request2FAReset(req.Email)
+	var (
+		user    *model.User
+		token   string
+		errCode string
+	)
+
+	if req.UserID > 0 {
+		user, token, errCode = ctrl.authService.Request2FAResetByID(req.UserID)
+	} else {
+		ident := strings.TrimSpace(req.Email)
+		if ident == "" {
+			ident = strings.TrimSpace(req.Username)
+		}
+		if ident == "" {
+			ident = strings.TrimSpace(req.Account)
+		}
+		if ident == "" {
+			common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
+			return
+		}
+		user, token, errCode = ctrl.authService.Request2FAReset(ident)
+	}
+
 	if errCode != "" {
 		common.RespondError(c, http.StatusBadRequest, errCode)
 		return
@@ -604,175 +649,21 @@ func (ctrl *AuthController) Reset2FA(c *gin.Context) {
 }
 
 func (ctrl *AuthController) send2FAResetEmail(toEmail, username, resetLink, token string) error {
-	smtpCfg := ctrl.cfg.SMTP
-	addr := net.JoinHostPort(smtpCfg.Host, strconv.Itoa(smtpCfg.Port))
-	from := smtpCfg.From
-	fromName := smtpCfg.FromName
-	if fromName == "" {
-		fromName = "Utopia Images"
-	}
-
-	subject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte("[Utopia Images] 两步验证重置请求")))
+	subject := "[Utopia Images] 两步验证重置请求"
 	body := fmt.Sprintf("您好 %s：\r\n\r\n我们收到了您的两步验证 (2FA) 重置请求。请在 15 分钟内点击以下链接重置 2FA，或在页面输入重置令牌：\r\n重置链接：%s\r\n重置令牌：%s\r\n\r\n重置后两步验证将被解除，您可以使用账号密码直接登录系统。\r\n若您未发起此重置请求，请忽略本邮件。\r\n", username, resetLink, token)
-
-	msg := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		fromName, from, toEmail, subject, body)
-
-	if strings.ToLower(smtpCfg.Encryption) == "ssl" || smtpCfg.Port == 465 {
-		tlsConfig := &tls.Config{
-			ServerName: smtpCfg.Host,
-		}
-		conn, err := tls.Dial("tcp", addr, tlsConfig)
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		client, err := smtp.NewClient(conn, smtpCfg.Host)
-		if err != nil {
-			return err
-		}
-		defer client.Quit()
-
-		if smtpCfg.User != "" && smtpCfg.Password != "" {
-			auth := smtp.PlainAuth("", smtpCfg.User, smtpCfg.Password, smtpCfg.Host)
-			if err := client.Auth(auth); err != nil {
-				return err
-			}
-		}
-		if err := client.Mail(from); err != nil {
-			return err
-		}
-		if err := client.Rcpt(toEmail); err != nil {
-			return err
-		}
-		w, err := client.Data()
-		if err != nil {
-			return err
-		}
-		_, _ = w.Write([]byte(msg))
-		return w.Close()
-	}
-
-	var auth smtp.Auth
-	if smtpCfg.User != "" && smtpCfg.Password != "" {
-		auth = smtp.PlainAuth("", smtpCfg.User, smtpCfg.Password, smtpCfg.Host)
-	}
-	return smtp.SendMail(addr, auth, from, []string{toEmail}, []byte(msg))
+	return mailer.SendMail(ctrl.cfg.SMTP, toEmail, subject, body)
 }
 
 func (ctrl *AuthController) sendActivationEmail(toEmail, username, activationLink string) error {
-	smtpCfg := ctrl.cfg.SMTP
-	addr := net.JoinHostPort(smtpCfg.Host, strconv.Itoa(smtpCfg.Port))
-	from := smtpCfg.From
-	fromName := smtpCfg.FromName
-	if fromName == "" {
-		fromName = "Utopia Images"
-	}
-
-	subject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte("[Utopia Images] 账号激活确认")))
+	subject := "[Utopia Images] 账号激活确认"
 	body := fmt.Sprintf("您好 %s：\r\n\r\n欢迎注册 Utopia Images！\r\n您的账号已成功创建，目前处于冻结状态。请在 24 小时内点击下方链接完成邮箱激活：\r\n%s\r\n\r\n激活完成后，您即可正常登录并使用 Utopia Images 平台。若您未注册过此账号，请忽略此邮件。\r\n", username, activationLink)
-
-	msg := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		fromName, from, toEmail, subject, body)
-
-	if strings.ToLower(smtpCfg.Encryption) == "ssl" || smtpCfg.Port == 465 {
-		tlsConfig := &tls.Config{
-			ServerName: smtpCfg.Host,
-		}
-		conn, err := tls.Dial("tcp", addr, tlsConfig)
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		client, err := smtp.NewClient(conn, smtpCfg.Host)
-		if err != nil {
-			return err
-		}
-		defer client.Quit()
-
-		if smtpCfg.User != "" && smtpCfg.Password != "" {
-			auth := smtp.PlainAuth("", smtpCfg.User, smtpCfg.Password, smtpCfg.Host)
-			if err := client.Auth(auth); err != nil {
-				return err
-			}
-		}
-		if err := client.Mail(from); err != nil {
-			return err
-		}
-		if err := client.Rcpt(toEmail); err != nil {
-			return err
-		}
-		w, err := client.Data()
-		if err != nil {
-			return err
-		}
-		_, _ = w.Write([]byte(msg))
-		return w.Close()
-	}
-
-	var auth smtp.Auth
-	if smtpCfg.User != "" && smtpCfg.Password != "" {
-		auth = smtp.PlainAuth("", smtpCfg.User, smtpCfg.Password, smtpCfg.Host)
-	}
-	return smtp.SendMail(addr, auth, from, []string{toEmail}, []byte(msg))
+	return mailer.SendMail(ctrl.cfg.SMTP, toEmail, subject, body)
 }
 
 func (ctrl *AuthController) sendPasswordResetEmail(toEmail, username, resetLink string) error {
-	smtpCfg := ctrl.cfg.SMTP
-	addr := net.JoinHostPort(smtpCfg.Host, strconv.Itoa(smtpCfg.Port))
-	from := smtpCfg.From
-	fromName := smtpCfg.FromName
-	if fromName == "" {
-		fromName = "Utopia Images"
-	}
-
-	subject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte("[Utopia Images] 密码重置请求")))
+	subject := "[Utopia Images] 密码重置请求"
 	body := fmt.Sprintf("您好 %s：\r\n\r\n我们收到了您的密码重置请求。请在 15 分钟内点击以下链接重置密码：\r\n%s\r\n\r\n若您未发起此重置请求，请忽略本邮件，原账号密码依然安全有效。\r\n", username, resetLink)
-
-	msg := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		fromName, from, toEmail, subject, body)
-
-	// SSL/TLS on port 465 or explicit ssl encryption
-	if strings.ToLower(smtpCfg.Encryption) == "ssl" || smtpCfg.Port == 465 {
-		tlsConfig := &tls.Config{
-			ServerName: smtpCfg.Host,
-		}
-		conn, err := tls.Dial("tcp", addr, tlsConfig)
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		client, err := smtp.NewClient(conn, smtpCfg.Host)
-		if err != nil {
-			return err
-		}
-		defer client.Quit()
-
-		if smtpCfg.User != "" && smtpCfg.Password != "" {
-			auth := smtp.PlainAuth("", smtpCfg.User, smtpCfg.Password, smtpCfg.Host)
-			if err := client.Auth(auth); err != nil {
-				return err
-			}
-		}
-		if err := client.Mail(from); err != nil {
-			return err
-		}
-		if err := client.Rcpt(toEmail); err != nil {
-			return err
-		}
-		w, err := client.Data()
-		if err != nil {
-			return err
-		}
-		_, _ = w.Write([]byte(msg))
-		return w.Close()
-	}
-
-	var auth smtp.Auth
-	if smtpCfg.User != "" && smtpCfg.Password != "" {
-		auth = smtp.PlainAuth("", smtpCfg.User, smtpCfg.Password, smtpCfg.Host)
-	}
-	return smtp.SendMail(addr, auth, from, []string{toEmail}, []byte(msg))
+	return mailer.SendMail(ctrl.cfg.SMTP, toEmail, subject, body)
 }
 
 func (ctrl *AuthController) VerifyMFA(c *gin.Context) {
@@ -814,7 +705,42 @@ func (ctrl *AuthController) Logout(c *gin.Context) {
 func (ctrl *AuthController) GetCurrentUser(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
-	c.JSON(http.StatusOK, user)
+
+	var totpCount int64
+	ctrl.db.Model(&model.TOTPSecret{}).Where("user_id = ? AND confirmed_at IS NOT NULL", user.ID).Count(&totpCount)
+
+	var passkeyCount int64
+	ctrl.db.Model(&model.WebAuthnCredential{}).Where("user_id = ?", user.ID).Count(&passkeyCount)
+
+	var sysReq2FA model.Setting
+	ctrl.db.Where("key = ?", "require_2fa").First(&sysReq2FA)
+	isGlobal2FA := sysReq2FA.Value == "true"
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":                      user.ID,
+		"username":                user.Username,
+		"nickname":                user.Nickname,
+		"email":                   user.Email,
+		"avatar":                  user.Avatar,
+		"role_id":                 user.RoleID,
+		"role":                    user.Role,
+		"status":                  user.Status,
+		"used_bytes":              user.UsedBytes,
+		"file_count":              user.FileCount,
+		"token_version":           user.TokenVersion,
+		"locale":                  user.Locale,
+		"require_2fa":             user.Require2FA,
+		"global_require_2fa":      isGlobal2FA,
+		"totp_enabled":            totpCount > 0,
+		"has_totp":                totpCount > 0,
+		"has_passkey":             passkeyCount > 0,
+		"passkey_count":           passkeyCount,
+		"hotlink_enabled":         user.HotlinkEnabled,
+		"hotlink_allow_empty":     user.HotlinkAllowEmpty,
+		"hotlink_allowed_domains": user.HotlinkAllowedDomains,
+		"created_at":              user.CreatedAt,
+		"updated_at":              user.UpdatedAt,
+	})
 }
 
 func (ctrl *AuthController) ListApiTokens(c *gin.Context) {
@@ -913,8 +839,13 @@ func (ctrl *AuthController) EnableTOTP(c *gin.Context) {
 func (ctrl *AuthController) DisableTOTP(c *gin.Context) {
 	userID := c.GetUint(auth.CtxUserIDKey)
 	ctrl.authService.DB().Where("user_id = ?", userID).Delete(&model.TOTPSecret{})
-	ctrl.authService.DB().Model(&model.User{}).Where("id = ?", userID).Update("require_2fa", false)
-	c.JSON(http.StatusOK, gin.H{"message": "Two-factor authentication disabled"})
+
+	var passkeyCount int64
+	ctrl.authService.DB().Model(&model.WebAuthnCredential{}).Where("user_id = ?", userID).Count(&passkeyCount)
+	if passkeyCount == 0 {
+		ctrl.authService.DB().Model(&model.User{}).Where("id = ?", userID).Update("require_2fa", false)
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "TOTP authentication disabled"})
 }
 
 func (ctrl *AuthController) ChangeUsername(c *gin.Context) {
@@ -947,9 +878,17 @@ func (ctrl *AuthController) BeginPasskeyLogin(c *gin.Context) {
 	}
 	var req struct {
 		Username string `json:"username"`
+		UserID   uint   `json:"user_id"`
 	}
 	_ = c.ShouldBindJSON(&req)
-	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginLogin(req.Username)
+	username := strings.TrimSpace(req.Username)
+	if username == "" && req.UserID > 0 {
+		var u model.User
+		if err := ctrl.db.Where("id = ?", req.UserID).First(&u).Error; err == nil {
+			username = u.Username
+		}
+	}
+	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginLogin(username)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -979,12 +918,17 @@ func (ctrl *AuthController) FinishPasskeyLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Passkey verification failed: " + err.Error()})
 		return
 	}
-	rawToken, _, err := ctrl.authService.SessionManager().CreateSession(user.ID, c.ClientIP(), c.Request.UserAgent(), true)
+	rememberMe := c.Query("remember_me") == "true"
+	rawToken, _, err := ctrl.authService.SessionManager().CreateSession(user.ID, c.ClientIP(), c.Request.UserAgent(), rememberMe)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.SetCookie(auth.SessionCookieName, rawToken, 30*86400, "/api", "", false, true)
+	maxAge := 7 * 86400
+	if rememberMe {
+		maxAge = 30 * 86400
+	}
+	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", false, true)
 	c.JSON(http.StatusOK, gin.H{
 		"token": rawToken,
 		"user":  user,
@@ -1056,7 +1000,200 @@ func (ctrl *AuthController) DeletePasskey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	var passkeyCount int64
+	ctrl.authService.DB().Model(&model.WebAuthnCredential{}).Where("user_id = ?", userID).Count(&passkeyCount)
+	var totpCount int64
+	ctrl.authService.DB().Model(&model.TOTPSecret{}).Where("user_id = ? AND confirmed_at IS NOT NULL", userID).Count(&totpCount)
+	if passkeyCount == 0 && totpCount == 0 {
+		ctrl.authService.DB().Model(&model.User{}).Where("id = ?", userID).Update("require_2fa", false)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Passkey deleted"})
+}
+
+func (ctrl *AuthController) Setup2FATOTPSecret(c *gin.Context) {
+	var req struct {
+		SetupToken string `json:"setup_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing setup token"})
+		return
+	}
+	userID, err := ctrl.authService.VerifySetupToken(req.SetupToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var user model.User
+	if err := ctrl.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	secret, qrBase64, err := ctrl.authService.TOTPManager().GenerateSecret(user.Username, "Utopia Images")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate TOTP secret"})
+		return
+	}
+
+	// Persist pending encrypted secret
+	encSecret, err := ctrl.authService.TOTPManager().EncryptSecret(secret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encrypt TOTP secret"})
+		return
+	}
+	totpRecord := model.TOTPSecret{
+		UserID:          user.ID,
+		SecretEncrypted: encSecret,
+		CreatedAt:       time.Now(),
+	}
+	ctrl.db.Save(&totpRecord)
+
+	c.JSON(http.StatusOK, gin.H{
+		"secret":    secret,
+		"qr_base64": "data:image/png;base64," + qrBase64,
+	})
+}
+
+func (ctrl *AuthController) Setup2FATOTPVerify(c *gin.Context) {
+	var req struct {
+		SetupToken string `json:"setup_token" binding:"required"`
+		Code       string `json:"code" binding:"required"`
+		RememberMe bool   `json:"remember_me"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing required fields"})
+		return
+	}
+	userID, err := ctrl.authService.VerifySetupToken(req.SetupToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var user model.User
+	if err := ctrl.db.Preload("Role").Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	var secret model.TOTPSecret
+	if err := ctrl.db.Where("user_id = ?", user.ID).First(&secret).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No pending TOTP secret found"})
+		return
+	}
+	plainSecret, err := ctrl.authService.TOTPManager().DecryptSecret(secret.SecretEncrypted)
+	if err != nil || !ctrl.authService.TOTPManager().Validate(req.Code, plainSecret) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid verification code"})
+		return
+	}
+
+	now := time.Now()
+	ctrl.db.Model(&secret).Update("confirmed_at", &now)
+	ctrl.db.Model(&user).Update("require_2fa", true)
+	ctrl.authService.RevokeSetupToken(req.SetupToken)
+
+	rawToken, _, err := ctrl.authService.SessionManager().CreateSession(user.ID, c.ClientIP(), c.Request.UserAgent(), req.RememberMe)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	maxAge := 7 * 86400
+	if req.RememberMe {
+		maxAge = 30 * 86400
+	}
+	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", false, true)
+	c.JSON(http.StatusOK, gin.H{
+		"token": rawToken,
+		"user":  user,
+	})
+}
+
+func (ctrl *AuthController) Setup2FAPasskeyBegin(c *gin.Context) {
+	if ctrl.authService.PasskeyManager() == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "Passkey is not supported"})
+		return
+	}
+	var req struct {
+		SetupToken string `json:"setup_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing setup token"})
+		return
+	}
+	userID, err := ctrl.authService.VerifySetupToken(req.SetupToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var user model.User
+	if err := ctrl.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginRegistration(&user)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"options":     options,
+		"session_key": sessionKey,
+	})
+}
+
+func (ctrl *AuthController) Setup2FAPasskeyFinish(c *gin.Context) {
+	if ctrl.authService.PasskeyManager() == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "Passkey is not supported"})
+		return
+	}
+	setupToken := c.Query("setup_token")
+	if setupToken == "" {
+		setupToken = c.GetHeader("X-Setup-Token")
+	}
+	sessionKey := c.Query("session_key")
+	if sessionKey == "" {
+		sessionKey = c.GetHeader("X-Session-Key")
+	}
+	userID, err := ctrl.authService.VerifySetupToken(setupToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	parsedData, err := protocol.ParseCredentialCreationResponseBody(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse credential: " + err.Error()})
+		return
+	}
+
+	name := c.DefaultQuery("name", "Passkey")
+	_, err = ctrl.authService.PasskeyManager().FinishRegistration(sessionKey, name, parsedData)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Passkey registration failed: " + err.Error()})
+		return
+	}
+
+	ctrl.db.Model(&model.User{}).Where("id = ?", userID).Update("require_2fa", true)
+	ctrl.authService.RevokeSetupToken(setupToken)
+
+	var user model.User
+	ctrl.db.Preload("Role").Where("id = ?", userID).First(&user)
+
+	rememberMe := c.Query("remember_me") == "true"
+	rawToken, _, err := ctrl.authService.SessionManager().CreateSession(user.ID, c.ClientIP(), c.Request.UserAgent(), rememberMe)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	maxAge := 7 * 86400
+	if rememberMe {
+		maxAge = 30 * 86400
+	}
+	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", false, true)
+	c.JSON(http.StatusOK, gin.H{
+		"token": rawToken,
+		"user":  user,
+	})
 }
 
 func ParseUintSafe(s string, def uint) uint {

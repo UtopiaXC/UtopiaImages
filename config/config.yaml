@@ -10,7 +10,7 @@ server:
     mode: release
 database:
     driver: sqlite
-    dsn: data/utopiaimages.db
+    dsn: data/db/utopiaimages.db
 storage:
     driver: local
     local:
@@ -32,14 +32,14 @@ policy:
     max_single_file_size: 52428800
     max_process_image_size: 5242880
 smtp:
-    enabled: true
-    host: smtp.office365.com
-    port: 587
-    from: mail@utopiaxc.com
+    enabled: false
+    host: ""
+    port: 465
+    from: ""
     from_name: Utopia Images
-    user: mail@utopiaxc.com
-    password: Duyusen-429496
-    encryption: tls
+    user: ""
+    password: ""
+    encryption: ssl
 logging:
     level: INFO
     dir: data/logs

@@ -200,67 +200,71 @@
       <!-- Recent Files Table -->
       <n-grid-item span="2 m:1">
         <n-card :title="$t('adminStats.recentFiles')" style="border-radius: 12px;">
-          <n-table size="small" :single-line="false" :bordered="false">
-            <thead>
-              <tr>
-                <th>{{ $t('adminStats.fileName') }}</th>
-                <th>{{ $t('adminStats.fileSize') }}</th>
-                <th>{{ $t('adminStats.uploader') }}</th>
-                <th>{{ $t('common.createdAt') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="f in stats.recent_files" :key="f.id">
-                <td style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                  <strong>{{ f.display_name }}</strong>
-                </td>
-                <td>{{ formatBytes(f.size) }}</td>
-                <td>
-                  <n-tag size="tiny" type="default">{{ f.uploader }}</n-tag>
-                </td>
-                <td style="font-size: 11px; color: #888;">{{ formatDate(f.created_at) }}</td>
-              </tr>
-              <tr v-if="!stats.recent_files || stats.recent_files.length === 0">
-                <td colspan="4" style="text-align: center; color: #666; padding: 20px;">-</td>
-              </tr>
-            </tbody>
-          </n-table>
+          <div class="table-responsive">
+            <n-table size="small" :single-line="false" :bordered="false">
+              <thead>
+                <tr>
+                  <th>{{ $t('adminStats.fileName') }}</th>
+                  <th>{{ $t('adminStats.fileSize') }}</th>
+                  <th>{{ $t('adminStats.uploader') }}</th>
+                  <th>{{ $t('common.createdAt') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="f in stats.recent_files" :key="f.id">
+                  <td style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <strong>{{ f.display_name }}</strong>
+                  </td>
+                  <td>{{ formatBytes(f.size) }}</td>
+                  <td>
+                    <n-tag size="tiny" type="default">{{ f.uploader }}</n-tag>
+                  </td>
+                  <td style="font-size: 11px; color: #888;">{{ formatDate(f.created_at) }}</td>
+                </tr>
+                <tr v-if="!stats.recent_files || stats.recent_files.length === 0">
+                  <td colspan="4" style="text-align: center; color: #666; padding: 20px;">-</td>
+                </tr>
+              </tbody>
+            </n-table>
+          </div>
         </n-card>
       </n-grid-item>
 
       <!-- Recent Users Table -->
       <n-grid-item span="2 m:1">
         <n-card :title="$t('adminStats.recentUsers')" style="border-radius: 12px;">
-          <n-table size="small" :single-line="false" :bordered="false">
-            <thead>
-              <tr>
-                <th>{{ $t('adminStats.user') }}</th>
-                <th>{{ $t('adminStats.role') }}</th>
-                <th>{{ $t('common.status') }}</th>
-                <th>{{ $t('common.createdAt') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="u in stats.recent_users" :key="u.id">
-                <td>
-                  <strong>{{ u.nickname || u.username }}</strong>
-                  <div v-if="u.nickname" style="font-size: 11px; color: #666;">@{{ u.username }}</div>
-                </td>
-                <td>
-                  <n-tag size="tiny" type="info">{{ u.role?.display_name || u.role?.name || 'User' }}</n-tag>
-                </td>
-                <td>
-                  <n-tag v-if="u.status === 'banned'" size="tiny" type="error">{{ $t('adminUsers.statusBanned') }}</n-tag>
-                  <n-tag v-else-if="u.status === 'frozen'" size="tiny" type="warning">{{ $t('adminUsers.statusFrozen') }}</n-tag>
-                  <n-tag v-else size="tiny" type="success">{{ $t('adminUsers.statusActive') }}</n-tag>
-                </td>
-                <td style="font-size: 11px; color: #888;">{{ formatDate(u.created_at) }}</td>
-              </tr>
-              <tr v-if="!stats.recent_users || stats.recent_users.length === 0">
-                <td colspan="4" style="text-align: center; color: #666; padding: 20px;">-</td>
-              </tr>
-            </tbody>
-          </n-table>
+          <div class="table-responsive">
+            <n-table size="small" :single-line="false" :bordered="false">
+              <thead>
+                <tr>
+                  <th>{{ $t('adminStats.user') }}</th>
+                  <th>{{ $t('adminStats.role') }}</th>
+                  <th>{{ $t('common.status') }}</th>
+                  <th>{{ $t('common.createdAt') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="u in stats.recent_users" :key="u.id">
+                  <td>
+                    <strong>{{ u.nickname || u.username }}</strong>
+                    <div v-if="u.nickname" style="font-size: 11px; color: #666;">@{{ u.username }}</div>
+                  </td>
+                  <td>
+                    <n-tag size="tiny" type="info">{{ u.role?.display_name || u.role?.name || 'User' }}</n-tag>
+                  </td>
+                  <td>
+                    <n-tag v-if="u.status === 'banned'" size="tiny" type="error">{{ $t('adminUsers.statusBanned') }}</n-tag>
+                    <n-tag v-else-if="u.status === 'frozen'" size="tiny" type="warning">{{ $t('adminUsers.statusFrozen') }}</n-tag>
+                    <n-tag v-else size="tiny" type="success">{{ $t('adminUsers.statusActive') }}</n-tag>
+                  </td>
+                  <td style="font-size: 11px; color: #888;">{{ formatDate(u.created_at) }}</td>
+                </tr>
+                <tr v-if="!stats.recent_users || stats.recent_users.length === 0">
+                  <td colspan="4" style="text-align: center; color: #666; padding: 20px;">-</td>
+                </tr>
+              </tbody>
+            </n-table>
+          </div>
         </n-card>
       </n-grid-item>
     </n-grid>

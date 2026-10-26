@@ -99,7 +99,7 @@
         :key="index"
         style="margin-bottom: 16px; border-radius: 12px;"
       >
-        <div style="display: flex; gap: 20px; align-items: flex-start;">
+        <div class="upload-result-item" style="display: flex; gap: 20px; align-items: flex-start;">
           <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
             <img
               v-if="item.file.is_image"
@@ -140,7 +140,7 @@
     />
 
     <!-- ZIP Archive Import Modal -->
-    <n-modal v-model:show="showImportModal" preset="card" :title="$t('upload.archiveImport')" style="width: 520px; border-radius: 12px;">
+    <n-modal v-model:show="showImportModal" preset="card" :title="$t('upload.archiveImport')" style="width: 520px; max-width: 95vw; border-radius: 12px;">
       <p style="color: #aaa; font-size: 13px; margin-bottom: 20px;">
         {{ $t('upload.archiveImportTip') }}
       </p>
@@ -286,6 +286,7 @@ const handleImportZip = async () => {
   try {
     const res = await api.post('/import/archive', formData)
     message.success(`${t('upload.importSuccess')}: ${res.data.imported} / ${res.data.total}`)
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
     showImportModal.value = false
     selectedZipFile.value = null
   } catch (err: any) {
@@ -377,6 +378,7 @@ const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomReque
     const res = await api.post('/upload', formData)
     results.value.unshift(res.data)
     message.success(`${file.name} ${t('upload.uploadSuccess')}`)
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
     onFinish()
   } catch (err: any) {
     message.error(err.response?.data?.error || `${file.name} ${t('upload.uploadFailed')}`)
@@ -414,6 +416,7 @@ const uploadBlob = async (blob: File, name: string) => {
     const res = await api.post('/upload', formData)
     results.value.unshift(res.data)
     message.success(t('upload.clipboardSuccess'))
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
   } catch (err: any) {
     message.error(err.response?.data?.error || t('upload.clipboardFailed'))
   }
@@ -442,3 +445,12 @@ onUnmounted(() => {
   window.removeEventListener('paste', handlePaste)
 })
 </script>
+
+<style scoped>
+@media (max-width: 640px) {
+  .upload-result-item {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+}
+</style>

@@ -3,8 +3,8 @@
     <!-- Top toolbar & Filters -->
     <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px;">
       <!-- Row 1: Search, Filter Selects, and View Mode -->
-      <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;">
-        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; flex: 1;">
+      <div class="files-toolbar-row" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;">
+        <div class="files-filter-group" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; flex: 1;">
           <n-input
             v-model:value="search"
             :placeholder="$t('common.search')"
@@ -257,7 +257,8 @@
     <!-- View 3: List -->
     <div v-else-if="viewMode === 'list' && files.length > 0">
       <n-card size="small" style="border-radius: 8px;">
-        <n-table :bordered="false" :single-line="false">
+        <div class="table-responsive">
+          <n-table :bordered="false" :single-line="false">
           <thead>
             <tr>
               <th style="width: 40px;"></th>
@@ -325,6 +326,7 @@
             </tr>
           </tbody>
         </n-table>
+        </div>
       </n-card>
     </div>
 
@@ -777,6 +779,7 @@ const deleteFile = async (id: number) => {
   try {
     await api.delete(`/files/${id}`)
     message.success(t('files.deleteSuccess'))
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
     loadFiles()
   } catch (err: any) {
     message.error(err.response?.data?.error || t('files.deleteFailed'))
@@ -788,6 +791,7 @@ const handleBatchDelete = async () => {
   try {
     await api.post('/files/batch-delete', { ids: selectedIds.value })
     message.success(t('files.deleteSuccess'))
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
     selectedIds.value = []
     loadFiles()
   } catch (err: any) {
@@ -858,5 +862,19 @@ onMounted(() => {
 .masonry-item {
   break-inside: avoid;
   margin-bottom: 16px;
+}
+
+@media (max-width: 768px) {
+  .files-toolbar-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .files-filter-group {
+    width: 100% !important;
+  }
+  .files-filter-group > * {
+    flex: 1 1 100% !important;
+    width: 100% !important;
+  }
 }
 </style>

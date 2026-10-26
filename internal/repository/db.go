@@ -70,6 +70,11 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to auto migrate database tables: %w", err)
 	}
 
+	// Compatibility fix for legacy require2_fa column in users table
+	if db.Migrator().HasColumn(&model.User{}, "require2_fa") && !db.Migrator().HasColumn(&model.User{}, "require_2fa") {
+		_ = db.Migrator().RenameColumn(&model.User{}, "require2_fa", "require_2fa")
+	}
+
 	// Seed defaults
 	if err := seedDefaults(db); err != nil {
 		return nil, fmt.Errorf("failed to seed database defaults: %w", err)

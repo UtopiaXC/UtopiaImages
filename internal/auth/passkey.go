@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"strconv"
@@ -107,6 +109,15 @@ func (pm *PasskeyManager) loadUserCredentials(userID uint) []webauthn.Credential
 
 	var creds []webauthn.Credential
 	for _, r := range records {
+		if r.CredentialData != "" {
+			var cred webauthn.Credential
+			if err := json.Unmarshal([]byte(r.CredentialData), &cred); err == nil {
+				cred.Authenticator.SignCount = r.SignCount
+				creds = append(creds, cred)
+				continue
+			}
+		}
+
 		rawID, err := base64.RawURLEncoding.DecodeString(r.CredentialID)
 		if err != nil {
 			rawID, _ = base64.StdEncoding.DecodeString(r.CredentialID)
@@ -118,6 +129,10 @@ func (pm *PasskeyManager) loadUserCredentials(userID uint) []webauthn.Credential
 			ID:              rawID,
 			PublicKey:       rawPubKey,
 			AttestationType: r.AttestationType,
+			Flags: webauthn.CredentialFlags{
+				BackupEligible: r.BackupEligible,
+				BackupState:    r.BackupState,
+			},
 			Authenticator: webauthn.Authenticator{
 				AAGUID:    rawAAGUID,
 				SignCount: r.SignCount,
@@ -179,6 +194,8 @@ func (pm *PasskeyManager) FinishRegistration(sessionKey, passkeyName string, r *
 		passkeyName = "Passkey " + time.Now().Format("2006-01-02 15:04")
 	}
 
+	credBytes, _ := json.Marshal(credential)
+
 	credRecord := &model.WebAuthnCredential{
 		UserID:          user.ID,
 		Name:            passkeyName,
@@ -187,6 +204,9 @@ func (pm *PasskeyManager) FinishRegistration(sessionKey, passkeyName string, r *
 		AttestationType: credential.AttestationType,
 		AAGUID:          base64.StdEncoding.EncodeToString(credential.Authenticator.AAGUID),
 		SignCount:       credential.Authenticator.SignCount,
+		CredentialData:  string(credBytes),
+		BackupEligible:  credential.Flags.BackupEligible,
+		BackupState:     credential.Flags.BackupState,
 		CreatedAt:       time.Now(),
 	}
 
@@ -264,19 +284,50 @@ func (pm *PasskeyManager) FinishLogin(sessionKey string, r *protocol.ParsedCrede
 	}
 
 	creds := pm.loadUserCredentials(user.ID)
+
+	// Fix for Backup Eligible flag inconsistency:
+	// If credential was saved without BackupEligible flag, or if the authenticator data flags
+	// have updated backup eligibility, sync the loaded credential's BackupEligible and BackupState
+	// flags with the incoming assertion authenticator data flags to prevent false validation rejection.
+	for i := range creds {
+		if bytes.Equal(creds[i].ID, r.RawID) {
+			assertionHasBE := r.Response.AuthenticatorData.Flags.HasBackupEligible()
+			assertionHasBS := r.Response.AuthenticatorData.Flags.HasBackupState()
+			if credRecord.CredentialData == "" || creds[i].Flags.BackupEligible != assertionHasBE {
+				creds[i].Flags.BackupEligible = assertionHasBE
+				creds[i].Flags.BackupState = assertionHasBS
+			}
+		}
+	}
+
 	waUser := &WebAuthnUser{User: &user, Credentials: creds}
+
+	// For discoverable logins (resident credentials), sessionData.UserID was initially empty.
+	// Populate it with the verified user's WebAuthnID so that ValidateLogin's User and Session ID check succeeds.
+	if len(entry.sessionData.UserID) == 0 {
+		entry.sessionData.UserID = waUser.WebAuthnID()
+	} else if !bytes.Equal(entry.sessionData.UserID, waUser.WebAuthnID()) {
+		return nil, errors.New("passkey user does not match login user")
+	}
 
 	credential, err := pm.webAuthn.ValidateLogin(waUser, *entry.sessionData, r)
 	if err != nil {
 		return nil, err
 	}
 
-	// Update sign count & last used
+	// Update sign count, last used, flags, and serialized credential data
 	now := time.Now()
-	pm.db.Model(&credRecord).Updates(map[string]any{
-		"sign_count":   credential.Authenticator.SignCount,
-		"last_used_at": &now,
-	})
+	credBytes, _ := json.Marshal(credential)
+	updates := map[string]any{
+		"sign_count":      credential.Authenticator.SignCount,
+		"last_used_at":    &now,
+		"backup_eligible": credential.Flags.BackupEligible,
+		"backup_state":    credential.Flags.BackupState,
+	}
+	if len(credBytes) > 0 {
+		updates["credential_data"] = string(credBytes)
+	}
+	pm.db.Model(&credRecord).Updates(updates)
 
 	return &user, nil
 }

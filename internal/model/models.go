@@ -56,7 +56,7 @@ type User struct {
 	FileCount             int64          `gorm:"default:0" json:"file_count"`
 	TokenVersion          int64          `gorm:"default:1" json:"token_version"`
 	Locale                string         `gorm:"size:16;default:zh-CN" json:"locale"`
-	Require2FA            bool           `gorm:"default:false" json:"require_2fa"`
+	Require2FA            bool           `gorm:"column:require_2fa;default:false" json:"require_2fa"`
 	FailedLoginAttempts   int            `gorm:"default:0" json:"failed_login_attempts"`
 	LockoutUntil          *time.Time     `json:"lockout_until"`
 	HotlinkEnabled        bool           `gorm:"default:false" json:"hotlink_enabled"`
@@ -111,6 +111,9 @@ type WebAuthnCredential struct {
 	AttestationType string     `gorm:"size:64" json:"attestation_type"`
 	AAGUID          string     `gorm:"size:64" json:"aaguid"`
 	SignCount       uint32     `gorm:"default:0" json:"sign_count"`
+	CredentialData  string     `gorm:"type:text" json:"-"`
+	BackupEligible  bool       `gorm:"default:false" json:"backup_eligible"`
+	BackupState     bool       `gorm:"default:false" json:"backup_state"`
 	CreatedAt       time.Time  `json:"created_at"`
 	LastUsedAt      *time.Time `json:"last_used_at"`
 }

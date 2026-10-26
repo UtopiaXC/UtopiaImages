@@ -9,6 +9,7 @@ import AdminUsersView from '../views/AdminUsersView.vue'
 import AdminRolesView from '../views/AdminRolesView.vue'
 import AdminPoliciesView from '../views/AdminPoliciesView.vue'
 import AdminStatsView from '../views/AdminStatsView.vue'
+import AdminFilesView from '../views/AdminFilesView.vue'
 import WatermarksView from '../views/WatermarksView.vue'
 import UserSettingsView from '../views/UserSettingsView.vue'
 import AdminSettingsView from '../views/AdminSettingsView.vue'
@@ -27,6 +28,7 @@ const routes = [
       { path: 'watermarks', component: WatermarksView },
       { path: 'tokens', component: TokensView },
       { path: 'settings', component: UserSettingsView },
+      { path: 'admin/files', component: AdminFilesView },
       { path: 'admin/users', component: AdminUsersView },
       { path: 'admin/roles', component: AdminRolesView },
       { path: 'admin/policies', component: AdminPoliciesView },

@@ -133,20 +133,25 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 		}
 	}
 
-	// Check if valid temporary unwatermarked link is provided (via ?token=... or ?t=... or legacy ?e=...)
+	// Check if temporary unwatermarked link is requested (via ?token=... or ?t=... or legacy ?e=...)
 	tempToken := c.Query("token")
 	if tempToken == "" {
 		tempToken = c.Query("t")
 	}
 	if tempToken != "" {
 		var tlink model.TemporaryLink
-		if err := s.db.Where("file_id = ? AND token = ? AND revoked_at IS NULL AND expires_at > ?", file.ID, tempToken, time.Now()).First(&tlink).Error; err == nil {
-			needsWatermark = false
+		if err := s.db.Where("file_id = ? AND token = ? AND revoked_at IS NULL AND expires_at > ?", file.ID, tempToken, time.Now()).First(&tlink).Error; err != nil {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
 		}
+		needsWatermark = false
 	} else if expiresStr := c.Query("e"); expiresStr != "" {
-		if exp, err := strconv.ParseInt(expiresStr, 10, 64); err == nil && time.Now().Unix() <= exp {
-			needsWatermark = false
+		exp, err := strconv.ParseInt(expiresStr, 10, 64)
+		if err != nil || time.Now().Unix() > exp {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
 		}
+		needsWatermark = false
 	}
 
 	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))

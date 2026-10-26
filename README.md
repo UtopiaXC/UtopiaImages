@@ -63,11 +63,11 @@ Utopia Images 是一个现代、高性能且开箱即用的自托管图床与静
 
 ```bash
 docker run -d \
-  --name utopiaimages \
+  --name utopia_images \
   -p 8080:8080 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/config:/app/config \
-  utopiaxc/utopiaimages:latest
+  utopiaxc1025/utopia_images:latest
 ```
 
 使用 Docker Compose：
@@ -76,8 +76,8 @@ version: '3.8'
 
 services:
   utopiaimages:
-    image: utopiaxc/utopiaimages:latest
-    container_name: utopiaimages
+    image: utopiaxc1025/utopia_images:latest
+    container_name: utopia_images
     restart: always
     ports:
       - "8080:8080"
