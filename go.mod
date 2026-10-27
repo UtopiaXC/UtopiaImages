@@ -11,6 +11,7 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/pquerna/otp v1.5.0
+	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
 	golang.org/x/sync v0.24.0
@@ -19,6 +20,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
+	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.2
 )
 
@@ -59,6 +61,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
@@ -75,6 +78,7 @@ require (
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/net v0.60.0 // indirect

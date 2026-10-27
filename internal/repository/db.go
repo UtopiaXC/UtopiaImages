@@ -76,14 +76,15 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 	}
 
 	// Seed defaults
-	if err := seedDefaults(db); err != nil {
+	if err := SeedDefaults(db); err != nil {
 		return nil, fmt.Errorf("failed to seed database defaults: %w", err)
 	}
 
 	return db, nil
 }
 
-func seedDefaults(db *gorm.DB) error {
+// SeedDefaults initializes default roles, policies, image presets and system settings
+func SeedDefaults(db *gorm.DB) error {
 	// 1. Built-in Roles (admin, user)
 	var roleCount int64
 	db.Model(&model.Role{}).Count(&roleCount)

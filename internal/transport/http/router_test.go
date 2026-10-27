@@ -13,8 +13,8 @@ func TestAssetsRoute(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{
 			Mode:    "test",
-			Port:    8080,
-			BaseURL: "http://localhost:8080",
+			Port:    2983,
+			BaseURL: "http://localhost:2983",
 		},
 		Database: config.DatabaseConfig{
 			Driver: "sqlite",

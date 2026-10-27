@@ -66,40 +66,53 @@ func (fm *FontManager) resolveFont(family string) *sfnt.Font {
 			`C:\Windows\Fonts\msyh.ttc`,
 			`C:\Windows\Fonts\msyh.ttf`,
 			`data/fonts/msyh.ttc`,
+			`/System/Library/Fonts/STHeiti Medium.ttc`,
+			`/System/Library/Fonts/PingFang.ttc`,
+			`/Library/Fonts/Arial Unicode.ttf`,
+			`/System/Library/Fonts/Supplemental/Arial Unicode.ttf`,
 			`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`,
+			`/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc`,
 			`/usr/share/fonts/truetype/wqy/wqy-microhei.ttc`,
 		}
 	case "simhei", "黑体":
 		candidatePaths = []string{
 			`C:\Windows\Fonts\simhei.ttf`,
 			`data/fonts/simhei.ttf`,
+			`/System/Library/Fonts/STHeiti Light.ttc`,
+			`/System/Library/Fonts/STHeiti Medium.ttc`,
 			`/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc`,
+			`/Library/Fonts/Arial Unicode.ttf`,
 		}
 	case "simsun", "宋体":
 		candidatePaths = []string{
 			`C:\Windows\Fonts\simsun.ttc`,
 			`data/fonts/simsun.ttc`,
+			`/System/Library/Fonts/Supplemental/Songti.ttc`,
+			`/Library/Fonts/Arial Unicode.ttf`,
 		}
 	case "arial":
 		candidatePaths = []string{
 			`C:\Windows\Fonts\arial.ttf`,
+			`/System/Library/Fonts/Supplemental/Arial.ttf`,
+			`/Library/Fonts/Arial Unicode.ttf`,
 			`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`,
 		}
 	default:
-		// Default: try Microsoft YaHei for complete Chinese/English glyph support
+		// Default: try Microsoft YaHei / STHeiti / Noto Sans CJK for complete Chinese/English glyph support
 		candidatePaths = []string{
 			`C:\Windows\Fonts\msyh.ttc`,
 			`C:\Windows\Fonts\msyh.ttf`,
 			`data/fonts/msyh.ttc`,
+			`/System/Library/Fonts/STHeiti Medium.ttc`,
+			`/System/Library/Fonts/PingFang.ttc`,
+			`/Library/Fonts/Arial Unicode.ttf`,
+			`/System/Library/Fonts/Supplemental/Arial Unicode.ttf`,
 			`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`,
+			`/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc`,
 			`/usr/share/fonts/truetype/wqy/wqy-microhei.ttc`,
 			`C:\Windows\Fonts\arial.ttf`,
+			`/System/Library/Fonts/Supplemental/Arial.ttf`,
 		}
-	}
-
-	// Also check if family is a direct file path
-	if _, err := os.Stat(family); err == nil {
-		candidatePaths = append([]string{family}, candidatePaths...)
 	}
 
 	for _, path := range candidatePaths {

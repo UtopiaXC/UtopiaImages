@@ -38,6 +38,10 @@ func NewAdminController(db *gorm.DB, us *service.UploadService, baseURL string, 
 	}
 }
 
+func (ctrl *AdminController) SetDB(db *gorm.DB) {
+	ctrl.db = db
+}
+
 func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
 	admin := rg.Group("/admin")
 	admin.Use(auth.RequireAuth(), auth.RequireAdmin())
@@ -342,11 +346,16 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 	}
 	if req.Status != "" {
 		updates["status"] = req.Status
+		if req.Status == "disabled" {
+			updates["token_version"] = gorm.Expr("token_version + 1")
+			ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+		}
 	}
 	if req.Password != "" {
 		h, _ := auth.HashPassword(req.Password)
 		updates["password_hash"] = h
 		updates["token_version"] = gorm.Expr("token_version + 1")
+		ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
 	}
 
 	if err := ctrl.db.Model(&user).Updates(updates).Error; err != nil {
@@ -674,7 +683,7 @@ func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
 	policy := model.StoragePolicy{
 		Name:             req.Name,
 		Driver:           driver,
-		Config:           `{"base_path":"storage"}`,
+		Config:           `{"base_path":"data/storage"}`,
 		MaxCapacityBytes: req.MaxCapacityBytes,
 		IsDefault:        req.IsDefault,
 		PathPrefix:       pathPrefix,
@@ -996,7 +1005,7 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 			TempLinkCount: linkCountMap[f.ID],
 		}
 		if f.IsImage {
-			item.ThumbnailURL = fmt.Sprintf("%s/%s?preset=thumb", ctrl.baseURL, f.PublicPath)
+			item.ThumbnailURL = fmt.Sprintf("%s/%s?s=thumb", ctrl.baseURL, f.PublicPath)
 		} else {
 			item.ThumbnailURL = item.URL
 		}

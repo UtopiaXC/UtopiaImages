@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -44,6 +45,10 @@ func NewDispatchService(
 	}
 }
 
+func (s *DispatchService) SetDB(db *gorm.DB) {
+	s.db = db
+}
+
 // ServeFile handles client requests for public files
 func (s *DispatchService) ServeFile(c *gin.Context) {
 	// 1. Sanitize request path
@@ -62,17 +67,25 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 	if err := s.db.Where("public_path = ?", publicPath).First(&file).Error; err != nil {
 		// Not matched directly, attempt dynamic format matching (e.g. photo.webp from photo.png, photo.heif)
 		reqExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(publicPath), "."))
-		if reqExt == "webp" || reqExt == "jpg" || reqExt == "jpeg" || reqExt == "png" || reqExt == "heif" || reqExt == "heic" {
+		supportedExts := []string{".jpg", ".jpeg", ".png", ".webp", ".gif", ".heif", ".heic"}
+		isSupportedExt := false
+		for _, ext := range supportedExts {
+			if strings.TrimPrefix(ext, ".") == reqExt {
+				isSupportedExt = true
+				break
+			}
+		}
+
+		if isSupportedExt {
 			baseWithoutExt := strings.TrimSuffix(publicPath, filepath.Ext(publicPath))
-			var candidates []model.FileRecord
-			s.db.Where("public_path LIKE ? AND is_image = 1", baseWithoutExt+"%").Find(&candidates)
-			for _, cand := range candidates {
-				candExt := filepath.Ext(cand.PublicPath)
-				if strings.TrimSuffix(cand.PublicPath, candExt) == baseWithoutExt || cand.PublicPath == baseWithoutExt {
-					file = cand
-					requestedFormat = reqExt
-					break
-				}
+			candidatePaths := make([]string, 0, len(supportedExts))
+			for _, ext := range supportedExts {
+				candidatePaths = append(candidatePaths, baseWithoutExt+ext)
+			}
+			var candidateRecord model.FileRecord
+			if err := s.db.Where("public_path IN ? AND is_image = 1", candidatePaths).First(&candidateRecord).Error; err == nil {
+				file = candidateRecord
+				requestedFormat = reqExt
 			}
 		}
 
@@ -106,6 +119,12 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 	reqW, _ := strconv.Atoi(c.Query("w"))
 	reqH, _ := strconv.Atoi(c.Query("h"))
 	reqStyle := c.Query("s")
+	if reqStyle == "" {
+		reqStyle = c.Query("preset")
+	}
+	if reqStyle == "" {
+		reqStyle = c.Query("style")
+	}
 	if sizeParam := strings.ToLower(c.Query("size")); sizeParam != "" {
 		switch sizeParam {
 		case "large":
@@ -133,7 +152,7 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 		}
 	}
 
-	// Check if temporary unwatermarked link is requested (via ?token=... or ?t=... or legacy ?e=...)
+	// Check if temporary unwatermarked link is requested (via ?token=... or ?t=...)
 	tempToken := c.Query("token")
 	if tempToken == "" {
 		tempToken = c.Query("t")
@@ -145,20 +164,13 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 			return
 		}
 		needsWatermark = false
-	} else if expiresStr := c.Query("e"); expiresStr != "" {
-		exp, err := strconv.ParseInt(expiresStr, 10, 64)
-		if err != nil || time.Now().Unix() > exp {
-			c.AbortWithStatus(http.StatusUnauthorized)
-			return
-		}
-		needsWatermark = false
 	}
 
 	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
 	hasTransformParams := reqW > 0 || reqH > 0 || reqStyle != "" || (requestedFormat != "" && requestedFormat != origExt)
 
-	// If NOT an image, or no watermark and no transform requested: direct delivery
-	if !file.IsImage || (!needsWatermark && !hasTransformParams) {
+	// Vector images (.svg) and icon containers (.ico) or non-images should bypass raster processing
+	if !file.IsImage || (!needsWatermark && !hasTransformParams) || origExt == "ico" || origExt == "svg" {
 		s.serveDirect(c, file)
 		return
 	}
@@ -176,7 +188,18 @@ func (s *DispatchService) isFormatConversionEnabled() bool {
 }
 
 func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord) {
-	c.Header("Content-Type", file.MimeType)
+	mimeType := file.MimeType
+	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
+	if origExt == "ico" && (mimeType == "" || mimeType == "application/octet-stream") {
+		mimeType = "image/x-icon"
+	} else if origExt == "svg" && (mimeType == "" || mimeType == "application/octet-stream") {
+		mimeType = "image/svg+xml"
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	c.Header("Content-Type", mimeType)
 	c.Header("Cache-Control", "public, no-cache, must-revalidate")
 	etag := fmt.Sprintf("\"%s-%d\"", file.Sha256[:16], file.SignVersion)
 	c.Header("ETag", etag)
@@ -283,7 +306,8 @@ func (s *DispatchService) serveProcessed(
 				return s.processor.Process(r, opts)
 			})
 			if err != nil {
-				c.AbortWithStatus(http.StatusInternalServerError)
+				slog.Warn("Image transform failed, falling back to direct serving", "path", file.PublicPath, "error", err)
+				s.serveDirect(c, file)
 				return
 			}
 			s.cache.Put(baseCacheKey, baseCacheExt, baseBytes)
@@ -388,7 +412,8 @@ func (s *DispatchService) serveProcessed(
 			Watermark: wmConfig,
 		})
 		if err != nil {
-			c.AbortWithStatus(http.StatusInternalServerError)
+			slog.Warn("Dynamic watermark processing failed, falling back to direct serving", "path", file.PublicPath, "error", err)
+			s.serveDirect(c, file)
 			return
 		}
 
@@ -427,7 +452,8 @@ func (s *DispatchService) serveProcessed(
 		})
 	})
 	if err != nil {
-		c.AbortWithStatus(http.StatusInternalServerError)
+		slog.Warn("Static watermark processing failed, falling back to direct serving", "path", file.PublicPath, "error", err)
+		s.serveDirect(c, file)
 		return
 	}
 
@@ -554,7 +580,7 @@ func (s *DispatchService) checkReferer(c *gin.Context, file *model.FileRecord) b
 
 	u, err := url.Parse(referer)
 	if err != nil {
-		return true
+		return false
 	}
 
 	refHost := strings.ToLower(u.Hostname())
@@ -606,11 +632,6 @@ func parseDomainRules(val string) []string {
 	return rules
 }
 
-func (s *DispatchService) CreateTempLink(file *model.FileRecord, expiresDuration time.Duration) string {
-	expiresAt := time.Now().Add(expiresDuration).Unix()
-	return fmt.Sprintf("/%s?e=%d", file.PublicPath, expiresAt)
-}
-
 // DownloadRaw serves unwatermarked source for owner or admin
 func (s *DispatchService) ServeRaw(c *gin.Context, fileID uint, currentUserID uint, isAdmin bool) {
 	var file model.FileRecord
@@ -643,6 +664,9 @@ func (s *DispatchService) ServeRaw(c *gin.Context, fileID uint, currentUserID ui
 	}
 	defer r.Close()
 
-	stat, _ := os.Stat(key)
-	http.ServeContent(c.Writer, c.Request, file.DisplayName, stat.ModTime(), bytes.NewReader([]byte{}))
+	if rs, ok := r.(io.ReadSeeker); ok {
+		http.ServeContent(c.Writer, c.Request, file.DisplayName, file.UpdatedAt, rs)
+	} else {
+		_, _ = io.Copy(c.Writer, r)
+	}
 }

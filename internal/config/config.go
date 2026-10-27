@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,7 +54,8 @@ type LocalStorage struct {
 
 type CacheConfig struct {
 	Dir       string `yaml:"dir"`
-	MaxSizeMB int64  `yaml:"max_size_mb"`
+	MaxSizeMB int64  `yaml:"max_size_mb"` // 0 = unlimited
+	TTLDays   int    `yaml:"ttl_days"`    // 0 = unlimited
 }
 
 type SecurityConfig struct {
@@ -102,18 +105,18 @@ func LoadConfig(path string) (*Config, error) {
 		Site: SiteConfig{
 			Name:        "Utopia Images",
 			Description: "又一个Utopia Images自部署图床",
-			BaseURL:     "http://localhost:8080",
+			BaseURL:     "http://localhost:2983",
 			Locale:      "zh-CN",
 		},
 		Server: ServerConfig{
 			Host:    "0.0.0.0",
-			Port:    8080,
-			BaseURL: "http://localhost:8080",
+			Port:    2983,
+			BaseURL: "http://localhost:2983",
 			Mode:    "release",
 		},
 		Database: DatabaseConfig{
 			Driver: "sqlite",
-			DSN:    "data/db/utopiaimages.db",
+			DSN:    "data/db/utopia_images.db",
 		},
 		Storage: StorageConfig{
 			Driver: "local",
@@ -124,6 +127,7 @@ func LoadConfig(path string) (*Config, error) {
 		Cache: CacheConfig{
 			Dir:       "data/cache",
 			MaxSizeMB: 5120,
+			TTLDays:   0,
 		},
 		Security: SecurityConfig{
 			SecretKey:          "default-insecure-secret-key-change-me",
@@ -170,6 +174,18 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	overrideWithEnv(cfg)
+
+	// Ensure secret_key is not the insecure default
+	if cfg.Security.SecretKey == "" || cfg.Security.SecretKey == "default-insecure-secret-key-change-me" {
+		randBytes := make([]byte, 32)
+		if _, err := rand.Read(randBytes); err == nil {
+			cfg.Security.SecretKey = hex.EncodeToString(randBytes)
+			if path != "" {
+				_ = SaveConfig(path, cfg)
+			}
+		}
+	}
+
 	return cfg, nil
 }
 
@@ -221,12 +237,23 @@ func overrideWithEnv(cfg *Config) {
 	if v := os.Getenv("UIMG_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
 	}
+	if v := os.Getenv("UIMG_CACHE_MAX_SIZE_MB"); v != "" {
+		if mb, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Cache.MaxSizeMB = mb
+		}
+	}
+	if v := os.Getenv("UIMG_CACHE_TTL_DAYS"); v != "" {
+		if days, err := strconv.Atoi(v); err == nil {
+			cfg.Cache.TTLDays = days
+		}
+	}
 }
 
 // EnsureDataDirectories ensures all required runtime data directories exist
 func EnsureDataDirectories(cfg *Config) {
 	dirs := []string{
 		"data",
+		"data/config",
 		"data/db",
 		"data/cache",
 		"data/storage",

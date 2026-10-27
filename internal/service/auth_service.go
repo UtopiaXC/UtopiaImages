@@ -24,6 +24,12 @@ type setupTokenEntry struct {
 	ExpiresAt time.Time
 }
 
+type mfaTokenEntry struct {
+	UserID    uint
+	ExpiresAt time.Time
+	Attempts  int
+}
+
 type AuthService struct {
 	db             *gorm.DB
 	sessionManager *auth.SessionManager
@@ -33,6 +39,8 @@ type AuthService struct {
 	tracker        *auth.LoginAttemptsTracker
 	setupTokens    map[string]setupTokenEntry
 	setupLock      sync.RWMutex
+	mfaTokens      map[string]*mfaTokenEntry
+	mfaLock        sync.Mutex
 }
 
 func NewAuthService(
@@ -50,6 +58,7 @@ func NewAuthService(
 		passkeyManager: pm,
 		tracker:        auth.NewLoginAttemptsTracker(),
 		setupTokens:    make(map[string]setupTokenEntry),
+		mfaTokens:      make(map[string]*mfaTokenEntry),
 	}
 }
 
@@ -112,9 +121,24 @@ type LoginResult struct {
 	HasPasskey       bool        `json:"has_passkey"`
 	Requires2FASetup bool        `json:"requires_2fa_setup"`
 	SetupToken       string      `json:"setup_token,omitempty"`
+	MFAToken         string      `json:"mfa_token,omitempty"`
 	RequiresCaptcha  bool        `json:"requires_captcha"`
 	SessionToken     string      `json:"session_token,omitempty"`
 	User             *model.User `json:"user,omitempty"`
+}
+
+func (s *AuthService) GenerateMFAToken(userID uint) string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	tok := hex.EncodeToString(b)
+	s.mfaLock.Lock()
+	defer s.mfaLock.Unlock()
+	s.mfaTokens[tok] = &mfaTokenEntry{
+		UserID:    userID,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+		Attempts:  0,
+	}
+	return tok
 }
 
 func (s *AuthService) GenerateSetupToken(userID uint) string {
@@ -242,10 +266,12 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 	forced2FA := user.Require2FA || sysReq2FA.Value == "true"
 
 	if hasConfirmedTOTP || hasPasskey {
+		mfaToken := s.GenerateMFAToken(user.ID)
 		return &LoginResult{
 			RequiresMFA: true,
 			HasTOTP:     hasConfirmedTOTP,
 			HasPasskey:  hasPasskey,
+			MFAToken:    mfaToken,
 			User:        &user,
 		}, ""
 	}
@@ -524,6 +550,9 @@ func (s *AuthService) Reset2FAWithToken(tokenStr string) string {
 		"token_version": gorm.Expr("token_version + 1"),
 	})
 
+	// Revoke all existing sessions for this user
+	_ = s.sessionManager.RevokeAllUserSessions(user.ID)
+
 	// Mark token as used
 	s.db.Model(&tokenRecord).Update("used", true)
 	slog.Info("2FA successfully reset via email token", "username", user.Username)
@@ -565,6 +594,9 @@ func (s *AuthService) ResetPasswordWithToken(tokenStr, newPassword string) strin
 		"status":                "active",
 	})
 
+	// Revoke all active sessions on password reset
+	_ = s.sessionManager.RevokeAllUserSessions(user.ID)
+
 	// Mark token as used
 	s.db.Model(&tokenRecord).Update("used", true)
 	slog.Info("Password reset completed via token", "username", user.Username)
@@ -572,8 +604,43 @@ func (s *AuthService) ResetPasswordWithToken(tokenStr, newPassword string) strin
 	return ""
 }
 
-// VerifyMFAAndLogin verifies the TOTP code and finishes login
-func (s *AuthService) VerifyMFAAndLogin(userID uint, code, clientIP, userAgent string, rememberMe bool) (string, error) {
+// VerifyMFAAndLogin verifies the MFA pending token and TOTP code, with rate limiting and brute force protection
+func (s *AuthService) VerifyMFAAndLogin(mfaToken, code, clientIP, userAgent string, rememberMe bool) (string, error) {
+	if mfaToken == "" {
+		return "", errors.New("missing MFA token, please login first")
+	}
+
+	code = strings.TrimSpace(code)
+	if len(code) != 6 {
+		return "", errors.New("invalid 2FA code format")
+	}
+
+	// 1. Validate MFA pending token
+	s.mfaLock.Lock()
+	entry, exists := s.mfaTokens[mfaToken]
+	if !exists || time.Now().After(entry.ExpiresAt) {
+		if exists {
+			delete(s.mfaTokens, mfaToken)
+		}
+		s.mfaLock.Unlock()
+		return "", errors.New("MFA session expired or invalid, please login again")
+	}
+
+	if entry.Attempts >= 5 {
+		delete(s.mfaTokens, mfaToken)
+		s.mfaLock.Unlock()
+		return "", errors.New("too many failed MFA attempts, please login again")
+	}
+	entry.Attempts++
+	userID := entry.UserID
+	s.mfaLock.Unlock()
+
+	// 2. IP-based rate limiting via tracker
+	trackerKey := fmt.Sprintf("mfa:%s", clientIP)
+	if s.tracker.IsLocked(trackerKey) {
+		return "", errors.New("too many failed MFA attempts from this IP, please try again later")
+	}
+
 	var sec model.TOTPSecret
 	if err := s.db.Where("user_id = ? AND confirmed_at IS NOT NULL", userID).First(&sec).Error; err != nil {
 		return "", errors.New("2FA not configured")
@@ -585,8 +652,15 @@ func (s *AuthService) VerifyMFAAndLogin(userID uint, code, clientIP, userAgent s
 	}
 
 	if !s.totpManager.Validate(code, plainSecret) {
+		s.tracker.RecordFailure(trackerKey)
 		return "", errors.New("invalid 2FA code")
 	}
+
+	// 3. Success: revoke MFA token and reset attempts tracker
+	s.mfaLock.Lock()
+	delete(s.mfaTokens, mfaToken)
+	s.mfaLock.Unlock()
+	s.tracker.RecordSuccess(trackerKey)
 
 	rawToken, _, err := s.sessionManager.CreateSession(userID, clientIP, userAgent, rememberMe)
 	return rawToken, err

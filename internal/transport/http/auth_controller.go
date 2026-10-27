@@ -25,6 +25,7 @@ type AuthController struct {
 	db          *gorm.DB
 	cfg         *config.Config
 	configPath  string
+	onDBChange  func(*gorm.DB)
 }
 
 func NewAuthController(as *service.AuthService, db *gorm.DB, cfg *config.Config, configPath string) *AuthController {
@@ -34,6 +35,10 @@ func NewAuthController(as *service.AuthService, db *gorm.DB, cfg *config.Config,
 		cfg:         cfg,
 		configPath:  configPath,
 	}
+}
+
+func (ctrl *AuthController) SetOnDBChange(fn func(*gorm.DB)) {
+	ctrl.onDBChange = fn
 }
 
 func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
@@ -63,19 +68,19 @@ func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
 	me.Use(auth.RequireAuth())
 	{
 		me.GET("", ctrl.GetCurrentUser)
-		me.PATCH("/username", ctrl.ChangeUsername)
-		me.GET("/tokens", ctrl.ListApiTokens)
-		me.POST("/tokens", ctrl.CreateApiToken)
-		me.DELETE("/tokens/:id", ctrl.DeleteApiToken)
-		me.POST("/totp/setup", ctrl.SetupTOTP)
-		me.POST("/totp/enable", ctrl.EnableTOTP)
-		me.POST("/totp/disable", ctrl.DisableTOTP)
+		me.PATCH("/username", auth.RequireSessionAuth(), ctrl.ChangeUsername)
+		me.GET("/tokens", auth.RequireSessionAuth(), ctrl.ListApiTokens)
+		me.POST("/tokens", auth.RequireSessionAuth(), ctrl.CreateApiToken)
+		me.DELETE("/tokens/:id", auth.RequireSessionAuth(), ctrl.DeleteApiToken)
+		me.POST("/totp/setup", auth.RequireSessionAuth(), ctrl.SetupTOTP)
+		me.POST("/totp/enable", auth.RequireSessionAuth(), ctrl.EnableTOTP)
+		me.POST("/totp/disable", auth.RequireSessionAuth(), ctrl.DisableTOTP)
 
 		// Passkey endpoints
-		me.GET("/passkeys", ctrl.ListPasskeys)
-		me.POST("/passkeys/register-begin", ctrl.BeginPasskeyRegister)
-		me.POST("/passkeys/register-finish", ctrl.FinishPasskeyRegister)
-		me.DELETE("/passkeys/:id", ctrl.DeletePasskey)
+		me.GET("/passkeys", auth.RequireSessionAuth(), ctrl.ListPasskeys)
+		me.POST("/passkeys/register-begin", auth.RequireSessionAuth(), ctrl.BeginPasskeyRegister)
+		me.POST("/passkeys/register-finish", auth.RequireSessionAuth(), ctrl.FinishPasskeyRegister)
+		me.DELETE("/passkeys/:id", auth.RequireSessionAuth(), ctrl.DeletePasskey)
 	}
 }
 
@@ -93,6 +98,11 @@ func (ctrl *AuthController) GetSetupStatus(c *gin.Context) {
 }
 
 func (ctrl *AuthController) TestDatabaseConnection(c *gin.Context) {
+	if !ctrl.authService.IsSetupRequired() {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化，禁止未授权访问"})
+		return
+	}
+
 	var req struct {
 		Driver   string `json:"driver" binding:"required"`
 		DSN      string `json:"dsn"`
@@ -114,7 +124,7 @@ func (ctrl *AuthController) TestDatabaseConnection(c *gin.Context) {
 	switch driver {
 	case "sqlite", "sqlite3":
 		if dsn == "" {
-			dsn = "data/db/utopiaimages.db"
+			dsn = "data/db/utopia_images.db"
 		}
 	case "postgres", "postgresql":
 		if dsn == "" {
@@ -164,6 +174,10 @@ func (ctrl *AuthController) TestDatabaseConnection(c *gin.Context) {
 }
 
 func (ctrl *AuthController) TestSMTPConnection(c *gin.Context) {
+	if !ctrl.authService.IsSetupRequired() {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化，禁止未授权访问"})
+		return
+	}
 	var req struct {
 		Host       string `json:"host" binding:"required"`
 		Port       int    `json:"port" binding:"required"`
@@ -200,6 +214,11 @@ func (ctrl *AuthController) TestSMTPConnection(c *gin.Context) {
 }
 
 func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
+	if !ctrl.authService.IsSetupRequired() {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化，无法重复执行"})
+		return
+	}
+
 	var req struct {
 		Site struct {
 			Name        string `json:"name"`
@@ -303,10 +322,19 @@ func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
 				return
 			}
 
+			if err := repository.SeedDefaults(targetDB); err != nil {
+				slog.Error("Failed to seed defaults on target DB", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库默认数据初始化失败: " + common.SanitizeError(err)})
+				return
+			}
+
 			ctrl.db = targetDB
 			ctrl.authService.SetDB(targetDB)
 			ctrl.cfg.Database.Driver = driver
 			ctrl.cfg.Database.DSN = req.Database.DSN
+			if ctrl.onDBChange != nil {
+				ctrl.onDBChange(targetDB)
+			}
 		}
 	}
 
@@ -414,6 +442,7 @@ func (ctrl *AuthController) Login(c *gin.Context) {
 			"has_passkey":  result.HasPasskey,
 			"user_id":      result.User.ID,
 			"username":     result.User.Username,
+			"mfa_token":    result.MFAToken,
 		})
 		return
 	}
@@ -668,7 +697,8 @@ func (ctrl *AuthController) sendPasswordResetEmail(toEmail, username, resetLink 
 
 func (ctrl *AuthController) VerifyMFA(c *gin.Context) {
 	var req struct {
-		UserID     uint   `json:"user_id" binding:"required"`
+		UserID     uint   `json:"user_id"`
+		MFAToken   string `json:"mfa_token"`
 		Code       string `json:"code" binding:"required"`
 		RememberMe bool   `json:"remember_me"`
 	}
@@ -677,7 +707,7 @@ func (ctrl *AuthController) VerifyMFA(c *gin.Context) {
 		return
 	}
 
-	token, err := ctrl.authService.VerifyMFAAndLogin(req.UserID, req.Code, c.ClientIP(), c.Request.UserAgent(), req.RememberMe)
+	token, err := ctrl.authService.VerifyMFAAndLogin(req.MFAToken, req.Code, c.ClientIP(), c.Request.UserAgent(), req.RememberMe)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return

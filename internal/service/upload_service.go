@@ -42,6 +42,10 @@ func NewUploadService(db *gorm.DB, st storage.StorageDriver, proc imaging.ImageP
 	}
 }
 
+func (s *UploadService) SetDB(db *gorm.DB) {
+	s.db = db
+}
+
 type UploadOptions struct {
 	PolicyID            uint
 	DisplayName         string
@@ -377,17 +381,37 @@ func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fi
 	}
 
 	// Overwrite original
+	sizeDiff := newSize - file.Size
+
+	// Check user storage quota limit
+	var role model.Role
+	if user.Role != nil {
+		role = *user.Role
+	} else {
+		s.db.Where("id = ?", user.RoleID).First(&role)
+	}
+	if sizeDiff > 0 && role.QuotaBytes > 0 && user.UsedBytes+sizeDiff > role.QuotaBytes {
+		return nil, fmt.Errorf("user storage quota exceeded: requires %d bytes, available %d bytes",
+			sizeDiff, role.QuotaBytes-user.UsedBytes)
+	}
+
+	// Check storage policy capacity limit
+	var policy model.StoragePolicy
+	if err := s.db.Where("id = ?", file.PolicyID).First(&policy).Error; err == nil {
+		if sizeDiff > 0 && policy.MaxCapacityBytes > 0 && policy.UsedBytes+sizeDiff > policy.MaxCapacityBytes {
+			return nil, fmt.Errorf("storage policy '%s' capacity exceeded", policy.Name)
+		}
+	}
+
 	if err := s.storage.Put(ctx, file.StorageKey, bytes.NewReader(imgBytes), newSize); err != nil {
 		return nil, fmt.Errorf("failed to save edited image: %w", err)
 	}
 
-	// Purge derived & thumbnail cache so stale transformations are cleared
-	if s.cache != nil {
-		s.cache.Clear()
-	}
+	// Detect actual MIME type
+	detectedMime := mimetype.Detect(imgBytes).String()
 
-	sizeDiff := newSize - file.Size
 	file.Size = newSize
+	file.MimeType = detectedMime
 	file.Width = w
 	file.Height = h
 	file.Sha256 = newSha256
@@ -402,6 +426,9 @@ func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fi
 			if err := tx.Model(&model.User{}).Where("id = ?", file.UserID).Update("used_bytes", gorm.Expr("used_bytes + ?", sizeDiff)).Error; err != nil {
 				return err
 			}
+			if err := tx.Model(&model.StoragePolicy{}).Where("id = ?", file.PolicyID).Update("used_bytes", gorm.Expr("used_bytes + ?", sizeDiff)).Error; err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -409,5 +436,6 @@ func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fi
 		return nil, err
 	}
 
+	user.UsedBytes += sizeDiff
 	return &file, nil
 }

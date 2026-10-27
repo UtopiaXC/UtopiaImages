@@ -1,21 +1,17 @@
-name: Build and Publish Docker Image
+name: Release and Docker Publish
 
 on:
   push:
-    branches:
-      - master
-      - main
     tags:
-      - 'v*.*.*'
       - 'v*'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Custom Image Tag (optional, e.g. v1.0.0)'
+        description: 'Custom Tag (e.g. v1.0.0)'
         required: false
         default: ''
       push:
-        description: 'Push to Docker Hub'
+        description: 'Push Docker image and GitHub Release'
         required: true
         type: boolean
         default: true
@@ -24,12 +20,109 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  DEFAULT_IMAGE_NAME: utopiaxc1025/utopia_images
-
 jobs:
-  build-and-push:
-    name: Build and Push Multi-Arch Image
+  release-binaries:
+    name: Build Multi-Platform Binaries and Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve Version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check Release Note File
+        id: notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTE_FILE="assets/documentation/release_note/${VERSION}.md"
+          if [ -f "$NOTE_FILE" ]; then
+            echo "has_note=true" >> "$GITHUB_OUTPUT"
+            echo "note_file=${NOTE_FILE}" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_note=false" >> "$GITHUB_OUTPUT"
+            echo "note_file=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build Frontend
+        run: |
+          cd web
+          npm install
+          npm run build
+          cd ..
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build Multi-Platform Binaries
+        run: |
+          mkdir -p dist_release
+          TAG="${{ steps.version.outputs.tag }}"
+
+          PLATFORMS=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+            "windows/arm64"
+          )
+
+          for PLATFORM in "${PLATFORMS[@]}"; do
+            GOOS="${PLATFORM%/*}"
+            GOARCH="${PLATFORM#*/}"
+            BIN_NAME="utopia_images"
+            if [ "$GOOS" = "windows" ]; then
+              BIN_NAME="utopia_images.exe"
+            fi
+
+            TARGET_DIR="utopia_images_${TAG}_${GOOS}_${GOARCH}"
+            mkdir -p "${TARGET_DIR}/data/config"
+            cp data/config/config.example.yaml "${TARGET_DIR}/data/config/config.yaml"
+
+            CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build \
+              -ldflags="-s -w -X github.com/UtopiaXC/UtopiaImages/internal/config.Version=${TAG}" \
+              -o "${TARGET_DIR}/${BIN_NAME}" ./cmd/utopia_images/main.go
+
+            if [ "$GOOS" = "windows" ]; then
+              zip -r "dist_release/${TARGET_DIR}.zip" "${TARGET_DIR}"
+            else
+              tar -czf "dist_release/${TARGET_DIR}.tar.gz" "${TARGET_DIR}"
+            fi
+            rm -rf "${TARGET_DIR}"
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.push != false
+        with:
+          name: UtopiaImages ${{ steps.version.outputs.tag }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          body_path: ${{ steps.notes.outputs.note_file }}
+          files: dist_release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-push-docker:
+    name: Build and Push Multi-Arch Docker Image
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,6 +130,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Resolve Version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Determine Docker Image Name
         id: image-name
@@ -67,12 +169,8 @@ jobs:
           flavor: |
             latest=auto
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha,format=short,prefix=sha-
-            type=raw,value=${{ inputs.tag_name }},enable=${{ inputs.tag_name != '' }}
+            type=raw,value=latest
+            type=raw,value=${{ steps.version.outputs.tag }}
 
       - name: Build and push multi-architecture image
         uses: docker/build-push-action@v6
@@ -81,6 +179,8 @@ jobs:
           file: ./deploy/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push != false) }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.tag }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

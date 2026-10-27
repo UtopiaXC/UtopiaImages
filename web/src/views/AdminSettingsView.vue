@@ -28,7 +28,7 @@
           <n-input v-model:value="settings.site_description" style="max-width: 400px;" />
         </n-form-item>
         <n-form-item :label="$t('adminSettings.baseUrl')">
-          <n-input v-model:value="settings.base_url" placeholder="http://localhost:8080" style="max-width: 400px;" />
+          <n-input v-model:value="settings.base_url" placeholder="http://localhost:2983" style="max-width: 400px;" />
         </n-form-item>
         <n-form-item :label="$t('adminSettings.faviconTitle')">
           <div style="display: flex; align-items: center; gap: 16px;">
@@ -396,7 +396,66 @@
       <p style="font-size: 13px; color: #aaa; margin-top: 0;">
         {{ $t('adminSettings.cacheDesc') }}
       </p>
-      <div style="display: flex; gap: 12px;">
+
+      <!-- Cache Usage Progress -->
+      <div style="margin-bottom: 24px; padding: 16px; background-color: var(--card-color, rgba(255,255,255,0.03)); border-radius: 6px; border: 1px solid var(--border-color, rgba(255,255,255,0.08));">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <div style="font-weight: 500;">
+            {{ $t('adminSettings.cacheUsage') }}
+          </div>
+          <div style="font-size: 13px; color: #888;">
+            <span style="font-weight: 600; color: var(--text-color);">{{ formatBytes(cacheStats.usage_bytes) }}</span>
+            <span v-if="cacheLimitBytes > 0"> / {{ formatBytes(cacheLimitBytes) }} ({{ cacheUsagePercent }}%)</span>
+            <span v-else> ({{ $t('adminSettings.cacheUsageUnlimited') }})</span>
+            <span style="margin-left: 12px; color: #888;">{{ cacheStats.file_count }} {{ $t('adminSettings.cacheFilesCount') }}</span>
+          </div>
+        </div>
+        <n-progress
+          type="line"
+          :percentage="cacheLimitBytes > 0 ? cacheUsagePercent : 0"
+          :status="cacheProgressStatus"
+          :show-indicator="cacheLimitBytes > 0"
+          :height="10"
+          border-radius="5px"
+        />
+      </div>
+
+      <n-form label-placement="left" label-width="160" :model="settings">
+        <n-form-item :label="$t('adminSettings.cacheMaxSize')">
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <n-input
+              v-model:value="settings.derived_cache_max_size_mb"
+              placeholder="0"
+              style="max-width: 400px;"
+            >
+              <template #suffix>MB</template>
+            </n-input>
+            <span style="font-size: 12px; color: #888;">
+              {{ $t('adminSettings.cacheMaxSizeTip') }}
+            </span>
+          </div>
+        </n-form-item>
+
+        <n-form-item :label="$t('adminSettings.cacheTTL')">
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <n-input
+              v-model:value="settings.derived_cache_ttl_days"
+              placeholder="0"
+              style="max-width: 400px;"
+            >
+              <template #suffix>{{ $t('adminSettings.cacheDaysUnit') }}</template>
+            </n-input>
+            <span style="font-size: 12px; color: #888;">
+              {{ $t('adminSettings.cacheTTLTip') }}
+            </span>
+          </div>
+        </n-form-item>
+      </n-form>
+
+      <div style="display: flex; gap: 12px; margin-top: 8px;">
+        <n-button type="primary" secondary :loading="pruningCache" @click="pruneDerivedCache">
+          {{ $t('adminSettings.pruneCache') }}
+        </n-button>
         <n-popconfirm @positive-click="clearDerivedCache">
           <template #trigger>
             <n-button type="warning" ghost :loading="clearingCache">
@@ -425,7 +484,7 @@ const clearingCache = ref(false)
 const settings = ref<any>({
   site_name: 'Utopia Images',
   site_description: '',
-  base_url: 'http://localhost:8080',
+  base_url: 'http://localhost:2983',
   max_single_file_size: '50',
   max_process_image_size: '5',
   captcha_provider: 'altcha',
@@ -439,6 +498,8 @@ const settings = ref<any>({
   log_max_size_mb: '20',
   log_max_backups: '10',
   log_max_age_days: '30',
+  derived_cache_max_size_mb: '5120',
+  derived_cache_ttl_days: '0',
   allow_registration: 'false',
   default_register_role_id: '2',
   smtp_enabled: 'false',
@@ -677,11 +738,71 @@ watch(
   { deep: true }
 )
 
+const cacheStats = ref({
+  usage_bytes: 0,
+  file_count: 0,
+  max_size_mb: 5120,
+  ttl_days: 0
+})
+const loadingCacheStats = ref(false)
+const pruningCache = ref(false)
+
+const formatBytes = (bytes: number): string => {
+  if (!bytes || bytes <= 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+const cacheLimitBytes = computed(() => {
+  const mb = Number(settings.value.derived_cache_max_size_mb) || 0
+  return mb > 0 ? mb * 1024 * 1024 : 0
+})
+
+const cacheUsagePercent = computed(() => {
+  if (cacheLimitBytes.value <= 0) return 0
+  const pct = Math.round((cacheStats.value.usage_bytes / cacheLimitBytes.value) * 100)
+  return Math.min(100, Math.max(0, pct))
+})
+
+const cacheProgressStatus = computed(() => {
+  if (cacheLimitBytes.value <= 0) return 'info'
+  if (cacheUsagePercent.value >= 90) return 'error'
+  if (cacheUsagePercent.value >= 75) return 'warning'
+  return 'success'
+})
+
+const loadCacheStats = async () => {
+  loadingCacheStats.value = true
+  try {
+    const res = await api.get('/admin/cache/stats')
+    cacheStats.value = res.data
+  } catch {}
+  finally {
+    loadingCacheStats.value = false
+  }
+}
+
+const pruneDerivedCache = async () => {
+  pruningCache.value = true
+  try {
+    const res = await api.post('/admin/cache/prune')
+    message.success(`${t('adminSettings.cachePruned')}: ${res.data.cleared_count} (${formatBytes(res.data.freed_bytes)})`)
+    await loadCacheStats()
+  } catch {
+    message.error(t('common.save'))
+  } finally {
+    pruningCache.value = false
+  }
+}
+
 const clearDerivedCache = async () => {
   clearingCache.value = true
   try {
     const res = await api.post('/admin/cache/clear')
     message.success(`${t('adminSettings.cacheCleared')}: ${res.data.cleared}`)
+    await loadCacheStats()
   } catch {
     message.error(t('common.save'))
   } finally {
@@ -689,5 +810,8 @@ const clearDerivedCache = async () => {
   }
 }
 
-onMounted(loadSettings)
+onMounted(() => {
+  loadSettings()
+  loadCacheStats()
+})
 </script>

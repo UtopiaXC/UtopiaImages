@@ -41,7 +41,7 @@
               <n-input v-model:value="form.site.description" />
             </n-form-item>
             <n-form-item :label="$t('setup.baseUrl')">
-              <n-input v-model:value="form.site.base_url" placeholder="http://localhost:8080" />
+              <n-input v-model:value="form.site.base_url" placeholder="http://localhost:2983" />
             </n-form-item>
             <n-form-item :label="$t('setup.defaultLocale')">
               <n-select v-model:value="form.site.locale" :options="localeOptions" />
@@ -67,7 +67,7 @@
                 {{ $t('setup.dbSqliteDesc') }}
               </n-alert>
               <n-form-item :label="$t('setup.dbPath')">
-                <n-input v-model:value="dbFields.sqlitePath" placeholder="data/db/utopiaimages.db" />
+                <n-input v-model:value="dbFields.sqlitePath" placeholder="data/db/utopia_images.db" />
               </n-form-item>
             </template>
 
@@ -89,7 +89,7 @@
                 </n-grid-item>
               </n-grid>
               <n-form-item :label="$t('setup.dbName')">
-                <n-input v-model:value="dbFields.dbName" placeholder="utopiaimages" />
+                <n-input v-model:value="dbFields.dbName" placeholder="utopia_images" />
               </n-form-item>
               <n-grid cols="2" :x-gap="12">
                 <n-grid-item>
@@ -126,7 +126,7 @@
                 </n-grid-item>
               </n-grid>
               <n-form-item :label="$t('setup.dbName')">
-                <n-input v-model:value="dbFields.dbName" placeholder="utopiaimages" />
+                <n-input v-model:value="dbFields.dbName" placeholder="utopia_images" />
               </n-form-item>
               <n-grid cols="2" :x-gap="12">
                 <n-grid-item>
@@ -302,7 +302,7 @@ const form = ref({
   },
   database: {
     driver: 'sqlite',
-    dsn: 'data/db/utopiaimages.db'
+    dsn: 'data/db/utopia_images.db'
   },
   smtp: {
     enabled: false,
@@ -323,11 +323,11 @@ const form = ref({
 })
 
 const dbFields = ref({
-  sqlitePath: 'data/db/utopiaimages.db',
+  sqlitePath: 'data/db/utopia_images.db',
   host: 'localhost',
   pgPort: 5432,
   mysqlPort: 3306,
-  dbName: 'utopiaimages',
+  dbName: 'utopia_images',
   user: 'postgres',
   password: '',
   sslmode: 'disable',
@@ -343,7 +343,7 @@ const changeLocale = (val: string) => {
 const buildDsn = () => {
   const driver = form.value.database.driver
   if (driver === 'sqlite') {
-    return dbFields.value.sqlitePath || 'data/db/utopiaimages.db'
+    return dbFields.value.sqlitePath || 'data/db/utopia_images.db'
   }
   if (driver === 'postgres') {
     return `host=${dbFields.value.host} port=${dbFields.value.pgPort} user=${dbFields.value.user} password=${dbFields.value.password} dbname=${dbFields.value.dbName} sslmode=${dbFields.value.sslmode}`

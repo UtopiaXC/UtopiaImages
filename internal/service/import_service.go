@@ -36,6 +36,10 @@ func NewImportService(db *gorm.DB, up *UploadService) *ImportService {
 	return &ImportService{db: db, upload: up}
 }
 
+func (s *ImportService) SetDB(db *gorm.DB) {
+	s.db = db
+}
+
 type ImportOptions struct {
 	PreservePath        bool   `json:"preserve_path"`
 	StripTopDir         bool   `json:"strip_top_dir"`
@@ -44,6 +48,12 @@ type ImportOptions struct {
 	WatermarkTemplateID *uint  `json:"watermark_template_id"`
 	HotlinkMode         string `json:"hotlink_mode"` // inherit / on / off
 }
+
+const (
+	MaxArchiveTotalBytes = 500 * 1024 * 1024 // 500 MB max uncompressed archive size
+	MaxArchiveSingleFile = 50 * 1024 * 1024  // 50 MB max per single file
+	MaxArchiveFileCount  = 1000              // Max 1000 files in archive
+)
 
 type extractedItem struct {
 	Path string
@@ -88,19 +98,37 @@ func (s *ImportService) extractZip(archivePath string) ([]extractedItem, error) 
 	}
 	defer r.Close()
 
+	if len(r.File) > MaxArchiveFileCount {
+		return nil, fmt.Errorf("archive contains %d files, exceeding maximum allowed of %d", len(r.File), MaxArchiveFileCount)
+	}
+
 	var items []extractedItem
+	var totalExtracted int64
+
 	for _, f := range r.File {
 		if f.FileInfo().IsDir() {
 			continue
+		}
+		if f.UncompressedSize64 > uint64(MaxArchiveSingleFile) {
+			return nil, fmt.Errorf("file '%s' exceeds single file size limit (%d MB)", f.Name, MaxArchiveSingleFile/(1024*1024))
 		}
 		rc, err := f.Open()
 		if err != nil {
 			continue
 		}
-		data, err := io.ReadAll(rc)
+		limited := io.LimitReader(rc, MaxArchiveSingleFile+1)
+		data, err := io.ReadAll(limited)
 		rc.Close()
 		if err != nil {
 			continue
+		}
+		if int64(len(data)) > MaxArchiveSingleFile {
+			return nil, fmt.Errorf("file '%s' exceeds single file size limit (%d MB)", f.Name, MaxArchiveSingleFile/(1024*1024))
+		}
+
+		totalExtracted += int64(len(data))
+		if totalExtracted > MaxArchiveTotalBytes {
+			return nil, fmt.Errorf("total uncompressed size exceeds maximum allowed limit (%d MB)", MaxArchiveTotalBytes/(1024*1024))
 		}
 
 		decodedName := s.decodeFilename(f.Name)
@@ -120,19 +148,37 @@ func (s *ImportService) extract7z(archivePath string) ([]extractedItem, error) {
 	}
 	defer r.Close()
 
+	if len(r.File) > MaxArchiveFileCount {
+		return nil, fmt.Errorf("archive contains %d files, exceeding maximum allowed of %d", len(r.File), MaxArchiveFileCount)
+	}
+
 	var items []extractedItem
+	var totalExtracted int64
+
 	for _, f := range r.File {
 		if f.FileInfo().IsDir() {
 			continue
+		}
+		if f.UncompressedSize > uint64(MaxArchiveSingleFile) {
+			return nil, fmt.Errorf("file '%s' exceeds single file size limit (%d MB)", f.Name, MaxArchiveSingleFile/(1024*1024))
 		}
 		rc, err := f.Open()
 		if err != nil {
 			continue
 		}
-		data, err := io.ReadAll(rc)
+		limited := io.LimitReader(rc, MaxArchiveSingleFile+1)
+		data, err := io.ReadAll(limited)
 		rc.Close()
 		if err != nil {
 			continue
+		}
+		if int64(len(data)) > MaxArchiveSingleFile {
+			return nil, fmt.Errorf("file '%s' exceeds single file size limit (%d MB)", f.Name, MaxArchiveSingleFile/(1024*1024))
+		}
+
+		totalExtracted += int64(len(data))
+		if totalExtracted > MaxArchiveTotalBytes {
+			return nil, fmt.Errorf("total uncompressed size exceeds maximum allowed limit (%d MB)", MaxArchiveTotalBytes/(1024*1024))
 		}
 
 		decodedName := s.decodeFilename(f.Name)
@@ -174,6 +220,8 @@ func (s *ImportService) extractTarGz(archivePath string) ([]extractedItem, error
 func (s *ImportService) readTarStream(r io.Reader) ([]extractedItem, error) {
 	tr := tar.NewReader(r)
 	var items []extractedItem
+	var totalExtracted int64
+	count := 0
 
 	for {
 		hdr, err := tr.Next()
@@ -186,10 +234,23 @@ func (s *ImportService) readTarStream(r io.Reader) ([]extractedItem, error) {
 		if hdr.Typeflag == tar.TypeDir {
 			continue
 		}
+		count++
+		if count > MaxArchiveFileCount {
+			return nil, fmt.Errorf("archive contains more than %d files", MaxArchiveFileCount)
+		}
 
-		data, err := io.ReadAll(tr)
+		limited := io.LimitReader(tr, MaxArchiveSingleFile+1)
+		data, err := io.ReadAll(limited)
 		if err != nil {
 			continue
+		}
+		if int64(len(data)) > MaxArchiveSingleFile {
+			return nil, fmt.Errorf("file '%s' exceeds single file size limit (%d MB)", hdr.Name, MaxArchiveSingleFile/(1024*1024))
+		}
+
+		totalExtracted += int64(len(data))
+		if totalExtracted > MaxArchiveTotalBytes {
+			return nil, fmt.Errorf("total uncompressed size exceeds maximum allowed limit (%d MB)", MaxArchiveTotalBytes/(1024*1024))
 		}
 
 		decodedName := s.decodeFilename(hdr.Name)
@@ -215,9 +276,13 @@ func (s *ImportService) extractSingleGz(archivePath, originalFilename string) ([
 	}
 	defer gz.Close()
 
-	data, err := io.ReadAll(gz)
+	limited := io.LimitReader(gz, MaxArchiveSingleFile+1)
+	data, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read gz data: %w", err)
+	}
+	if int64(len(data)) > MaxArchiveSingleFile {
+		return nil, fmt.Errorf("file exceeds single file size limit (%d MB)", MaxArchiveSingleFile/(1024*1024))
 	}
 
 	targetName := strings.TrimSuffix(originalFilename, ".gz")
@@ -256,6 +321,23 @@ func (s *ImportService) processExtractedItems(ctx context.Context, user *model.U
 		hotlinkMode = "inherit"
 	}
 
+	var role model.Role
+	if user.Role != nil {
+		role = *user.Role
+	} else {
+		s.db.Where("id = ?", user.RoleID).First(&role)
+	}
+
+	if opts.WatermarkTemplateID != nil && *opts.WatermarkTemplateID > 0 {
+		var count int64
+		s.db.Model(&model.WatermarkTemplate{}).
+			Where("id = ? AND (owner_id IS NULL OR owner_id = ?)", *opts.WatermarkTemplateID, user.ID).
+			Count(&count)
+		if count == 0 {
+			opts.WatermarkTemplateID = nil
+		}
+	}
+
 	for _, item := range items {
 		total++
 		cleanedPath := pathclean.CleanPath(item.Path)
@@ -287,6 +369,29 @@ func (s *ImportService) processExtractedItems(ctx context.Context, user *model.U
 				skipped++
 				continue
 			}
+		}
+
+		// Calculate storage size difference
+		var sizeDelta int64 = item.Size
+		if opts.ConflictAction == "overwrite" && existingCount > 0 {
+			var existingFile model.FileRecord
+			if err := s.db.Where("public_path = ?", publicPath).First(&existingFile).Error; err == nil {
+				sizeDelta = item.Size - existingFile.Size
+			}
+		}
+
+		// Enforce user storage quota
+		if sizeDelta > 0 && role.QuotaBytes > 0 && user.UsedBytes+sizeDelta > role.QuotaBytes {
+			slog.Warn("Import skipped: user quota exceeded", "path", publicPath, "user", user.Username)
+			skipped++
+			continue
+		}
+
+		// Enforce storage policy capacity
+		if sizeDelta > 0 && policy.MaxCapacityBytes > 0 && policy.UsedBytes+sizeDelta > policy.MaxCapacityBytes {
+			slog.Warn("Import skipped: storage policy capacity exceeded", "path", publicPath, "policy", policy.Name)
+			skipped++
+			continue
 		}
 
 		// Detect MIME type
@@ -358,11 +463,21 @@ func (s *ImportService) processExtractedItems(ctx context.Context, user *model.U
 			}).Create(&record)
 		}
 
-		// Track user used quota
-		s.db.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-			"used_bytes": gorm.Expr("used_bytes + ?", item.Size),
-			"file_count": gorm.Expr("file_count + 1"),
-		})
+		// Track user used quota & policy used capacity
+		if sizeDelta != 0 {
+			userUpdates := map[string]any{
+				"used_bytes": gorm.Expr("used_bytes + ?", sizeDelta),
+			}
+			if existingCount == 0 {
+				userUpdates["file_count"] = gorm.Expr("file_count + 1")
+			}
+			s.db.Model(&model.User{}).Where("id = ?", user.ID).Updates(userUpdates)
+			s.db.Model(&model.StoragePolicy{}).Where("id = ?", policy.ID).Update("used_bytes", gorm.Expr("used_bytes + ?", sizeDelta))
+			user.UsedBytes += sizeDelta
+			policy.UsedBytes += sizeDelta
+		} else if existingCount == 0 {
+			s.db.Model(&model.User{}).Where("id = ?", user.ID).Update("file_count", gorm.Expr("file_count + 1"))
+		}
 
 		imported++
 	}
@@ -376,7 +491,7 @@ func (s *ImportService) decodeFilename(name string) string {
 		return name
 	}
 
-	// Try GB18030 decode for legacy Windows archives
+	// Try GB18030 decode for legacy Windows archive
 	reader := transform.NewReader(strings.NewReader(name), simplifiedchinese.GB18030.NewDecoder())
 	d, err := io.ReadAll(reader)
 	if err == nil && len(d) > 0 && utf8.Valid(d) {

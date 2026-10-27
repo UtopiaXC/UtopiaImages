@@ -34,7 +34,7 @@ type sessionEntry struct {
 func NewPasskeyManager(db *gorm.DB, baseURL string) (*PasskeyManager, error) {
 	u, err := url.Parse(baseURL)
 	rpID := "localhost"
-	rpOrigin := "http://localhost:8080"
+	rpOrigin := "http://localhost:2983"
 	if err == nil && u.Hostname() != "" {
 		rpID = u.Hostname()
 		rpOrigin = strings.TrimRight(baseURL, "/")
@@ -43,7 +43,7 @@ func NewPasskeyManager(db *gorm.DB, baseURL string) (*PasskeyManager, error) {
 	w, err := webauthn.New(&webauthn.Config{
 		RPDisplayName: "Utopia Images",
 		RPID:          rpID,
-		RPOrigins:     []string{rpOrigin, "http://localhost:5173", "http://localhost:8080"},
+		RPOrigins:     []string{rpOrigin, "http://localhost:5173", "http://localhost:2983"},
 	})
 	if err != nil {
 		return nil, err
@@ -65,6 +65,10 @@ func NewPasskeyManager(db *gorm.DB, baseURL string) (*PasskeyManager, error) {
 	}()
 
 	return pm, nil
+}
+
+func (pm *PasskeyManager) SetDB(db *gorm.DB) {
+	pm.db = db
 }
 
 func (pm *PasskeyManager) cleanupExpired() {

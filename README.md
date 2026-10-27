@@ -1,46 +1,10 @@
 # Utopia Images
 
-> 又一个 Utopia Images 自部署图床
+> Yet Another Self Hoste
+> d Image Hosting System By GoLang.
 
-Utopia Images 是一个现代、高性能且开箱即用的自托管图床与静态资源托管平台。后端采用 Go 语言构建，前端基于 Vue 3 + Naive UI + TypeScript 开发，支持编译打包为单一独立二进制文件，无需复杂的外部依赖环境即可轻松运行。
-
----
-
-## 核心特性
-
-- **单二进制独立部署**：前端静态资产全部通过 Go `embed` 嵌入二进制执行文件，下载即可直接运行，无需额外部署 Web 服务器或 Node.js 环境。
-- **多数据库支持**：
-  - 默认使用轻量级 SQLite 文件数据库，零配置开箱即用。
-  - 大规模高并发企业部署推荐使用 PostgreSQL。
-  - 数据库表结构完全遵循第三范式 (3NF) 设计，严谨清晰。
-- **灵活存储策略与多挂载点**：
-  - 支持多套物理存储策略，自定义隔离存储目录。
-  - 用户本地存储默认上限为 10GB，管理员存储空间无上限。
-  - 支持自定义外部访问 URL 路径前缀（如 `/uploads`），亦支持将策略直接挂载至站点顶级根路径（留空前缀）。
-- **全功能富画布图片编辑器**：
-  - **交互式自由裁剪**：默认优先裁切模式，支持选区居中自由拖拽及 8 方向边缘与角落控制手柄缩放。
-  - **几何与涂鸦标注**：支持画笔、矩形、圆角矩形、圆形、箭头、文字印章、马赛克与局部模糊。
-  - **旋转翻转与滤镜微调**：支持 90° 顺逆时针旋转、水平/垂直镜像翻转、黑白、复古、反色及亮度、对比度、饱和度、高斯模糊微调。
-  - **版本更新与缓存穿透**：原图覆盖保存后自动清理派生图缓存，配合 ETag 与浏览器缓存验证机制，确保前台即时更新。
-- **智能水印引擎**：
-  - 支持单点九宫格定位与全图倾斜平铺两种水印布局。
-  - 支持**自适应背景明暗对比色**，根据图片底色智能反转文字颜色，防止水印干扰画面。
-  - 支持**动态变量标签**（如年份、日期、请求域名、图片体积、图片分辨率等），包含动态标签时自动跳过磁盘静态缓存并按需实时渲染。
-  - 跨平台字体回退机制，确保在各种服务器环境下稳定呈现文字。
-- **企业级多重安全防线**：
-  - **现代双因素身份验证 (2FA)**：同时支持基于 TOTP 的时间同步验证码与基于 WebAuthn 的 **Passkey（指纹、面容或硬件安全密钥）** 无密码登录。
-  - **防盗链保护 (Hotlink Protection)**：支持按全局、按用户及按文件独立配置 HTTP Referer 白名单，支持空 Referer 访问开关。
-  - **临时免水印签名链接**：支持为指定图片生成具备时效性的免水印直链，吊销后即刻失效。
-  - **邮箱激活与凭证找回**：用户注册流程支持全自动邮箱激活校验，确保只有合法邮箱用户方可启用。
-- **角色化配额与多租户权限**：
-  - 超级管理员角色默认空间无上限 (`0`)。
-  - 支持自定义用户角色、每位用户的存储容量配额以及该角色允许绑定的物理存储策略。
-- **批量归档包一键导入**：
-  - 支持 `.zip`、`.tar`、`.gz`、`.tar.gz` (`.tgz`)、`.7z` 等多种归档压缩包直接上传导入。
-  - 支持保留原有目录树层级结构或平铺入库，支持同名冲突跳过、覆盖或自动重命名。
-- **开发者 API 与个人访问令牌 (PAT)**：
-  - 提供开箱即用的 RESTful API 与永久/限期个人访问令牌。
-  - 无缝兼容 PicGo、Typora、Obsidian、ShareX 等桌面客户端及第三方程序接入。
+Utopia Images是一个自托管图床系统，集成了图片编辑、水印、多存储策略、多语言、批量导入与路径映射等特性，使用高效快速的Go语言开发。  
+Demo图请见最底部。  
 
 ---
 
@@ -48,125 +12,153 @@ Utopia Images 是一个现代、高性能且开箱即用的自托管图床与静
 
 ### 方式一：直接运行预编译二进制文件
 
-1. 从 [Releases 页面](https://github.com/UtopiaXC/UtopiaImages/releases) 下载适合您系统架构的二进制包。
+1. 从 [Releases 页面](https://github.com/UtopiaXC/UtopiaImages/releases) 下载适合您系统架构的压缩包。
 2. 解压并在终端中启动：
    ```bash
-   ./utopiaimages
+   ./utopia_images
    ```
-3. 打开浏览器访问 `http://localhost:8080`，系统将自动进入可视化安装向导。配置站点名称、数据库连接、邮件发信服务（SMTP）及初始化超级管理员账号后即可进入系统。
+3. 打开浏览器访问 `http://localhost:2983`，系统将进入可视化安装向导。配置站点名称、数据库连接、邮件发信服务（SMTP）及初始化超级管理员账号后即可进入系统。
 
 ### 方式二：Docker 部署
 
 #### 1. 使用预编译镜像运行
 
-所有持久化数据统一归集在 `/app/data` 目录下，包含数据库、图片存储、派生缓存与运行日志，只需单挂载点即可完整持久化：
+所有持久化数据统一归集在 `/app/data` 目录下，包含配置文件、数据库、图片存储、派生缓存与运行日志：
 
 ```bash
 docker run -d \
   --name utopia_images \
-  -p 8080:8080 \
+  -p 2983:2983 \
   -v $(pwd)/data:/app/data \
-  -v $(pwd)/config:/app/config \
   utopiaxc1025/utopia_images:latest
 ```
 
 使用 Docker Compose：
+
 ```yaml
 version: '3.8'
 
 services:
-  utopiaimages:
+  utopia_images:
     image: utopiaxc1025/utopia_images:latest
     container_name: utopia_images
     restart: always
     ports:
-      - "8080:8080"
+      - "2983:2983"
     volumes:
       - ./data:/app/data
-      - ./config:/app/config
     environment:
       - TZ=Asia/Shanghai
 ```
 
-> **挂载目录说明**：
-> - `/app/data`：包含 `db/`（数据库文件）、`storage/`（原始图片存储）、`cache/`（派生图片缓存）及 `logs/`（服务运行与轮转日志）。宿主机一键备份此目录即可迁移整站数据。
-> - `/app/config`：配置文件保存目录，可选挂载。
+挂载目录说明：
+- `/app/data`：包含 `config/`（配置文件 `config.yaml`）、`db/`（数据库文件）、`storage/`（原始图片存储）、`cache/`（派生图片缓存）及 `logs/`（服务运行与轮转日志）。宿主机备份此单个目录即可完整迁移整站数据与配置。
 
 #### 2. 自行编译 Docker 镜像
 
-如需基于源码自行构建容器镜像，可直接执行：
-
 ```bash
-# 克隆代码仓库
 git clone https://github.com/UtopiaXC/UtopiaImages.git
 cd UtopiaImages
 
-# 本地直接构建镜像
-docker build -t utopiaimages:latest -f deploy/Dockerfile .
+docker build -t utopia_images:latest -f deploy/Dockerfile .
 
-# 启动自行编译的容器
 docker run -d \
-  --name utopiaimages \
-  -p 8080:8080 \
+  --name utopia_images \
+  -p 2983:2983 \
   -v $(pwd)/data:/app/data \
-  utopiaimages:latest
+  utopia_images:latest
 ```
 
 ---
 
+## 开发背景与进度
+
+本人此前使用兰空图床，虽然开源版已经停止维护，但是勉强能用，所以一直没换。直到本次严重PHP漏洞，不得不将php版本更新到最新，然而兰空图床的安装和依赖极其复杂，在我更新PHP后就无法正常启动了。鉴于其复杂、反应迟钝、不再维护甚至给予PHP的现状，因此我决定彻底抛弃它转向新平台。  
+
+因此我产生了开发一个Go版本的图床的想法。要能兼容兰空甚至其他图床的路径，要使用docker一键部署，要支持水印、防盗链、多策略等特性。
+### AI使用
+
+本项目使用Claude Opus 5.5完成需求分析与可行性验证，使用Gemini 3.8 Flash进行开发，并使用Gemini 4 Argon进行漏洞检测。  
+
+### 开发计划与目前支持情况
+
+由于我暂时没有对象存储的需求，因此第一版只添加了本地存储策略的支持。  
+
+未来我计划添加对阿里云OSS、腾讯云COS、Amazon S3、GCP CGS的支持。如果有需要或者希望添加其他对象存储的支持，可以提交Issue或PR。  
+
+---
+
+## 技术栈
+
+- 后端：Go、Gin Web Framework、GORM
+- 前端：Vue 3、TypeScript、Vite、Naive UI、Vue I18n、Ionicons
+- 多语言：简体中文、英语、日语（其他语言支持可以提交issue或pr）
+---
+
 ## 开发者与 API 文档
 
-UtopiaImages 针对第三方接入提供了完善的 REST API 接口文档，详细内容请参阅：
-[**API 个人访问令牌 (Personal Access Token) 文档**](assets/documentation/api_tokens.md)
+针对第三方接入提供了REST API接口文档，详细内容请参阅：
+[API 个人访问令牌 (Personal Access Token) 文档](assets/documentation/api_tokens.md)
 
-### 常用 PicGo 配置说明
-- **图床类型**：自定义 Web 图床
-- **API 地址**：`https://your-domain.com/api/v1/upload`
-- **POST 参数名**：`file`
-- **JSON 路径**：`links.url`
-- **自定义请求头**：`{"Authorization": "Bearer uimg_xxxxxxxxxxxxxxxx"}`
+### 常用PicGo配置说明
+- 图床类型：自定义 Web 图床
+- API 地址：`https://your-domain.com/api/v1/upload`
+- POST 参数名：`file`
+- JSON 路径：`links.url`
+- 自定义请求头：`{"Authorization": "Bearer uimg_xxxxxxxxxxxxxxxx"}`
 
 ---
 
 ## 本地编译构建
 
 ### 环境要求
-- **Go** >= 1.22
-- **Node.js** >= 18.x
-- **npm** 或 **pnpm**
+- Go >= 1.22
+- Node.js >= 18.x
+- npm 或 pnpm
 
-### 1. 构建前端 SPA
+### 1. 构建前端
 ```bash
 cd web
 npm install
 npm run build
 cd ..
 ```
-构建产物将输出至 `web/dist`，并在后续步骤中被 Go 自动打包进最终可执行文件。
+构建产物输出至 `web/dist`，后续步骤中由Go embed自动打包进最终可执行文件。
 
 ### 2. 构建后端单一可执行程序
 ```bash
 # Windows
-go build -o utopiaimages.exe .
+go build -ldflags="-s -w" -o utopia_images.exe ./cmd/utopia_images/main.go
 
 # Linux / macOS
-go build -o utopiaimages .
+go build -ldflags="-s -w" -o utopia_images ./cmd/utopia_images/main.go
 ```
 
 ---
 
-## 技术栈
+## 社区协作
 
-- **后端**：[Go](https://go.dev/)、[Gin Web Framework](https://github.com/gin-gonic/gin)、[GORM](https://gorm.io/)、[Imaging](https://github.com/disintegration/imaging)、[WebAuthn](https://github.com/go-webauthn/webauthn)、[PuerkitoBio/goquery](https://github.com/PuerkitoBio/goquery)
-- **前端**：[Vue 3](https://vuejs.org/)、[TypeScript](https://www.typescriptlang.org/)、[Vite](https://vitejs.dev/)、[Naive UI](https://www.naiveui.com/)、[Vue I18n](https://kazupon.github.io/vue-i18n/)、[Ionicons](https://ionic.io/ionicons)
-- **多语言**：简体中文 (zh-CN)、英语 (en-US)、日语 (ja-JP)
+本项目欢迎贡献代码。  
+欢迎AI代码。但是提交AI代码前请务必人工审阅。  
+请遵守社区规则提交issue与PR。
 
 ---
 
-## 开源许可证
+## 捐助
 
-本项目采用 [MIT License](LICENSE) 开源协议。
+请不要在任何渠道以任何方式为本项目付出金钱。  
+如果您想捐助本项目，您可以向慈善组织或开放源代码促进会（开源组织，OSI）捐款，我们会感激不尽。
 
-
-## AI使用
-本文档与项目基本由Claude Opus 5.5与Gemini 3.8 Flash实现
+## Demo
+### 面板
+![dashboard.png](assets/images/dashboard.png)
+### 上传主页
+![main.png](assets/images/main.png)
+### 图片库
+![gallery.png](assets/images/gallery.png)
+### 直链获取
+![link-share.png](assets/images/link-share.png)
+### 水印
+![watermark.png](assets/images/watermark.png)
+### 频域盲水印
+![hidden_watermark.png](assets/images/hidden_watermark.png)

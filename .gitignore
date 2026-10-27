@@ -21,10 +21,15 @@ go.work.sum
 # Environment and local configs
 .env
 .env.local
+config/config.yaml
+data/config/config.yaml
 config.local.yaml
 
 # Runtime Data, uploads, cache, logs
-/data/
+/data/*
+!/data/config/
+data/config/*
+!data/config/config.example.yaml
 /storage/
 /cache/
 /uploads/

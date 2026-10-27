@@ -16,9 +16,13 @@ import (
 )
 
 func main() {
-	configPath := "config/config.yaml"
+	configPath := "data/config/config.yaml"
 	if p := os.Getenv("UIMG_CONFIG_PATH"); p != "" {
 		configPath = p
+	} else if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if _, errOld := os.Stat("config/config.yaml"); errOld == nil {
+			configPath = "config/config.yaml"
+		}
 	}
 
 	cfg, err := config.LoadConfig(configPath)

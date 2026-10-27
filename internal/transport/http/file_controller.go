@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,6 +44,10 @@ func NewFileController(
 		baseURL:         baseURL,
 		derivedCache:    dc,
 	}
+}
+
+func (ctrl *FileController) SetDB(db *gorm.DB) {
+	ctrl.db = db
 }
 
 func (ctrl *FileController) RegisterRoutes(rg *gin.RouterGroup) {
@@ -99,6 +104,14 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 	if tidStr := c.PostForm("watermark_template_id"); tidStr != "" {
 		val := ParseUintSafe(tidStr, 0)
 		if val > 0 {
+			var count int64
+			ctrl.db.Model(&model.WatermarkTemplate{}).
+				Where("id = ? AND (owner_id IS NULL OR owner_id = ?)", val, user.ID).
+				Count(&count)
+			if count == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark template ID or permission denied"})
+				return
+			}
 			wmTemplateID = &val
 		}
 	}
@@ -169,9 +182,15 @@ func (ctrl *FileController) applyFileFilters(query *gorm.DB, c *gin.Context) *go
 			query = query.Where("mime_type = 'image/svg+xml' OR public_path LIKE '%.svg'")
 		case "heif", "heic":
 			query = query.Where("mime_type IN ('image/heif', 'image/heic') OR public_path LIKE '%.heif' OR public_path LIKE '%.heic'")
+		case "ico":
+			query = query.Where("mime_type IN ('image/x-icon', 'image/vnd.microsoft.icon') OR public_path LIKE '%.ico'")
 		case "other":
 			query = query.Where("is_image = 0")
 		}
+	}
+
+	if policyID := c.Query("policy_id"); policyID != "" && policyID != "all" {
+		query = query.Where("policy_id = ?", policyID)
 	}
 
 	if wm := c.Query("watermark_mode"); wm != "" && wm != "all" {
@@ -303,7 +322,19 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 		updates["watermark_mode"] = req.WatermarkMode
 	}
 	if req.WatermarkTemplateID != nil {
-		updates["watermark_template_id"] = req.WatermarkTemplateID
+		if *req.WatermarkTemplateID > 0 {
+			var count int64
+			ctrl.db.Model(&model.WatermarkTemplate{}).
+				Where("id = ? AND (owner_id IS NULL OR owner_id = ?)", *req.WatermarkTemplateID, user.ID).
+				Count(&count)
+			if count == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark template ID or permission denied"})
+				return
+			}
+			updates["watermark_template_id"] = req.WatermarkTemplateID
+		} else {
+			updates["watermark_template_id"] = nil
+		}
 	}
 	if req.HotlinkMode != "" {
 		updates["hotlink_mode"] = req.HotlinkMode
@@ -312,9 +343,6 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 
 	if req.WatermarkMode != "" || req.WatermarkTemplateID != nil {
 		updates["sign_version"] = gorm.Expr("sign_version + 1")
-		if ctrl.derivedCache != nil {
-			ctrl.derivedCache.Clear()
-		}
 	}
 
 	ctrl.db.Model(&file).Updates(updates)
@@ -380,16 +408,25 @@ func (ctrl *FileController) BatchUpdateFiles(c *gin.Context) {
 		updates["watermark_mode"] = *req.WatermarkMode
 	}
 	if req.WatermarkTemplateID != nil {
-		updates["watermark_template_id"] = *req.WatermarkTemplateID
+		if *req.WatermarkTemplateID > 0 {
+			var count int64
+			ctrl.db.Model(&model.WatermarkTemplate{}).
+				Where("id = ? AND (owner_id IS NULL OR owner_id = ?)", *req.WatermarkTemplateID, user.ID).
+				Count(&count)
+			if count == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark template ID or permission denied"})
+				return
+			}
+			updates["watermark_template_id"] = *req.WatermarkTemplateID
+		} else {
+			updates["watermark_template_id"] = nil
+		}
 	}
 	if req.HotlinkMode != nil {
 		updates["hotlink_mode"] = *req.HotlinkMode
 	}
 	if req.WatermarkMode != nil || req.WatermarkTemplateID != nil {
 		updates["sign_version"] = gorm.Expr("sign_version + 1")
-		if ctrl.derivedCache != nil {
-			ctrl.derivedCache.Clear()
-		}
 	}
 
 	query := ctrl.db.Model(&model.FileRecord{}).Where("id IN ?", req.IDs)
@@ -431,16 +468,26 @@ func (ctrl *FileController) ImportArchive(c *gin.Context) {
 	}
 	tmp, err := os.CreateTemp("", "import-*"+ext)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create temp file"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create temp file: " + err.Error()})
 		return
 	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
 
-	if err := c.SaveUploadedFile(fileHeader, tmp.Name()); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save uploaded archive"})
+	src, err := fileHeader.Open()
+	if err != nil {
+		_ = tmp.Close()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to open uploaded archive: " + err.Error()})
 		return
 	}
+	defer src.Close()
+
+	if _, err := io.Copy(tmp, src); err != nil {
+		_ = tmp.Close()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save uploaded archive: " + err.Error()})
+		return
+	}
+	_ = tmp.Close()
 
 	preservePath := c.PostForm("preserve_path") == "true" || c.PostForm("preserve_path") == "1"
 	stripTopDir := c.PostForm("strip_top_dir") == "true" || c.PostForm("strip_top_dir") == "1"
@@ -457,7 +504,7 @@ func (ctrl *FileController) ImportArchive(c *gin.Context) {
 		}
 	}
 
-	total, imported, skipped, err := ctrl.importService.ImportArchive(c.Request.Context(), user, tmp.Name(), fileHeader.Filename, policyID, service.ImportOptions{
+	total, imported, skipped, err := ctrl.importService.ImportArchive(c.Request.Context(), user, tmpPath, fileHeader.Filename, policyID, service.ImportOptions{
 		PreservePath:        preservePath,
 		StripTopDir:         stripTopDir,
 		ConflictAction:      conflictAction,

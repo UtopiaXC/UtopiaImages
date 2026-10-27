@@ -36,6 +36,10 @@ func NewSettingsController(db *gorm.DB, dc *cache.DerivedCache, cfg *config.Conf
 	}
 }
 
+func (ctrl *SettingsController) SetDB(db *gorm.DB) {
+	ctrl.db = db
+}
+
 func (ctrl *SettingsController) RegisterRoutes(rg *gin.RouterGroup) {
 	// 1. User preferences & profile settings
 	me := rg.Group("/me")
@@ -46,7 +50,7 @@ func (ctrl *SettingsController) RegisterRoutes(rg *gin.RouterGroup) {
 		me.GET("/quota", ctrl.GetUserQuota)
 		me.GET("/policies", ctrl.GetUserPolicies)
 		me.PATCH("/profile", ctrl.UpdateProfile)
-		me.POST("/password", ctrl.ChangePassword)
+		me.POST("/password", auth.RequireSessionAuth(), ctrl.ChangePassword)
 	}
 
 	// 2. Admin system settings
@@ -55,7 +59,9 @@ func (ctrl *SettingsController) RegisterRoutes(rg *gin.RouterGroup) {
 	{
 		admin.GET("/settings", ctrl.GetSystemSettings)
 		admin.POST("/settings", ctrl.SaveSystemSettings)
+		admin.GET("/cache/stats", ctrl.GetCacheStats)
 		admin.POST("/cache/clear", ctrl.ClearCache)
+		admin.POST("/cache/prune", ctrl.PruneCache)
 		admin.POST("/favicon", ctrl.UploadFavicon)
 		admin.DELETE("/favicon", ctrl.DeleteFavicon)
 		admin.POST("/smtp/test", ctrl.TestSMTPConnection)
@@ -280,6 +286,9 @@ func (ctrl *SettingsController) ChangePassword(c *gin.Context) {
 		"token_version": gorm.Expr("token_version + 1"),
 	})
 
+	// Revoke all existing sessions
+	ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+
 	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully"})
 }
 
@@ -288,36 +297,38 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 	ctrl.db.Find(&settings)
 
 	res := map[string]string{
-		"site_name":                "Utopia Images",
-		"site_description":         "Next-generation self-hosted image & static asset host",
-		"base_url":                 "http://localhost:8080",
-		"max_single_file_size":     "50", // MB
-		"max_process_image_size":   "5",  // MB
-		"captcha_provider":         "altcha",
-		"session_timeout_days":     "7",
-		"require_2fa":              "false",
-		"enable_format_conversion": "true",
-		"default_convert_format":   "webp",
-		"convert_quality":          "85",
-		"enable_hotlink":           "false",
-		"hotlink_allow_empty":      "true",
-		"hotlink_allowed_domains":  "",
-		"hotlink_action":           "forbidden",
-		"log_level":                appLogger.GetLevel(),
-		"log_permanent_level":      appLogger.GetPermanentLevel(),
-		"log_max_size_mb":          "20",
-		"log_max_backups":          "10",
-		"log_max_age_days":         "30",
-		"allow_registration":       "false",
-		"default_register_role_id": "2",
-		"smtp_enabled":             "false",
-		"smtp_host":                "",
-		"smtp_port":                "465",
-		"smtp_encryption":          "ssl",
-		"smtp_from":                "",
-		"smtp_from_name":           "Utopia Images",
-		"smtp_user":                "",
-		"smtp_password":            "",
+		"site_name":                 "Utopia Images",
+		"site_description":          "Next-generation self-hosted image & static asset host",
+		"base_url":                  "http://localhost:2983",
+		"max_single_file_size":      "50", // MB
+		"max_process_image_size":    "5",  // MB
+		"captcha_provider":          "altcha",
+		"session_timeout_days":      "7",
+		"require_2fa":               "false",
+		"enable_format_conversion":  "true",
+		"default_convert_format":    "webp",
+		"convert_quality":           "85",
+		"enable_hotlink":            "false",
+		"hotlink_allow_empty":       "true",
+		"hotlink_allowed_domains":   "",
+		"hotlink_action":            "forbidden",
+		"log_level":                 appLogger.GetLevel(),
+		"log_permanent_level":       appLogger.GetPermanentLevel(),
+		"log_max_size_mb":           "20",
+		"log_max_backups":           "10",
+		"log_max_age_days":          "30",
+		"derived_cache_max_size_mb": "5120",
+		"derived_cache_ttl_days":    "0",
+		"allow_registration":        "false",
+		"default_register_role_id":  "2",
+		"smtp_enabled":              "false",
+		"smtp_host":                 "",
+		"smtp_port":                 "465",
+		"smtp_encryption":           "ssl",
+		"smtp_from":                 "",
+		"smtp_from_name":            "Utopia Images",
+		"smtp_user":                 "",
+		"smtp_password":             "",
 	}
 
 	for _, s := range settings {
@@ -325,6 +336,12 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 	}
 
 	if ctrl.cfg != nil {
+		if ctrl.cfg.Cache.MaxSizeMB >= 0 {
+			res["derived_cache_max_size_mb"] = strconv.FormatInt(ctrl.cfg.Cache.MaxSizeMB, 10)
+		}
+		if ctrl.cfg.Cache.TTLDays >= 0 {
+			res["derived_cache_ttl_days"] = strconv.Itoa(ctrl.cfg.Cache.TTLDays)
+		}
 		if ctrl.cfg.SMTP.Host != "" {
 			res["smtp_host"] = ctrl.cfg.SMTP.Host
 		}
@@ -440,6 +457,22 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 		if val, ok := req["smtp_password"]; ok {
 			ctrl.cfg.SMTP.Password = val
 		}
+		if val, ok := req["derived_cache_max_size_mb"]; ok {
+			ctrl.setSettingVal("derived_cache_max_size_mb", val)
+			if mb, err := strconv.ParseInt(val, 10, 64); err == nil {
+				ctrl.cfg.Cache.MaxSizeMB = mb
+			}
+		}
+		if val, ok := req["derived_cache_ttl_days"]; ok {
+			ctrl.setSettingVal("derived_cache_ttl_days", val)
+			if days, err := strconv.Atoi(val); err == nil {
+				ctrl.cfg.Cache.TTLDays = days
+			}
+		}
+		if ctrl.derivedCache != nil {
+			ctrl.derivedCache.SetLimits(ctrl.cfg.Cache.MaxSizeMB, ctrl.cfg.Cache.TTLDays)
+			ctrl.derivedCache.PruneIfNecessary()
+		}
 	}
 
 	if ctrl.cfg != nil && ctrl.configPath != "" {
@@ -493,6 +526,49 @@ func (ctrl *SettingsController) ClearCache(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Derived image cache cleared",
 		"cleared": count,
+	})
+}
+
+func (ctrl *SettingsController) GetCacheStats(c *gin.Context) {
+	var totalBytes int64
+	var fileCount int
+	if ctrl.derivedCache != nil {
+		totalBytes, fileCount, _ = ctrl.derivedCache.GetStats()
+	}
+	maxMBStr := ctrl.getSettingVal("derived_cache_max_size_mb", "5120")
+	ttlDaysStr := ctrl.getSettingVal("derived_cache_ttl_days", "0")
+	maxMB, _ := strconv.ParseInt(maxMBStr, 10, 64)
+	ttlDays, _ := strconv.Atoi(ttlDaysStr)
+
+	c.JSON(http.StatusOK, gin.H{
+		"usage_bytes": totalBytes,
+		"file_count":  fileCount,
+		"max_size_mb": maxMB,
+		"ttl_days":    ttlDays,
+	})
+}
+
+func (ctrl *SettingsController) PruneCache(c *gin.Context) {
+	maxMBStr := ctrl.getSettingVal("derived_cache_max_size_mb", "5120")
+	ttlDaysStr := ctrl.getSettingVal("derived_cache_ttl_days", "0")
+	maxMB, _ := strconv.ParseInt(maxMBStr, 10, 64)
+	ttlDays, _ := strconv.Atoi(ttlDaysStr)
+
+	var count int
+	var freedBytes int64
+	if ctrl.derivedCache != nil {
+		maxBytes := maxMB * 1024 * 1024
+		var maxAge time.Duration
+		if ttlDays > 0 {
+			maxAge = time.Duration(ttlDays) * 24 * time.Hour
+		}
+		count, freedBytes, _ = ctrl.derivedCache.Prune(maxBytes, maxAge)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"cleared_count": count,
+		"freed_bytes":   freedBytes,
+		"message":       "Cache pruned successfully",
 	})
 }
 

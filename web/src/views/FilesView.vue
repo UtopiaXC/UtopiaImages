@@ -48,6 +48,15 @@
             style="width: 130px;"
             @update:value="onFilterChange"
           />
+
+          <!-- Policy Filter -->
+          <n-select
+            v-model:value="policyFilter"
+            :options="policyFilterOptions"
+            size="small"
+            style="width: 140px;"
+            @update:value="onFilterChange"
+          />
         </div>
 
         <!-- View Mode Selector -->
@@ -125,7 +134,7 @@
               v-if="file.is_image"
               :src="getFileUrl(file, 'thumb')"
               loading="lazy"
-              style="width: 100%; height: auto; display: block; cursor: pointer; transition: transform 0.2s;"
+              :style="file.public_path.toLowerCase().endsWith('.ico') ? 'max-width: 90%; max-height: 160px; width: auto; height: auto; object-fit: contain; margin: 16px auto; display: block; cursor: pointer;' : 'width: 100%; height: auto; display: block; cursor: pointer; transition: transform 0.2s;'"
               @click="openLightbox(file)"
             />
             <div v-else style="font-size: 13px; color: #888; text-align: center; padding: 40px 16px;">
@@ -356,7 +365,7 @@
         <img
           v-if="lightboxTarget"
           :src="getFileUrl(lightboxTarget)"
-          style="max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: 4px;"
+          :style="lightboxTarget.public_path?.toLowerCase().endsWith('.ico') ? 'max-width: 256px; max-height: 256px; object-fit: contain; border-radius: 4px; padding: 16px; background: rgba(255,255,255,0.04);' : 'max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: 4px;'"
         />
       </div>
       <template #footer>
@@ -494,6 +503,8 @@ const formatFilter = ref('all')
 const timeRangeFilter = ref('all')
 const watermarkFilter = ref('all')
 const hotlinkFilter = ref('all')
+const policyFilter = ref('all')
+const policies = ref<any[]>([])
 
 const page = ref(1)
 const pageSize = ref(24)
@@ -516,8 +527,14 @@ const formatOptions = computed(() => [
   { label: 'WebP', value: 'webp' },
   { label: 'GIF', value: 'gif' },
   { label: 'SVG', value: 'svg' },
+  { label: 'ICO', value: 'ico' },
   { label: 'HEIF / HEIC', value: 'heif' },
   { label: t('files.formatOther'), value: 'other' }
+])
+
+const policyFilterOptions = computed(() => [
+  { label: t('files.allPolicy'), value: 'all' },
+  ...policies.value.map((p: any) => ({ label: p.name, value: String(p.id) }))
 ])
 
 const timeRangeOptions = computed(() => [
@@ -696,6 +713,7 @@ const handleSelectFiltered = async () => {
     if (timeRangeFilter.value !== 'all') params.time_range = timeRangeFilter.value
     if (watermarkFilter.value !== 'all') params.watermark_mode = watermarkFilter.value
     if (hotlinkFilter.value !== 'all') params.hotlink_mode = hotlinkFilter.value
+    if (policyFilter.value !== 'all') params.policy_id = policyFilter.value
 
     const res = await api.get('/files/ids', { params })
     selectedIds.value = res.data.ids || []
@@ -758,10 +776,18 @@ const loadFiles = async () => {
     if (timeRangeFilter.value !== 'all') params.time_range = timeRangeFilter.value
     if (watermarkFilter.value !== 'all') params.watermark_mode = watermarkFilter.value
     if (hotlinkFilter.value !== 'all') params.hotlink_mode = hotlinkFilter.value
+    if (policyFilter.value !== 'all') params.policy_id = policyFilter.value
 
     const res = await api.get('/files', { params })
     files.value = res.data.items || []
     total.value = res.data.total || 0
+  } catch {}
+}
+
+const loadPolicies = async () => {
+  try {
+    const res = await api.get('/me/policies')
+    policies.value = res.data || []
   } catch {}
 }
 
@@ -821,6 +847,7 @@ const formatDate = (isoStr: string) => {
 onMounted(() => {
   loadFiles()
   loadTemplates()
+  loadPolicies()
 })
 </script>
 

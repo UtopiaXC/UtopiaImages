@@ -491,6 +491,7 @@ const reset2FAForm = reactive({
 
 const mfaRequired = ref(false)
 const mfaUserID = ref<number | null>(null)
+const mfaToken = ref<string | null>(null)
 const mfaCode = ref('')
 const mfaHasTOTP = ref(true)
 const mfaHasPasskey = ref(false)
@@ -550,6 +551,7 @@ const handleLogin = async () => {
     if (res.data.requires_mfa) {
       mfaRequired.value = true
       mfaUserID.value = res.data.user_id
+      mfaToken.value = res.data.mfa_token || null
       mfaHasTOTP.value = res.data.has_totp !== false
       mfaHasPasskey.value = !!res.data.has_passkey
       if (mfaHasPasskey.value && !mfaHasTOTP.value) {
@@ -782,6 +784,7 @@ const handleVerifyMFA = async () => {
   try {
     await api.post('/auth/mfa', {
       user_id: mfaUserID.value,
+      mfa_token: mfaToken.value,
       code: mfaCode.value,
       remember_me: form.value.remember_me
     })

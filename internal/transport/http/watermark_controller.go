@@ -34,6 +34,10 @@ func NewWatermarkController(db *gorm.DB, proc imaging.ImageProcessor, dc *cache.
 	}
 }
 
+func (ctrl *WatermarkController) SetDB(db *gorm.DB) {
+	ctrl.db = db
+}
+
 func (ctrl *WatermarkController) RegisterRoutes(rg *gin.RouterGroup) {
 	wm := rg.Group("/watermarks")
 	wm.Use(auth.RequireAuth())
@@ -44,6 +48,7 @@ func (ctrl *WatermarkController) RegisterRoutes(rg *gin.RouterGroup) {
 		wm.PATCH("/:id", ctrl.UpdateWatermark)
 		wm.DELETE("/:id", ctrl.DeleteWatermark)
 		wm.POST("/preview", ctrl.PreviewWatermark)
+		wm.POST("/extract-blind", ctrl.ExtractBlindWatermark)
 	}
 }
 
@@ -205,20 +210,22 @@ func (ctrl *WatermarkController) DeleteWatermark(c *gin.Context) {
 
 func (ctrl *WatermarkController) PreviewWatermark(c *gin.Context) {
 	var req struct {
-		Type            string  `json:"type"`     // text / image
-		Text            string  `json:"text"`     // watermark text
-		Layout          string  `json:"layout"`   // tile / position
-		Position        string  `json:"position"` // bottom-right, etc.
-		Opacity         float64 `json:"opacity"`  // 0.0 - 1.0
-		Angle           float64 `json:"angle"`    // degrees
-		SpacingX        int     `json:"spacing_x"`
-		SpacingY        int     `json:"spacing_y"`
-		FontSize        int     `json:"font_size"`
-		FontFamily      string  `json:"font_family"`
-		FontColor       string  `json:"font_color"`
-		StrokeColor     string  `json:"stroke_color"`
-		StrokeWidth     int     `json:"stroke_width"`
-		AdaptiveScaling *bool   `json:"adaptive_scaling"`
+		Type                 string  `json:"type"`     // text / image
+		Text                 string  `json:"text"`     // watermark text
+		Layout               string  `json:"layout"`   // tile / position
+		Position             string  `json:"position"` // bottom-right, etc.
+		Opacity              float64 `json:"opacity"`  // 0.0 - 1.0
+		Angle                float64 `json:"angle"`    // degrees
+		SpacingX             int     `json:"spacing_x"`
+		SpacingY             int     `json:"spacing_y"`
+		FontSize             int     `json:"font_size"`
+		FontFamily           string  `json:"font_family"`
+		FontColor            string  `json:"font_color"`
+		StrokeColor          string  `json:"stroke_color"`
+		StrokeWidth          int     `json:"stroke_width"`
+		AdaptiveScaling      *bool   `json:"adaptive_scaling"`
+		EnableBlindWatermark *bool   `json:"enable_blind_watermark"`
+		BlindWatermarkText   string  `json:"blind_watermark_text"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -282,21 +289,23 @@ func (ctrl *WatermarkController) PreviewWatermark(c *gin.Context) {
 	outBytes, _, err := ctrl.processor.Process(bytes.NewReader(imgToJpegBytes(img)), imaging.ProcessOptions{
 		Quality: 90,
 		Watermark: &imaging.WatermarkConfig{
-			Enabled:         true,
-			Type:            req.Type,
-			Text:            displayText,
-			Layout:          req.Layout,
-			Position:        req.Position,
-			Opacity:         req.Opacity,
-			Angle:           angle,
-			SpacingX:        req.SpacingX,
-			SpacingY:        req.SpacingY,
-			FontSize:        req.FontSize,
-			FontFamily:      req.FontFamily,
-			FontColor:       req.FontColor,
-			StrokeColor:     req.StrokeColor,
-			StrokeWidth:     req.StrokeWidth,
-			AdaptiveScaling: req.AdaptiveScaling,
+			Enabled:              true,
+			Type:                 req.Type,
+			Text:                 displayText,
+			Layout:               req.Layout,
+			Position:             req.Position,
+			Opacity:              req.Opacity,
+			Angle:                angle,
+			SpacingX:             req.SpacingX,
+			SpacingY:             req.SpacingY,
+			FontSize:             req.FontSize,
+			FontFamily:           req.FontFamily,
+			FontColor:            req.FontColor,
+			StrokeColor:          req.StrokeColor,
+			StrokeWidth:          req.StrokeWidth,
+			AdaptiveScaling:      req.AdaptiveScaling,
+			EnableBlindWatermark: req.EnableBlindWatermark,
+			BlindWatermarkText:   req.BlindWatermarkText,
 		},
 	})
 
@@ -313,4 +322,41 @@ func imgToJpegBytes(img image.Image) []byte {
 	var buf bytes.Buffer
 	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90})
 	return buf.Bytes()
+}
+
+func (ctrl *WatermarkController) ExtractBlindWatermark(c *gin.Context) {
+	file, err := c.FormFile("image")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请上传待提取水印的图片文件"})
+		return
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取图片文件失败"})
+		return
+	}
+	defer src.Close()
+
+	img, _, err := image.Decode(src)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无法解码图片文件，仅支持有效图像文件"})
+		return
+	}
+
+	text, specBase64, err := imaging.ExtractBlindWatermark(img)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"detected": false,
+			"error":    err.Error(),
+			"text":     "",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"detected":       true,
+		"text":           text,
+		"spectrum_image": specBase64,
+	})
 }

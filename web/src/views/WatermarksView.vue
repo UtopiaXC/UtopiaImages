@@ -7,9 +7,14 @@
           {{ $t('watermarks.subtitle') }}
         </p>
       </div>
-      <n-button type="primary" @click="openCreateModal">
-        {{ $t('watermarks.new') }}
-      </n-button>
+      <div style="display: flex; gap: 12px;">
+        <n-button secondary @click="openExtractModal">
+          {{ $t('watermarks.extractBlind') }}
+        </n-button>
+        <n-button type="primary" @click="openCreateModal">
+          {{ $t('watermarks.new') }}
+        </n-button>
+      </div>
     </div>
 
     <!-- Template List Grid -->
@@ -19,6 +24,9 @@
           <template #header-extra>
             <n-tag v-if="!t.owner_id" type="info" size="small">{{ $t('watermarks.global') }}</n-tag>
             <n-tag v-else type="success" size="small">{{ $t('watermarks.personal') }}</n-tag>
+            <n-tag v-if="parseLayers(t.layers).enable_blind_watermark" type="warning" size="small" style="margin-left: 6px;">
+              {{ $t('watermarks.blindWatermark') }}
+            </n-tag>
           </template>
 
           <div style="font-size: 13px; color: #aaa; margin-bottom: 12px; line-height: 1.8;">
@@ -203,6 +211,33 @@
 
         <n-grid cols="1 s:2" :x-gap="16">
           <n-grid-item>
+            <n-form-item :label="$t('watermarks.blindWatermark')">
+              <div style="display: flex; align-items: center; gap: 8px; height: 34px;">
+                <n-switch v-model:value="editForm.enable_blind_watermark" @update:value="debouncedPreview" />
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon size="16" style="color: #888; cursor: pointer;">
+                      <InformationCircleOutline />
+                    </n-icon>
+                  </template>
+                  {{ $t('watermarks.blindWatermarkTip') }}
+                </n-tooltip>
+              </div>
+            </n-form-item>
+          </n-grid-item>
+          <n-grid-item v-if="editForm.enable_blind_watermark">
+            <n-form-item :label="$t('watermarks.blindWatermarkText')">
+              <n-input
+                v-model:value="editForm.blind_watermark_text"
+                :placeholder="$t('watermarks.blindWatermarkTextPlaceholder')"
+                @update:value="debouncedPreview"
+              />
+            </n-form-item>
+          </n-grid-item>
+        </n-grid>
+
+        <n-grid cols="1 s:2" :x-gap="16">
+          <n-grid-item>
             <n-form-item :label="$t('watermarks.fontSize')">
               <n-input-number v-model:value="editForm.font_size" :min="10" :max="96" style="width: 100%;" @update:value="debouncedPreview" />
             </n-form-item>
@@ -278,6 +313,56 @@
         </div>
       </template>
     </n-modal>
+
+    <!-- Extract Blind Watermark Modal -->
+    <n-modal
+      v-model:show="showExtractModal"
+      preset="card"
+      :title="$t('watermarks.extractBlindTitle')"
+      style="max-width: 520px; border-radius: 8px;"
+    >
+      <p style="font-size: 13px; color: #aaa; margin-top: 0;">
+        {{ $t('watermarks.extractBlindDesc') }}
+      </p>
+
+      <n-upload
+        :max="1"
+        :show-file-list="true"
+        :default-upload="false"
+        accept="image/*"
+        @change="handleExtractFileChange"
+      >
+        <n-upload-dragger>
+          <div style="padding: 20px 0;">
+            <p style="margin: 0; font-size: 14px;">{{ $t('watermarks.extractBlindUpload') }}</p>
+          </div>
+        </n-upload-dragger>
+      </n-upload>
+
+      <div v-if="extractedResult !== null" style="margin-top: 16px;">
+        <n-alert v-if="extractedResult.detected" type="success" :title="$t('watermarks.extractBlindSuccess')">
+          <div style="font-size: 14px; margin-top: 4px; word-break: break-all; line-height: 1.6;">
+            {{ extractedResult.text }}
+          </div>
+          <div v-if="extractedResult.spectrum_image" style="margin-top: 12px; text-align: center;">
+            <p style="font-size: 12px; color: #888; margin-bottom: 6px;">{{ $t('watermarks.spectrumPreview') }}</p>
+            <img :src="extractedResult.spectrum_image" style="max-width: 100%; max-height: 260px; border-radius: 4px; border: 1px solid #444;" />
+          </div>
+        </n-alert>
+        <n-alert v-else type="warning" :title="$t('watermarks.extractBlindNotFound')">
+          <span style="font-size: 12px; color: #888;">{{ extractedResult.error || '' }}</span>
+        </n-alert>
+      </div>
+
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end; gap: 12px;">
+          <n-button @click="showExtractModal = false">{{ $t('common.cancel') }}</n-button>
+          <n-button type="primary" :loading="extracting" :disabled="!extractFile" @click="handleExtractSubmit">
+            {{ $t('watermarks.extractBlindBtn') }}
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -292,6 +377,10 @@ const message = useMessage()
 const { t } = useI18n()
 const templates = ref<any[]>([])
 const showModal = ref(false)
+const showExtractModal = ref(false)
+const extracting = ref(false)
+const extractFile = ref<File | null>(null)
+const extractedResult = ref<{ detected: boolean, text: string, spectrum_image?: string, error?: string } | null>(null)
 const saving = ref(false)
 const isAdmin = ref(false)
 const isEditing = ref(false)
@@ -329,8 +418,8 @@ const presetTags = computed(() => [
   { label: t('watermarks.tagIp'), value: '{ip}' },
   { label: t('watermarks.tagDomain'), value: '{domain}' },
   { label: t('watermarks.tagCopyright'), value: '{copyright}' },
-  { label: t('watermarks.tagConfidential'), value: '{confidential}' },
-  { label: t('watermarks.tagPreviewOnly'), value: '{preview_only}' }
+  { label: t('watermarks.tagConfidential'), value: 'CONFIDANTIAL' },
+  { label: t('watermarks.tagPreviewOnly'), value: 'FOR PREVIEW ONLY' }
 ])
 
 const fontFamilyOptions = computed(() => [
@@ -357,7 +446,9 @@ const editForm = ref({
   adaptive_color: false,
   stroke_color: '#000000',
   stroke_width: 1,
-  adaptive_scaling: true
+  adaptive_scaling: true,
+  enable_blind_watermark: false,
+  blind_watermark_text: ''
 })
 
 const hasDynamicTags = computed(() => {
@@ -412,7 +503,9 @@ const openCreateModal = () => {
     adaptive_color: false,
     stroke_color: '#000000',
     stroke_width: 1,
-    adaptive_scaling: true
+    adaptive_scaling: true,
+    enable_blind_watermark: false,
+    blind_watermark_text: ''
   }
   showModal.value = true
   fetchPreview()
@@ -457,7 +550,9 @@ const fetchPreview = async () => {
       adaptive_color: editForm.value.adaptive_color,
       stroke_color: editForm.value.stroke_color,
       stroke_width: editForm.value.stroke_width,
-      adaptive_scaling: editForm.value.adaptive_scaling
+      adaptive_scaling: editForm.value.adaptive_scaling,
+      enable_blind_watermark: editForm.value.enable_blind_watermark,
+      blind_watermark_text: editForm.value.blind_watermark_text
     })
     previewUrl.value = res.data.data_url
   } catch {}
@@ -494,7 +589,9 @@ const handleSaveTemplate = async () => {
       adaptive_color: editForm.value.adaptive_color,
       stroke_color: editForm.value.stroke_color,
       stroke_width: editForm.value.stroke_width,
-      adaptive_scaling: editForm.value.adaptive_scaling
+      adaptive_scaling: editForm.value.adaptive_scaling,
+      enable_blind_watermark: editForm.value.enable_blind_watermark,
+      blind_watermark_text: editForm.value.blind_watermark_text
     })
 
     if (isEditing.value && editTargetId.value) {
@@ -540,7 +637,9 @@ const previewExisting = (tItem: any) => {
     adaptive_color: !!l.adaptive_color,
     stroke_color: l.stroke_color || '#000000',
     stroke_width: l.stroke_width ?? 1,
-    adaptive_scaling: l.adaptive_scaling !== false
+    adaptive_scaling: l.adaptive_scaling !== false,
+    enable_blind_watermark: !!l.enable_blind_watermark,
+    blind_watermark_text: l.blind_watermark_text || ''
   }
   showModal.value = true
   fetchPreview()
@@ -553,6 +652,42 @@ const deleteTemplate = async (id: number) => {
     loadTemplates()
   } catch (err: any) {
     message.error(err.response?.data?.error || t('watermarks.deleteFailed'))
+  }
+}
+
+const openExtractModal = () => {
+  extractFile.value = null
+  extractedResult.value = null
+  showExtractModal.value = true
+}
+
+const handleExtractFileChange = (data: { fileList: any[] }) => {
+  if (data.fileList.length > 0 && data.fileList[0].file) {
+    extractFile.value = data.fileList[0].file
+  } else {
+    extractFile.value = null
+  }
+}
+
+const handleExtractSubmit = async () => {
+  if (!extractFile.value) return
+  extracting.value = true
+  extractedResult.value = null
+  try {
+    const formData = new FormData()
+    formData.append('image', extractFile.value)
+    const res = await api.post('/watermarks/extract-blind', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    extractedResult.value = res.data
+  } catch (err: any) {
+    extractedResult.value = {
+      detected: false,
+      text: '',
+      error: err.response?.data?.error || t('watermarks.extractBlindNotFound')
+    }
+  } finally {
+    extracting.value = false
   }
 }
 

@@ -3,6 +3,7 @@ package http
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
 	"github.com/UtopiaXC/UtopiaImages/internal/cache"
@@ -50,6 +51,22 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derived cache init failed: %w", err)
 	}
+	derivedCache.SetLimits(cfg.Cache.MaxSizeMB, cfg.Cache.TTLDays)
+	if db != nil {
+		var sMB, sTTL model.Setting
+		if err := db.Where("key = 'derived_cache_max_size_mb'").First(&sMB).Error; err == nil {
+			if mb, err := strconv.ParseInt(sMB.Value, 10, 64); err == nil {
+				cfg.Cache.MaxSizeMB = mb
+			}
+		}
+		if err := db.Where("key = 'derived_cache_ttl_days'").First(&sTTL).Error; err == nil {
+			if days, err := strconv.Atoi(sTTL.Value); err == nil {
+				cfg.Cache.TTLDays = days
+			}
+		}
+		derivedCache.SetLimits(cfg.Cache.MaxSizeMB, cfg.Cache.TTLDays)
+		derivedCache.PruneIfNecessary()
+	}
 
 	// 4. Initialize Auth components
 	sessionManager := auth.NewSessionManager(db)
@@ -84,6 +101,20 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 		dispatchService: dispatchService,
 	}
 
+	authController.SetOnDBChange(func(newDB *gorm.DB) {
+		*db = *newDB
+		sessionManager.SetDB(newDB)
+		passkeyManager.SetDB(newDB)
+		authService.SetDB(newDB)
+		uploadService.SetDB(newDB)
+		dispatchService.SetDB(newDB)
+		importService.SetDB(newDB)
+		fileController.SetDB(newDB)
+		adminController.SetDB(newDB)
+		watermarkController.SetDB(newDB)
+		settingsController.SetDB(newDB)
+	})
+
 	s.setupRoutes(authController, fileController, adminController, watermarkController, settingsController)
 	return s, nil
 }
@@ -99,7 +130,7 @@ func (s *Server) setupRoutes(
 	s.engine.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
-			"version": "v0.3.0",
+			"version": config.Version,
 		})
 	})
 
@@ -139,7 +170,7 @@ func (s *Server) setupRoutes(
 			c.JSON(http.StatusOK, gin.H{
 				"site_name":          siteName,
 				"description":        siteDesc,
-				"version":            "v0.3.0",
+				"version":            config.Version,
 				"base_url":           s.cfg.Server.BaseURL,
 				"allow_registration": allowReg,
 				"captcha_provider":   provider,

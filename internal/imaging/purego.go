@@ -36,7 +36,27 @@ func (p *PureGoProcessor) GetDimensions(src io.Reader) (width, height int, err e
 }
 
 func (p *PureGoProcessor) Process(src io.Reader, opts ProcessOptions) ([]byte, string, error) {
-	img, format, err := image.Decode(src)
+	var rs io.ReadSeeker
+	if s, ok := src.(io.ReadSeeker); ok {
+		rs = s
+	} else {
+		buf, err := io.ReadAll(src)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read image stream: %w", err)
+		}
+		rs = bytes.NewReader(buf)
+	}
+
+	// 0. Pre-validate dimensions to protect against decompression bomb (OOM attack)
+	cfg, _, err := image.DecodeConfig(rs)
+	if err == nil {
+		if cfg.Width > 16384 || cfg.Height > 16384 || int64(cfg.Width)*int64(cfg.Height) > 100000000 {
+			return nil, "", fmt.Errorf("image dimensions too large (%dx%d exceeds safe limit)", cfg.Width, cfg.Height)
+		}
+	}
+	_, _ = rs.Seek(0, io.SeekStart)
+
+	img, format, err := image.Decode(rs)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to decode image: %w", err)
 	}
@@ -163,6 +183,16 @@ func (p *PureGoProcessor) applyWatermark(base image.Image, wm *WatermarkConfig) 
 		}
 	}
 
+	if wm.EnableBlindWatermark != nil && *wm.EnableBlindWatermark {
+		blindText := wm.BlindWatermarkText
+		if blindText == "" {
+			blindText = wm.Text
+		}
+		if blindText != "" {
+			dst = EmbedBlindWatermark(dst, blindText)
+		}
+	}
+
 	return dst
 }
 
@@ -233,6 +263,16 @@ func createTextBadge(text string, fontFamily string, fontSize int, col color.RGB
 	}
 	textDrawer.DrawString(text)
 
+	// Enhance alpha contrast so font strokes remain crisp and solid on low-resolution images
+	for i := 3; i < len(badge.Pix); i += 4 {
+		a := badge.Pix[i]
+		if a > 0 && a < 255 {
+			fa := float64(a) / 255.0
+			fa = math.Pow(fa, 0.72)
+			badge.Pix[i] = uint8(math.Min(255.0, math.Round(fa*255.0)))
+		}
+	}
+
 	return badge
 }
 
@@ -288,37 +328,63 @@ func drawRotated(dst *image.RGBA, src image.Image, centerX, centerY int, angleDe
 			srcX := dx*cosA + dy*sinA + halfW
 			srcY := -dx*sinA + dy*cosA + halfH
 
-			ix := int(srcX)
-			iy := int(srcY)
-
-			if ix >= 0 && ix < w && iy >= 0 && iy < h {
-				srcIdx := iy*srcRGBA.Stride + ix*4
-				sA := uint32(srcRGBA.Pix[srcIdx+3])
-				if sA == 0 {
-					continue
-				}
-
-				sR := uint32(srcRGBA.Pix[srcIdx])
-				sG := uint32(srcRGBA.Pix[srcIdx+1])
-				sB := uint32(srcRGBA.Pix[srcIdx+2])
-
-				dstIdx := (y-dstB.Min.Y)*dst.Stride + (x-dstB.Min.X)*4
-				dA := uint32(dst.Pix[dstIdx+3])
-				dR := uint32(dst.Pix[dstIdx])
-				dG := uint32(dst.Pix[dstIdx+1])
-				dB := uint32(dst.Pix[dstIdx+2])
-
-				invA := 255 - sA
-				outR := (sR*sA + dR*invA) / 255
-				outG := (sG*sA + dG*invA) / 255
-				outB := (sB*sA + dB*invA) / 255
-				outA := sA + (dA*invA)/255
-
-				dst.Pix[dstIdx] = uint8(outR)
-				dst.Pix[dstIdx+1] = uint8(outG)
-				dst.Pix[dstIdx+2] = uint8(outB)
-				dst.Pix[dstIdx+3] = uint8(outA)
+			if srcX < -0.5 || srcX >= float64(w)-0.5 || srcY < -0.5 || srcY >= float64(h)-0.5 {
+				continue
 			}
+
+			// Bilinear interpolation for smooth, crisp edges on rotated text
+			x0 := int(math.Floor(srcX))
+			y0 := int(math.Floor(srcY))
+			x1 := x0 + 1
+			y1 := y0 + 1
+
+			fx := srcX - float64(x0)
+			fy := srcY - float64(y0)
+
+			var sR, sG, sB, sA float64
+
+			samplePixel := func(px, py int, weight float64) {
+				if px >= 0 && px < w && py >= 0 && py < h {
+					idx := py*srcRGBA.Stride + px*4
+					a := float64(srcRGBA.Pix[idx+3])
+					if a > 0 {
+						sA += a * weight
+						sR += float64(srcRGBA.Pix[idx]) * weight
+						sG += float64(srcRGBA.Pix[idx+1]) * weight
+						sB += float64(srcRGBA.Pix[idx+2]) * weight
+					}
+				}
+			}
+
+			samplePixel(x0, y0, (1.0-fx)*(1.0-fy))
+			samplePixel(x1, y0, fx*(1.0-fy))
+			samplePixel(x0, y1, (1.0-fx)*fy)
+			samplePixel(x1, y1, fx*fy)
+
+			uintA := uint32(math.Round(sA))
+			if uintA == 0 {
+				continue
+			}
+			uintR := uint32(math.Round(sR))
+			uintG := uint32(math.Round(sG))
+			uintB := uint32(math.Round(sB))
+
+			dstIdx := (y-dstB.Min.Y)*dst.Stride + (x-dstB.Min.X)*4
+			dA := uint32(dst.Pix[dstIdx+3])
+			dR := uint32(dst.Pix[dstIdx])
+			dG := uint32(dst.Pix[dstIdx+1])
+			dB := uint32(dst.Pix[dstIdx+2])
+
+			invA := 255 - uintA
+			outR := (uintR*uintA + dR*invA) / 255
+			outG := (uintG*uintA + dG*invA) / 255
+			outB := (uintB*uintA + dB*invA) / 255
+			outA := uintA + (dA*invA)/255
+
+			dst.Pix[dstIdx] = uint8(outR)
+			dst.Pix[dstIdx+1] = uint8(outG)
+			dst.Pix[dstIdx+2] = uint8(outB)
+			dst.Pix[dstIdx+3] = uint8(outA)
 		}
 	}
 }
@@ -392,13 +458,20 @@ func (p *PureGoProcessor) renderTileText(dst *image.RGBA, wm *WatermarkConfig) {
 		}
 	}
 
-	// Resolution adaptive density scaling
+	// Resolution adaptive density scaling with dampened curve for low-res readability
 	scale := 1.0
 	if wm.AdaptiveScaling == nil || *wm.AdaptiveScaling {
 		maxDim := math.Max(float64(imgW), float64(imgH))
-		scale = maxDim / 1920.0
-		if scale < 0.5 {
-			scale = 0.5
+		if maxDim < 1920.0 {
+			scale = math.Pow(maxDim/1920.0, 0.40)
+			if scale < 0.65 {
+				scale = 0.65
+			}
+		} else {
+			scale = maxDim / 1920.0
+			if scale > 2.5 {
+				scale = 2.5
+			}
 		}
 	}
 
@@ -407,6 +480,13 @@ func (p *PureGoProcessor) renderTileText(dst *image.RGBA, wm *WatermarkConfig) {
 		baseFontSize = 24
 	}
 	effectiveFontSize := int(math.Round(float64(baseFontSize) * scale))
+	minLegibleSize := 16
+	if baseFontSize < 16 {
+		minLegibleSize = baseFontSize
+	}
+	if effectiveFontSize < minLegibleSize {
+		effectiveFontSize = minLegibleSize
+	}
 
 	baseSpacingX := wm.SpacingX
 	if baseSpacingX <= 0 {
@@ -421,6 +501,9 @@ func (p *PureGoProcessor) renderTileText(dst *image.RGBA, wm *WatermarkConfig) {
 	effectiveSpacingY := int(math.Round(float64(baseSpacingY) * scale))
 
 	effectiveStrokeWidth := int(math.Round(float64(wm.StrokeWidth) * scale))
+	if wm.StrokeWidth > 0 && effectiveStrokeWidth < 1 {
+		effectiveStrokeWidth = 1
+	}
 
 	badge := createTextBadge(wm.Text, wm.FontFamily, effectiveFontSize, fontCol, strokeCol, effectiveStrokeWidth)
 
@@ -507,9 +590,16 @@ func (p *PureGoProcessor) renderPositionText(dst *image.RGBA, wm *WatermarkConfi
 	scale := 1.0
 	if wm.AdaptiveScaling == nil || *wm.AdaptiveScaling {
 		maxDim := math.Max(float64(imgW), float64(imgH))
-		scale = maxDim / 1920.0
-		if scale < 0.6 {
-			scale = 0.6
+		if maxDim < 1920.0 {
+			scale = math.Pow(maxDim/1920.0, 0.40)
+			if scale < 0.65 {
+				scale = 0.65
+			}
+		} else {
+			scale = maxDim / 1920.0
+			if scale > 2.5 {
+				scale = 2.5
+			}
 		}
 	}
 
@@ -518,7 +608,18 @@ func (p *PureGoProcessor) renderPositionText(dst *image.RGBA, wm *WatermarkConfi
 		baseFontSize = 24
 	}
 	effectiveFontSize := int(math.Round(float64(baseFontSize) * scale))
+	minLegibleSize := 16
+	if baseFontSize < 16 {
+		minLegibleSize = baseFontSize
+	}
+	if effectiveFontSize < minLegibleSize {
+		effectiveFontSize = minLegibleSize
+	}
+
 	effectiveStrokeWidth := int(math.Round(float64(wm.StrokeWidth) * scale))
+	if wm.StrokeWidth > 0 && effectiveStrokeWidth < 1 {
+		effectiveStrokeWidth = 1
+	}
 
 	badge := createTextBadge(wm.Text, wm.FontFamily, effectiveFontSize, fontCol, strokeCol, effectiveStrokeWidth)
 	bw := badge.Bounds().Dx()

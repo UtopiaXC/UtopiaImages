@@ -72,6 +72,7 @@ type Session struct {
 	ID            string     `gorm:"primaryKey;size:64" json:"id"` // sha256 hash of raw token
 	UserID        uint       `gorm:"index;not null" json:"user_id"`
 	User          *User      `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	TokenVersion  int64      `gorm:"default:1" json:"token_version"`
 	IP            string     `gorm:"size:64" json:"ip"`
 	UserAgent     string     `gorm:"size:512" json:"user_agent"`
 	ExpiresAt     time.Time  `gorm:"index;not null" json:"expires_at"`

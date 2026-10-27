@@ -2,14 +2,14 @@
 
 server:
   host: "0.0.0.0"
-  port: 8080
-  base_url: "http://localhost:8080" # 对外访问域名
+  port: 2983
+  base_url: "http://localhost:2983" # 对外访问域名
   mode: "debug" # debug | release
 
 # 数据库配置（支持 sqlite / postgres）
 database:
   driver: "sqlite" # sqlite 或 postgres
-  dsn: "data/db/utopiaimages.db" # postgres: "postgres://user:password@localhost:5432/utopiaimages?sslmode=disable"
+  dsn: "data/db/utopia_images.db" # postgres: "postgres://user:password@localhost:5432/utopia_images?sslmode=disable"
 
 # 存储后端
 storage:
@@ -20,7 +20,8 @@ storage:
 # 缓存配置
 cache:
   dir: "data/cache"
-  max_size_mb: 5120 # 5GB
+  max_size_mb: 5120 # 缓存容量上限(MB)，0表示无上限
+  ttl_days: 0 # 缓存保留时间(天)，0表示无上限（永久保存）
 
 # 安全与认证
 security:

@@ -32,6 +32,10 @@ func NewSessionManager(db *gorm.DB) *SessionManager {
 	return &SessionManager{db: db}
 }
 
+func (sm *SessionManager) SetDB(db *gorm.DB) {
+	sm.db = db
+}
+
 // CreateSession generates a new session token, hashes it, and stores the session in DB
 func (sm *SessionManager) CreateSession(userID uint, ip, userAgent string, rememberMe bool) (string, *model.Session, error) {
 	rawToken, err := GenerateRandomToken(32)
@@ -46,14 +50,21 @@ func (sm *SessionManager) CreateSession(userID uint, ip, userAgent string, remem
 		duration = 30 * 24 * time.Hour
 	}
 
+	var user model.User
+	tokenVersion := int64(1)
+	if err := sm.db.Select("token_version").Where("id = ?", userID).First(&user).Error; err == nil && user.TokenVersion > 0 {
+		tokenVersion = user.TokenVersion
+	}
+
 	session := &model.Session{
-		ID:         tokenHash,
-		UserID:     userID,
-		IP:         ip,
-		UserAgent:  userAgent,
-		ExpiresAt:  time.Now().Add(duration),
-		CreatedAt:  time.Now(),
-		LastSeenAt: time.Now(),
+		ID:           tokenHash,
+		UserID:       userID,
+		TokenVersion: tokenVersion,
+		IP:           ip,
+		UserAgent:    userAgent,
+		ExpiresAt:    time.Now().Add(duration),
+		CreatedAt:    time.Now(),
+		LastSeenAt:   time.Now(),
 	}
 
 	if err := sm.db.Create(session).Error; err != nil {
@@ -75,6 +86,12 @@ func (sm *SessionManager) ValidateSession(rawToken string) (*model.User, *model.
 
 	if session.User == nil || session.User.Status != "active" {
 		return nil, nil, errors.New("user account disabled or not found")
+	}
+
+	// Invalidate session if user credentials / token_version has been bumped
+	if session.User.TokenVersion != session.TokenVersion {
+		_ = sm.RevokeSession(rawToken)
+		return nil, nil, errors.New("session invalidated due to password or security settings update")
 	}
 
 	// Update last seen periodically
