@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
@@ -26,6 +27,7 @@ type AuthController struct {
 	cfg         *config.Config
 	configPath  string
 	onDBChange  func(*gorm.DB)
+	setupMu     sync.Mutex
 }
 
 func NewAuthController(as *service.AuthService, db *gorm.DB, cfg *config.Config, configPath string) *AuthController {
@@ -39,6 +41,19 @@ func NewAuthController(as *service.AuthService, db *gorm.DB, cfg *config.Config,
 
 func (ctrl *AuthController) SetOnDBChange(fn func(*gorm.DB)) {
 	ctrl.onDBChange = fn
+}
+
+func (ctrl *AuthController) isCookieSecure(c *gin.Context) bool {
+	if c.Request.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	if ctrl.cfg != nil && strings.HasPrefix(strings.ToLower(ctrl.cfg.Server.BaseURL), "https://") {
+		return true
+	}
+	return false
 }
 
 func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
@@ -59,6 +74,8 @@ func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/auth/logout", ctrl.Logout)
 	rg.POST("/auth/passkey/login-begin", ctrl.BeginPasskeyLogin)
 	rg.POST("/auth/passkey/login-finish", ctrl.FinishPasskeyLogin)
+	rg.POST("/auth/mfa/passkey-begin", ctrl.BeginMFAPasskey)
+	rg.POST("/auth/mfa/passkey-finish", ctrl.FinishMFAPasskey)
 	rg.POST("/auth/setup-2fa/totp-secret", ctrl.Setup2FATOTPSecret)
 	rg.POST("/auth/setup-2fa/totp-verify", ctrl.Setup2FATOTPVerify)
 	rg.POST("/auth/setup-2fa/passkey-begin", ctrl.Setup2FAPasskeyBegin)
@@ -93,7 +110,6 @@ func (ctrl *AuthController) GetSetupStatus(c *gin.Context) {
 		"base_url":         ctrl.cfg.Server.BaseURL,
 		"current_locale":   ctrl.cfg.Site.Locale,
 		"current_driver":   ctrl.cfg.Database.Driver,
-		"database_dsn":     ctrl.cfg.Database.DSN,
 	})
 }
 
@@ -214,6 +230,9 @@ func (ctrl *AuthController) TestSMTPConnection(c *gin.Context) {
 }
 
 func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
+	ctrl.setupMu.Lock()
+	defer ctrl.setupMu.Unlock()
+
 	if !ctrl.authService.IsSetupRequired() {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化，无法重复执行"})
 		return
@@ -396,6 +415,14 @@ func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
 }
 
 func (ctrl *AuthController) GetCaptchaChallenge(c *gin.Context) {
+	provider := ctrl.authService.GetCaptchaProvider()
+	if provider != "altcha" {
+		c.JSON(http.StatusOK, gin.H{
+			"provider": provider,
+		})
+		return
+	}
+
 	challenge, err := ctrl.authService.GenerateCaptchaChallenge()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate captcha"})
@@ -462,7 +489,8 @@ func (ctrl *AuthController) Login(c *gin.Context) {
 	if req.RememberMe {
 		maxAge = 30 * 86400
 	}
-	c.SetCookie(auth.SessionCookieName, result.SessionToken, maxAge, "/api", "", false, true)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(auth.SessionCookieName, result.SessionToken, maxAge, "/api", "", ctrl.isCookieSecure(c), true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"token": result.SessionToken,
@@ -480,6 +508,11 @@ func (ctrl *AuthController) Register(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
+		return
+	}
+
+	if !ctrl.authService.VerifyCaptcha(req.Captcha, c.ClientIP()) {
+		common.RespondError(c, http.StatusBadRequest, common.ErrAuthCaptchaRequired)
 		return
 	}
 
@@ -540,6 +573,11 @@ func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
 		return
 	}
 
+	if !ctrl.authService.VerifyCaptcha(req.Captcha, c.ClientIP()) {
+		common.RespondError(c, http.StatusBadRequest, common.ErrAuthCaptchaRequired)
+		return
+	}
+
 	ident := strings.TrimSpace(req.Email)
 	if ident == "" {
 		ident = strings.TrimSpace(req.Account)
@@ -556,6 +594,14 @@ func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
 
 	user, token, errCode := ctrl.authService.RequestPasswordReset(ident)
 	if errCode != "" {
+		if errCode == common.ErrAuthUserNotFound {
+			// Prevent username/email enumeration
+			c.JSON(http.StatusOK, gin.H{
+				"code":    "RESET_EMAIL_SENT",
+				"message": "Password reset email sent",
+			})
+			return
+		}
 		common.RespondError(c, http.StatusBadRequest, errCode)
 		return
 	}
@@ -599,10 +645,11 @@ func (ctrl *AuthController) ResetPassword(c *gin.Context) {
 
 func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 	var req struct {
+		MFAToken string `json:"mfa_token"`
 		Email    string `json:"email"`
 		Username string `json:"username"`
 		Account  string `json:"account"`
-		UserID   uint   `json:"user_id"`
+		Captcha  string `json:"captcha"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
@@ -620,9 +667,21 @@ func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 		errCode string
 	)
 
-	if req.UserID > 0 {
-		user, token, errCode = ctrl.authService.Request2FAResetByID(req.UserID)
+	if req.MFAToken != "" {
+		// Validated via password authentication: resolve user securely from mfa token
+		userID, ok := ctrl.authService.ValidateMFAToken(req.MFAToken)
+		if !ok {
+			common.RespondError(c, http.StatusUnauthorized, common.ErrAuthUnauthorized)
+			return
+		}
+		user, token, errCode = ctrl.authService.Request2FAResetByID(userID)
 	} else {
+		// Unauthenticated reset: verify captcha and resolve by email or account
+		if !ctrl.authService.VerifyCaptcha(req.Captcha, c.ClientIP()) {
+			common.RespondError(c, http.StatusBadRequest, common.ErrAuthCaptchaRequired)
+			return
+		}
+
 		ident := strings.TrimSpace(req.Email)
 		if ident == "" {
 			ident = strings.TrimSpace(req.Username)
@@ -638,6 +697,14 @@ func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 	}
 
 	if errCode != "" {
+		if errCode == common.ErrAuthUserNotFound {
+			// Prevent user enumeration
+			c.JSON(http.StatusOK, gin.H{
+				"code":    "2FA_RESET_EMAIL_SENT",
+				"message": "2FA reset email sent",
+			})
+			return
+		}
 		common.RespondError(c, http.StatusBadRequest, errCode)
 		return
 	}
@@ -717,7 +784,8 @@ func (ctrl *AuthController) VerifyMFA(c *gin.Context) {
 	if req.RememberMe {
 		maxAge = 30 * 86400
 	}
-	c.SetCookie(auth.SessionCookieName, token, maxAge, "/api", "", false, true)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(auth.SessionCookieName, token, maxAge, "/api", "", ctrl.isCookieSecure(c), true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
@@ -728,7 +796,8 @@ func (ctrl *AuthController) Logout(c *gin.Context) {
 	if cookie, err := c.Cookie(auth.SessionCookieName); err == nil {
 		ctrl.authService.SessionManager().RevokeSession(cookie)
 	}
-	c.SetCookie(auth.SessionCookieName, "", -1, "/api", "", false, true)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(auth.SessionCookieName, "", -1, "/api", "", ctrl.isCookieSecure(c), true)
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
 }
 
@@ -948,6 +1017,139 @@ func (ctrl *AuthController) FinishPasskeyLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Passkey verification failed: " + err.Error()})
 		return
 	}
+	if user.Status != "active" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "User account is disabled or banned"})
+		return
+	}
+	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "User account is temporarily locked"})
+		return
+	}
+	rememberMe := c.Query("remember_me") == "true"
+	rawToken, _, err := ctrl.authService.SessionManager().CreateSession(user.ID, c.ClientIP(), c.Request.UserAgent(), rememberMe)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Reset failed attempts and lockout on successful passwordless login
+	ctrl.db.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		"failed_login_attempts": 0,
+		"lockout_until":         nil,
+	})
+	ctrl.authService.Tracker().RecordSuccess(fmt.Sprintf("%s:%s", c.ClientIP(), user.Username))
+
+	maxAge := 7 * 86400
+	if rememberMe {
+		maxAge = 30 * 86400
+	}
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", ctrl.isCookieSecure(c), true)
+	c.JSON(http.StatusOK, gin.H{
+		"token": rawToken,
+		"user":  user,
+	})
+}
+
+// BeginMFAPasskey begins WebAuthn authentication for 2FA stage using an MFA token
+func (ctrl *AuthController) BeginMFAPasskey(c *gin.Context) {
+	if ctrl.authService.PasskeyManager() == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "Passkey is not supported in current environment"})
+		return
+	}
+	var req struct {
+		MFAToken string `json:"mfa_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mfa_token is required"})
+		return
+	}
+	userID, valid := ctrl.authService.ValidateMFAToken(req.MFAToken)
+	if !valid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "MFA session expired or invalid, please login again"})
+		return
+	}
+	var user model.User
+	if err := ctrl.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+		return
+	}
+	if user.Status != "active" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "User account is disabled or banned"})
+		return
+	}
+	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "User account is temporarily locked"})
+		return
+	}
+	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginLogin(user.Username)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"options":     options,
+		"session_key": sessionKey,
+	})
+}
+
+// FinishMFAPasskey finishes WebAuthn authentication for 2FA stage and consumes the MFA token
+func (ctrl *AuthController) FinishMFAPasskey(c *gin.Context) {
+	if ctrl.authService.PasskeyManager() == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "Passkey is not supported"})
+		return
+	}
+	mfaToken := c.Query("mfa_token")
+	if mfaToken == "" {
+		mfaToken = c.GetHeader("X-MFA-Token")
+	}
+	if mfaToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mfa_token is required"})
+		return
+	}
+	expectedUserID, valid := ctrl.authService.ValidateMFAToken(mfaToken)
+	if !valid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "MFA session expired or invalid, please login again"})
+		return
+	}
+
+	sessionKey := c.Query("session_key")
+	if sessionKey == "" {
+		sessionKey = c.GetHeader("X-Session-Key")
+	}
+	parsedData, err := protocol.ParseCredentialRequestResponseBody(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse passkey assertion: " + err.Error()})
+		return
+	}
+	user, err := ctrl.authService.PasskeyManager().FinishLogin(sessionKey, parsedData)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Passkey verification failed: " + err.Error()})
+		return
+	}
+	if user.ID != expectedUserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Passkey does not belong to the logging-in user"})
+		return
+	}
+	if user.Status != "active" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "User account is disabled or banned"})
+		return
+	}
+	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "User account is temporarily locked"})
+		return
+	}
+
+	// Consume MFA token
+	ctrl.authService.RevokeMFAToken(mfaToken)
+
+	// Reset attempts and lockout
+	ctrl.db.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		"failed_login_attempts": 0,
+		"lockout_until":         nil,
+	})
+	ctrl.authService.Tracker().RecordSuccess(fmt.Sprintf("%s:%s", c.ClientIP(), user.Username))
+
 	rememberMe := c.Query("remember_me") == "true"
 	rawToken, _, err := ctrl.authService.SessionManager().CreateSession(user.ID, c.ClientIP(), c.Request.UserAgent(), rememberMe)
 	if err != nil {
@@ -958,7 +1160,8 @@ func (ctrl *AuthController) FinishPasskeyLogin(c *gin.Context) {
 	if rememberMe {
 		maxAge = 30 * 86400
 	}
-	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", false, true)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", ctrl.isCookieSecure(c), true)
 	c.JSON(http.StatusOK, gin.H{
 		"token": rawToken,
 		"user":  user,
@@ -1131,7 +1334,7 @@ func (ctrl *AuthController) Setup2FATOTPVerify(c *gin.Context) {
 	if req.RememberMe {
 		maxAge = 30 * 86400
 	}
-	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", false, true)
+	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", ctrl.isCookieSecure(c), true)
 	c.JSON(http.StatusOK, gin.H{
 		"token": rawToken,
 		"user":  user,
@@ -1219,7 +1422,7 @@ func (ctrl *AuthController) Setup2FAPasskeyFinish(c *gin.Context) {
 	if rememberMe {
 		maxAge = 30 * 86400
 	}
-	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", false, true)
+	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", ctrl.isCookieSecure(c), true)
 	c.JSON(http.StatusOK, gin.H{
 		"token": rawToken,
 		"user":  user,

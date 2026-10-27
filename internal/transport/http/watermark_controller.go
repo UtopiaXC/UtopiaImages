@@ -7,10 +7,15 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	_ "image/gif"
 	"image/jpeg"
+	_ "image/png"
+	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	_ "golang.org/x/image/webp"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
 	"github.com/UtopiaXC/UtopiaImages/internal/cache"
@@ -80,7 +85,11 @@ func (ctrl *WatermarkController) CreateWatermark(c *gin.Context) {
 	}
 
 	var count int64
-	ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ?", req.Name).Count(&count)
+	if req.IsGlobal && isUserAdmin(user) {
+		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND owner_id IS NULL", req.Name).Count(&count)
+	} else {
+		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND (owner_id = ? OR owner_id IS NULL)", req.Name, user.ID).Count(&count)
+	}
 	if count > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name already exists"})
 		return
@@ -104,12 +113,6 @@ func (ctrl *WatermarkController) CreateWatermark(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	// Invalidate derived caches and bump file versions so new watermark applies immediately
-	if ctrl.derivedCache != nil {
-		ctrl.derivedCache.Clear()
-	}
-	ctrl.db.Model(&model.FileRecord{}).Where("1 = 1").Update("sign_version", gorm.Expr("sign_version + 1"))
 
 	c.JSON(http.StatusOK, tmpl)
 }
@@ -158,7 +161,11 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 	if req.Name != "" {
 		req.Name = strings.TrimSpace(req.Name)
 		var count int64
-		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ?", req.Name, id).Count(&count)
+		if tmpl.OwnerID == nil {
+			ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ? AND owner_id IS NULL", req.Name, id).Count(&count)
+		} else {
+			ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ? AND (owner_id = ? OR owner_id IS NULL)", req.Name, id, *tmpl.OwnerID).Count(&count)
+		}
 		if count > 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name already exists"})
 			return
@@ -172,11 +179,12 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 	ctrl.db.Model(&tmpl).Updates(updates)
 	ctrl.db.Where("id = ?", id).First(&tmpl)
 
-	// Immediately clear derived image caches and invalidate client keys
-	if ctrl.derivedCache != nil {
-		ctrl.derivedCache.Clear()
+	// Invalidate client keys only for affected files
+	if tmpl.OwnerID != nil {
+		ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ? OR (watermark_template_id IS NULL AND user_id = ?)", tmpl.ID, *tmpl.OwnerID).Update("sign_version", gorm.Expr("sign_version + 1"))
+	} else {
+		ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ? OR watermark_template_id IS NULL", tmpl.ID).Update("sign_version", gorm.Expr("sign_version + 1"))
 	}
-	ctrl.db.Model(&model.FileRecord{}).Where("1 = 1").Update("sign_version", gorm.Expr("sign_version + 1"))
 
 	c.JSON(http.StatusOK, tmpl)
 }
@@ -197,13 +205,10 @@ func (ctrl *WatermarkController) DeleteWatermark(c *gin.Context) {
 		return
 	}
 
-	if ctrl.derivedCache != nil {
-		ctrl.derivedCache.Clear()
-	}
 	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ?", id).Updates(map[string]any{
 		"watermark_template_id": nil,
+		"sign_version":          gorm.Expr("sign_version + 1"),
 	})
-	ctrl.db.Model(&model.FileRecord{}).Where("1 = 1").Update("sign_version", gorm.Expr("sign_version + 1"))
 
 	c.JSON(http.StatusOK, gin.H{"message": "Watermark template deleted"})
 }
@@ -238,11 +243,23 @@ func (ctrl *WatermarkController) PreviewWatermark(c *gin.Context) {
 	if req.Text == "" {
 		req.Text = "Utopia Images"
 	}
+	if len(req.Text) > 500 {
+		req.Text = req.Text[:500]
+	}
 	if req.Opacity <= 0 {
 		req.Opacity = 0.2
+	} else if req.Opacity > 1.0 {
+		req.Opacity = 1.0
 	}
 	if req.FontSize <= 0 {
 		req.FontSize = 16
+	} else if req.FontSize > 200 {
+		req.FontSize = 200
+	}
+	if req.StrokeWidth < 0 {
+		req.StrokeWidth = 0
+	} else if req.StrokeWidth > 10 {
+		req.StrokeWidth = 10
 	}
 	if req.FontColor == "" {
 		req.FontColor = "#ffffff"
@@ -325,6 +342,9 @@ func imgToJpegBytes(img image.Image) []byte {
 }
 
 func (ctrl *WatermarkController) ExtractBlindWatermark(c *gin.Context) {
+	// 1. Limit request body to 25MB to prevent upload memory exhaustion
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 25*1024*1024)
+
 	file, err := c.FormFile("image")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请上传待提取水印的图片文件"})
@@ -337,6 +357,22 @@ func (ctrl *WatermarkController) ExtractBlindWatermark(c *gin.Context) {
 		return
 	}
 	defer src.Close()
+
+	// 2. Pre-validate dimensions with DecodeConfig to guard against decompression bombs
+	cfg, _, err := image.DecodeConfig(src)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无法解析图片格式: " + err.Error()})
+		return
+	}
+	if cfg.Width > 16384 || cfg.Height > 16384 || int64(cfg.Width)*int64(cfg.Height) > 80000000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "图片尺寸过大（最大支持 8000 万像素），防止内存过载"})
+		return
+	}
+
+	// 3. Rewind stream for full decode
+	if seeker, ok := src.(io.Seeker); ok {
+		_, _ = seeker.Seek(0, io.SeekStart)
+	}
 
 	img, _, err := image.Decode(src)
 	if err != nil {

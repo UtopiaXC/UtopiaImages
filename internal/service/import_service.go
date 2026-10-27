@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -303,13 +304,33 @@ func (s *ImportService) extractSingleGz(archivePath, originalFilename string) ([
 func (s *ImportService) processExtractedItems(ctx context.Context, user *model.User, items []extractedItem, policyID uint, opts ImportOptions) (total, imported, skipped int, err error) {
 	var policy model.StoragePolicy
 	if policyID > 0 {
-		s.db.Where("id = ?", policyID).First(&policy)
+		var count int64
+		s.db.Table("role_policies").Where("role_id = ? AND policy_id = ?", user.RoleID, policyID).Count(&count)
+		if count > 0 {
+			s.db.Where("id = ?", policyID).First(&policy)
+		}
 	}
 	if policy.ID == 0 {
-		s.db.Where("is_default = 1").First(&policy)
+		// Find default policy assigned to this role
+		var defaultPolicyID uint
+		s.db.Table("role_policies").
+			Joins("JOIN storage_policies ON storage_policies.id = role_policies.policy_id").
+			Where("role_policies.role_id = ? AND storage_policies.is_default = 1", user.RoleID).
+			Select("storage_policies.id").Scan(&defaultPolicyID)
+		if defaultPolicyID > 0 {
+			s.db.Where("id = ?", defaultPolicyID).First(&policy)
+		}
 	}
 	if policy.ID == 0 {
-		s.db.First(&policy)
+		// Fallback to any policy permitted for this role
+		var firstPolicyID uint
+		s.db.Table("role_policies").Where("role_id = ?", user.RoleID).Select("policy_id").Scan(&firstPolicyID)
+		if firstPolicyID > 0 {
+			s.db.Where("id = ?", firstPolicyID).First(&policy)
+		}
+	}
+	if policy.ID == 0 {
+		return 0, 0, 0, errors.New("no permitted storage policy found for user role")
 	}
 
 	watermarkMode := opts.WatermarkMode
@@ -362,10 +383,22 @@ func (s *ImportService) processExtractedItems(ctx context.Context, user *model.U
 			publicPath = s.upload.buildPublicPath(user, policy, rendered)
 		}
 
-		var existingCount int64
-		s.db.Model(&model.FileRecord{}).Where("public_path = ?", publicPath).Count(&existingCount)
-		if existingCount > 0 {
+		var existingFile model.FileRecord
+		hasExisting := false
+		if err := s.db.Unscoped().Where("public_path = ?", publicPath).First(&existingFile).Error; err == nil {
+			hasExisting = true
+		}
+
+		if hasExisting {
 			if opts.ConflictAction == "skip" {
+				skipped++
+				continue
+			}
+
+			// Prevent cross-user overwriting: only the file owner or admin may overwrite
+			isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
+			if !isAdmin && existingFile.UserID != user.ID {
+				slog.Warn("Import overwrite skipped: cross-user permission denied", "path", publicPath, "owner", existingFile.UserID, "operator", user.ID)
 				skipped++
 				continue
 			}
@@ -373,18 +406,35 @@ func (s *ImportService) processExtractedItems(ctx context.Context, user *model.U
 
 		// Calculate storage size difference
 		var sizeDelta int64 = item.Size
-		if opts.ConflictAction == "overwrite" && existingCount > 0 {
-			var existingFile model.FileRecord
-			if err := s.db.Where("public_path = ?", publicPath).First(&existingFile).Error; err == nil {
-				sizeDelta = item.Size - existingFile.Size
-			}
+		if hasExisting && opts.ConflictAction == "overwrite" {
+			sizeDelta = item.Size - existingFile.Size
+		}
+
+		// Target user for quota attribution
+		targetQuotaUserID := user.ID
+		if hasExisting && opts.ConflictAction == "overwrite" {
+			targetQuotaUserID = existingFile.UserID
 		}
 
 		// Enforce user storage quota
-		if sizeDelta > 0 && role.QuotaBytes > 0 && user.UsedBytes+sizeDelta > role.QuotaBytes {
-			slog.Warn("Import skipped: user quota exceeded", "path", publicPath, "user", user.Username)
-			skipped++
-			continue
+		if sizeDelta > 0 {
+			var quotaUser model.User
+			if targetQuotaUserID == user.ID {
+				quotaUser = *user
+			} else {
+				s.db.Preload("Role").Where("id = ?", targetQuotaUserID).First(&quotaUser)
+			}
+			var qRole model.Role
+			if quotaUser.Role != nil {
+				qRole = *quotaUser.Role
+			} else {
+				s.db.Where("id = ?", quotaUser.RoleID).First(&qRole)
+			}
+			if qRole.QuotaBytes > 0 && quotaUser.UsedBytes+sizeDelta > qRole.QuotaBytes {
+				slog.Warn("Import skipped: user quota exceeded", "path", publicPath, "user", quotaUser.Username)
+				skipped++
+				continue
+			}
 		}
 
 		// Enforce storage policy capacity
@@ -400,7 +450,7 @@ func (s *ImportService) processExtractedItems(ctx context.Context, user *model.U
 			headLen = len(item.Data)
 		}
 		mime := mimetype.Detect(item.Data[:headLen]).String()
-		isImg := strings.HasPrefix(mime, "image/")
+		isImg := strings.HasPrefix(mime, "image/") && !strings.Contains(mime, "svg")
 
 		// Dimensions if image
 		var width, height int
@@ -442,8 +492,10 @@ func (s *ImportService) processExtractedItems(ctx context.Context, user *model.U
 			UpdatedAt:           time.Now(),
 		}
 
-		if opts.ConflictAction == "overwrite" && existingCount > 0 {
-			s.db.Where("public_path = ?", publicPath).Updates(map[string]any{
+		if hasExisting && opts.ConflictAction == "overwrite" {
+			s.db.Unscoped().Model(&model.FileRecord{}).Where("id = ?", existingFile.ID).Updates(map[string]any{
+				"deleted_at":            nil,
+				"sign_version":          gorm.Expr("sign_version + 1"),
 				"storage_key":           storageKey,
 				"mime_type":             mime,
 				"size":                  item.Size,
@@ -466,17 +518,19 @@ func (s *ImportService) processExtractedItems(ctx context.Context, user *model.U
 		// Track user used quota & policy used capacity
 		if sizeDelta != 0 {
 			userUpdates := map[string]any{
-				"used_bytes": gorm.Expr("used_bytes + ?", sizeDelta),
+				"used_bytes": gorm.Expr("CASE WHEN used_bytes + ? >= 0 THEN used_bytes + ? ELSE 0 END", sizeDelta, sizeDelta),
 			}
-			if existingCount == 0 {
+			if !hasExisting {
 				userUpdates["file_count"] = gorm.Expr("file_count + 1")
 			}
-			s.db.Model(&model.User{}).Where("id = ?", user.ID).Updates(userUpdates)
-			s.db.Model(&model.StoragePolicy{}).Where("id = ?", policy.ID).Update("used_bytes", gorm.Expr("used_bytes + ?", sizeDelta))
-			user.UsedBytes += sizeDelta
+			s.db.Model(&model.User{}).Where("id = ?", targetQuotaUserID).Updates(userUpdates)
+			s.db.Model(&model.StoragePolicy{}).Where("id = ?", policy.ID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes + ? >= 0 THEN used_bytes + ? ELSE 0 END", sizeDelta, sizeDelta))
+			if targetQuotaUserID == user.ID {
+				user.UsedBytes += sizeDelta
+			}
 			policy.UsedBytes += sizeDelta
-		} else if existingCount == 0 {
-			s.db.Model(&model.User{}).Where("id = ?", user.ID).Update("file_count", gorm.Expr("file_count + 1"))
+		} else if !hasExisting {
+			s.db.Model(&model.User{}).Where("id = ?", targetQuotaUserID).Update("file_count", gorm.Expr("file_count + 1"))
 		}
 
 		imported++

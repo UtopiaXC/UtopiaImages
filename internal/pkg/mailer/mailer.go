@@ -59,9 +59,14 @@ func SendMail(cfg config.SMTPConfig, to, subject, body string) error {
 		fromName = "Utopia Images"
 	}
 
-	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
+	headerSanitizer := strings.NewReplacer("\r", "", "\n", "")
+	cleanFrom := headerSanitizer.Replace(from)
+	cleanFromName := headerSanitizer.Replace(fromName)
+	cleanTo := headerSanitizer.Replace(to)
+
+	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(headerSanitizer.Replace(subject))))
 	msg := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		fromName, from, to, encodedSubject, body)
+		cleanFromName, cleanFrom, cleanTo, encodedSubject, body)
 
 	client, err := createSMTPClient(cfg, addr)
 	if err != nil {

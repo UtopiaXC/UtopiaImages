@@ -605,11 +605,13 @@ const handleRegister = async () => {
 
   loading.value = true
   try {
+    const captcha = await obtainCaptchaSolution()
     await api.post('/auth/register', {
       username: registerForm.username,
       nickname: registerForm.nickname,
       email: registerForm.email,
-      password: registerForm.password
+      password: registerForm.password,
+      captcha: captcha
     })
     message.success(t('login.registerSuccessActivationTip'))
     form.value.username = registerForm.username
@@ -630,8 +632,10 @@ const handleForgotPassword = async () => {
 
   loading.value = true
   try {
+    const captcha = await obtainCaptchaSolution()
     await api.post('/auth/forgot-password', {
-      email: forgotForm.email
+      email: forgotForm.email,
+      captcha: captcha
     })
     message.success(t('login.resetEmailSent'))
     switchMode('reset')
@@ -647,7 +651,7 @@ const handleResetPassword = async () => {
     message.warning(t('setup.fillRequired'))
     return
   }
-  if (resetForm.new_password.length < 6) {
+  if (resetForm.new_password.length < 8) {
     message.warning(t('errors.AUTH_PASSWORD_TOO_SHORT'))
     return
   }
@@ -672,18 +676,22 @@ const handleResetPassword = async () => {
 }
 
 const handleForgot2FA = async () => {
-  if (!forgot2FAForm.email && !mfaUserID.value) {
-    message.warning(t('setup.fillRequired'))
-    return
-  }
-
   loading.value = true
   try {
-    await api.post('/auth/forgot-2fa', {
-      email: forgot2FAForm.email || undefined,
-      account: forgot2FAForm.email || undefined,
-      user_id: mfaUserID.value || undefined
-    })
+    const payload: any = {}
+    if (mfaToken.value) {
+      payload.mfa_token = mfaToken.value
+    } else {
+      if (!forgot2FAForm.email) {
+        message.warning(t('setup.fillRequired'))
+        loading.value = false
+        return
+      }
+      payload.email = forgot2FAForm.email
+      payload.captcha = await obtainCaptchaSolution()
+    }
+
+    await api.post('/auth/forgot-2fa', payload)
     message.success(t('login.reset2FAEmailSent'))
     switchMode('reset-2fa')
   } catch (err: any) {
@@ -714,6 +722,43 @@ const handleReset2FA = async () => {
   }
 }
 
+const solveAltchaChallengeObj = async (challengeObj: any): Promise<string> => {
+  if (!challengeObj) return ''
+  const { challenge, salt, maxnumber, algorithm, signature } = challengeObj
+  const max = maxnumber || 50000
+  const target = challenge.toLowerCase()
+  const enc = new TextEncoder()
+  for (let n = 0; n <= max; n++) {
+    const data = enc.encode(`${salt}${n}`)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+    const hashArray = Array.from(new Uint8Array(hashBuffer))
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+    if (hashHex === target) {
+      return JSON.stringify({
+        algorithm: algorithm || 'SHA-256',
+        challenge: challenge,
+        number: n,
+        salt: salt,
+        signature: signature
+      })
+    }
+  }
+  return ''
+}
+
+const obtainCaptchaSolution = async (): Promise<string> => {
+  try {
+    const res = await api.get('/auth/captcha')
+    if (res.data?.provider && res.data.provider !== 'altcha') {
+      return ''
+    }
+    return await solveAltchaChallengeObj(res.data)
+  } catch (e) {
+    console.error('Failed to obtain captcha solution', e)
+    return ''
+  }
+}
+
 const fetchCaptchaChallenge = async () => {
   try {
     const res = await api.get('/auth/captcha')
@@ -732,35 +777,9 @@ const solveCaptcha = async () => {
 
   solvingCaptcha.value = true
   try {
-    const { challenge, salt, maxnumber, algorithm, signature } = captchaChallenge.value
-    const max = maxnumber || 50000
-    const target = challenge.toLowerCase()
-
-    let solvedNumber = -1
-    const enc = new TextEncoder()
-
-    // Solve SHA-256(salt + N) == challenge
-    for (let n = 0; n <= max; n++) {
-      const data = enc.encode(`${salt}${n}`)
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-      const hashArray = Array.from(new Uint8Array(hashBuffer))
-      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-
-      if (hashHex === target) {
-        solvedNumber = n
-        break
-      }
-    }
-
-    if (solvedNumber >= 0) {
-      const solutionPayload = {
-        algorithm: algorithm || 'SHA-256',
-        challenge: challenge,
-        number: solvedNumber,
-        salt: salt,
-        signature: signature
-      }
-      form.value.captcha = JSON.stringify(solutionPayload)
+    const solution = await solveAltchaChallengeObj(captchaChallenge.value)
+    if (solution) {
+      form.value.captcha = solution
       captchaSolved.value = true
       message.success(t('login.captchaSuccess'))
     } else {
@@ -875,9 +894,8 @@ const handlePasskeyMFA = async () => {
   }
   passkeyLoading.value = true
   try {
-    const beginRes = await api.post('/auth/passkey/login-begin', {
-      username: form.value.username || '',
-      user_id: mfaUserID.value || undefined
+    const beginRes = await api.post('/auth/mfa/passkey-begin', {
+      mfa_token: mfaToken.value
     })
     const { options, session_key } = beginRes.data
     const pkOptions = options.publicKey
@@ -902,7 +920,7 @@ const handlePasskeyMFA = async () => {
         userHandle: assertion.response.userHandle ? bufferToBase64URL(assertion.response.userHandle) : null
       }
     }
-    await api.post(`/auth/passkey/login-finish?session_key=${session_key}&remember_me=${form.value.remember_me}`, payload)
+    await api.post(`/auth/mfa/passkey-finish?session_key=${session_key}&mfa_token=${mfaToken.value}&remember_me=${form.value.remember_me}`, payload)
     message.success(t('login.success'))
     router.push('/console/upload')
   } catch (err: any) {

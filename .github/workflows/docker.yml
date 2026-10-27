@@ -143,7 +143,7 @@ jobs:
       - name: Determine Docker Image Name
         id: image-name
         run: |
-          NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE || 'utopiaxc1025' }}"
+          NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE }}"
           echo "image_name=${NAMESPACE}/utopia_images" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
@@ -158,7 +158,7 @@ jobs:
         if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push != false)
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME || 'utopiaxc1025' }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract Docker metadata

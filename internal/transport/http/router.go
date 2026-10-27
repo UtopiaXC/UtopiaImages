@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
 	"github.com/UtopiaXC/UtopiaImages/internal/cache"
@@ -23,9 +24,22 @@ const defaultFaviconSVG = `<svg t="1793016306889" class="icon" viewBox="0 0 1024
 
 type Server struct {
 	cfg             *config.Config
+	dbMu            sync.RWMutex
 	db              *gorm.DB
 	engine          *gin.Engine
 	dispatchService *service.DispatchService
+}
+
+func (s *Server) getDB() *gorm.DB {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+	return s.db
+}
+
+func (s *Server) setDB(db *gorm.DB) {
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
+	s.db = db
 }
 
 func NewServer(cfg *config.Config, configPath string) (*Server, error) {
@@ -76,6 +90,7 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 
 	// 5. Initialize Services
 	authService := service.NewAuthService(db, sessionManager, totpManager, captchaManager, passkeyManager)
+	authService.SetStorage(stDriver)
 	uploadService := service.NewUploadService(db, stDriver, processor, derivedCache)
 	dispatchService := service.NewDispatchService(db, stDriver, processor, derivedCache)
 	importService := service.NewImportService(db, uploadService)
@@ -88,6 +103,7 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 	settingsController := NewSettingsController(db, derivedCache, cfg, configPath)
 
 	r := gin.New()
+	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
 	r.Use(gin.Recovery())
 	r.Use(appLogger.GinLoggerMiddleware())
 
@@ -102,7 +118,7 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 	}
 
 	authController.SetOnDBChange(func(newDB *gorm.DB) {
-		*db = *newDB
+		s.setDB(newDB)
 		sessionManager.SetDB(newDB)
 		passkeyManager.SetDB(newDB)
 		authService.SetDB(newDB)
@@ -138,6 +154,7 @@ func (s *Server) setupRoutes(
 	api := s.engine.Group("/api/v1")
 	{
 		api.GET("/site", func(c *gin.Context) {
+			db := s.getDB()
 			siteName := s.cfg.Site.Name
 			if siteName == "" {
 				siteName = "Utopia Images"
@@ -148,11 +165,11 @@ func (s *Server) setupRoutes(
 			}
 
 			var allowRegSetting model.Setting
-			s.db.Where("key = ?", "allow_registration").First(&allowRegSetting)
+			db.Where("key = ?", "allow_registration").First(&allowRegSetting)
 			allowReg := allowRegSetting.Value == "true"
 
 			var captchaProviderSetting model.Setting
-			s.db.Where("key = ?", "captcha_provider").First(&captchaProviderSetting)
+			db.Where("key = ?", "captcha_provider").First(&captchaProviderSetting)
 			provider := captchaProviderSetting.Value
 			if provider == "" {
 				provider = s.cfg.Security.Captcha.Provider
@@ -160,10 +177,9 @@ func (s *Server) setupRoutes(
 
 			var favSetting model.Setting
 			fav := ""
-			if err := s.db.Where("key = 'site_favicon'").First(&favSetting).Error; err == nil {
-				fav = favSetting.Value
-			}
-			if fav == "" {
+			if err := db.Where("key = 'site_favicon_binary'").First(&favSetting).Error; err == nil && len(favSetting.BinaryValue) > 0 {
+				fav = "/favicon.ico"
+			} else {
 				fav = defaultFaviconSVG
 			}
 
@@ -203,18 +219,21 @@ func (s *Server) setupRoutes(
 	s.engine.GET("/login", serveIndex)
 	s.engine.GET("/console/*filepath", serveIndex)
 	serveFavicon := func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Content-Security-Policy", "sandbox")
+		c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
+
+		db := s.getDB()
 		var favBinarySetting model.Setting
-		if err := s.db.Where("key = 'site_favicon_binary'").First(&favBinarySetting).Error; err == nil && len(favBinarySetting.BinaryValue) > 0 {
+		if err := db.Where("key = 'site_favicon_binary'").First(&favBinarySetting).Error; err == nil && len(favBinarySetting.BinaryValue) > 0 {
 			contentType := favBinarySetting.ContentType
 			if contentType == "" {
 				contentType = "image/x-icon"
 			}
-			c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
 			c.Data(http.StatusOK, contentType, favBinarySetting.BinaryValue)
 			return
 		}
 
-		c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
 		c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", []byte(defaultFaviconSVG))
 	}
 

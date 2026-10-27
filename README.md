@@ -10,6 +10,9 @@ Demo图请见最底部。
 
 ## 快速上手
 
+注：在任何情况下，任何软件我都推荐使用隔离环境内部署。尽可能使用独立虚拟机或rootless docker，而不是直接在物理机上运行任何程序。  
+无论是人还是AI的代码都会出现莫名其妙的漏洞，鉴权问题、路径穿越、提权漏洞比比皆是，一定要多加防范。  
+
 ### 方式一：直接运行预编译二进制文件
 
 1. 从 [Releases 页面](https://github.com/UtopiaXC/UtopiaImages/releases) 下载适合您系统架构的压缩包。
@@ -30,7 +33,7 @@ docker run -d \
   --name utopia_images \
   -p 2983:2983 \
   -v $(pwd)/data:/app/data \
-  utopiaxc1025/utopia_images:latest
+  utopiaxc/utopia_images:latest
 ```
 
 使用 Docker Compose：
@@ -40,7 +43,7 @@ version: '3.8'
 
 services:
   utopia_images:
-    image: utopiaxc1025/utopia_images:latest
+    image: utopiaxc/utopia_images:latest
     container_name: utopia_images
     restart: always
     ports:

@@ -270,7 +270,7 @@ func EmbedBlindWatermark(src image.Image, watermarkText string) *image.RGBA {
 	dst := image.NewRGBA(bounds)
 	draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
 
-	if w < 16 || h < 16 || watermarkText == "" {
+	if w < 16 || h < 16 || w > 16384 || h > 16384 || int64(w)*int64(h) > 80000000 || watermarkText == "" {
 		return dst
 	}
 
@@ -427,6 +427,9 @@ func ExtractBlindWatermark(src image.Image) (string, string, error) {
 
 	if w < 16 || h < 16 {
 		return "", "", errors.New("image dimensions too small for blind watermark extraction")
+	}
+	if w > 16384 || h > 16384 || int64(w)*int64(h) > 80000000 {
+		return "", "", errors.New("image dimensions too large for blind watermark extraction (max 80MP)")
 	}
 
 	rgba, ok := src.(*image.RGBA)

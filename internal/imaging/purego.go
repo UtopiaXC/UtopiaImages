@@ -3,6 +3,7 @@ package imaging
 import (
 	"bytes"
 	"fmt"
+	_ "golang.org/x/image/webp"
 	"image"
 	"image/color"
 	"image/draw"
@@ -21,10 +22,14 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-type PureGoProcessor struct{}
+type PureGoProcessor struct {
+	sem chan struct{}
+}
 
 func NewPureGoProcessor() *PureGoProcessor {
-	return &PureGoProcessor{}
+	return &PureGoProcessor{
+		sem: make(chan struct{}, 4),
+	}
 }
 
 func (p *PureGoProcessor) GetDimensions(src io.Reader) (width, height int, err error) {
@@ -36,6 +41,11 @@ func (p *PureGoProcessor) GetDimensions(src io.Reader) (width, height int, err e
 }
 
 func (p *PureGoProcessor) Process(src io.Reader, opts ProcessOptions) ([]byte, string, error) {
+	if p.sem != nil {
+		p.sem <- struct{}{}
+		defer func() { <-p.sem }()
+	}
+
 	var rs io.ReadSeeker
 	if s, ok := src.(io.ReadSeeker); ok {
 		rs = s
@@ -210,8 +220,18 @@ func parseHexColor(hexStr string, alpha uint8) color.RGBA {
 }
 
 func createTextBadge(text string, fontFamily string, fontSize int, col color.RGBA, strokeCol color.RGBA, strokeWidth int) *image.RGBA {
+	if len(text) > 500 {
+		text = text[:500]
+	}
 	if fontSize <= 0 {
 		fontSize = 24
+	} else if fontSize > 200 {
+		fontSize = 200
+	}
+	if strokeWidth < 0 {
+		strokeWidth = 0
+	} else if strokeWidth > 10 {
+		strokeWidth = 10
 	}
 
 	face, err := GetFontManager().GetFace(fontFamily, fontSize)
@@ -432,8 +452,10 @@ func (p *PureGoProcessor) renderTileText(dst *image.RGBA, wm *WatermarkConfig) {
 	opacity := wm.Opacity
 	if opacity <= 0 {
 		opacity = 0.2
+	} else if opacity > 1.0 {
+		opacity = 1.0
 	}
-	alpha := uint8(opacity * 255)
+	alpha := uint8(math.Round(opacity * 255.0))
 
 	fontCol := parseHexColor(wm.FontColor, alpha)
 	if wm.FontColor == "" {
@@ -562,8 +584,10 @@ func (p *PureGoProcessor) renderPositionText(dst *image.RGBA, wm *WatermarkConfi
 	opacity := wm.Opacity
 	if opacity <= 0 {
 		opacity = 0.8
+	} else if opacity > 1.0 {
+		opacity = 1.0
 	}
-	alpha := uint8(opacity * 255)
+	alpha := uint8(math.Round(opacity * 255.0))
 
 	fontCol := parseHexColor(wm.FontColor, alpha)
 	if wm.FontColor == "" {
@@ -666,6 +690,8 @@ func (p *PureGoProcessor) renderPositionText(dst *image.RGBA, wm *WatermarkConfi
 func (p *PureGoProcessor) renderWatermarkImage(dst *image.RGBA, wmImg image.Image, position string, opacity float64) {
 	if opacity <= 0 {
 		opacity = 0.8
+	} else if opacity > 1.0 {
+		opacity = 1.0
 	}
 
 	b := dst.Bounds()

@@ -349,10 +349,19 @@ const visibleFormatRows = computed(() => {
 const formatContent = (url: string) => {
   const name = props.file.display_name || 'image'
   switch (activeTab.value) {
-    case 'markdown':
-      return `![${name}](${url})`
-    case 'html':
-      return `<img src="${url}" alt="${name}" />`
+    case 'markdown': {
+      const safeMd = name.replace(/\[/g, '\\[').replace(/\]/g, '\\]')
+      return `![${safeMd}](${url})`
+    }
+    case 'html': {
+      const safeHtml = name
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+      return `<img src="${url}" alt="${safeHtml}" />`
+    }
     case 'bbcode':
       return `[img]${url}[/img]`
     default:

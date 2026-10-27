@@ -16,6 +16,7 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/common"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/UtopiaXC/UtopiaImages/internal/pkg/pathclean"
+	"github.com/UtopiaXC/UtopiaImages/internal/storage"
 	"gorm.io/gorm"
 )
 
@@ -36,11 +37,16 @@ type AuthService struct {
 	totpManager    *auth.TOTPManager
 	captchaManager *auth.CaptchaManager
 	passkeyManager *auth.PasskeyManager
+	storage        storage.StorageDriver
 	tracker        *auth.LoginAttemptsTracker
 	setupTokens    map[string]setupTokenEntry
 	setupLock      sync.RWMutex
 	mfaTokens      map[string]*mfaTokenEntry
 	mfaLock        sync.Mutex
+}
+
+func (s *AuthService) SetStorage(st storage.StorageDriver) {
+	s.storage = st
 }
 
 func NewAuthService(
@@ -50,7 +56,7 @@ func NewAuthService(
 	cm *auth.CaptchaManager,
 	pm *auth.PasskeyManager,
 ) *AuthService {
-	return &AuthService{
+	s := &AuthService{
 		db:             db,
 		sessionManager: sm,
 		totpManager:    tm,
@@ -59,6 +65,30 @@ func NewAuthService(
 		tracker:        auth.NewLoginAttemptsTracker(),
 		setupTokens:    make(map[string]setupTokenEntry),
 		mfaTokens:      make(map[string]*mfaTokenEntry),
+	}
+	go s.startTokenCleaner()
+	return s
+}
+
+func (s *AuthService) startTokenCleaner() {
+	ticker := time.NewTicker(3 * time.Minute)
+	for range ticker.C {
+		now := time.Now()
+		s.mfaLock.Lock()
+		for k, v := range s.mfaTokens {
+			if now.After(v.ExpiresAt) {
+				delete(s.mfaTokens, k)
+			}
+		}
+		s.mfaLock.Unlock()
+
+		s.setupLock.Lock()
+		for k, v := range s.setupTokens {
+			if now.After(v.ExpiresAt) {
+				delete(s.setupTokens, k)
+			}
+		}
+		s.setupLock.Unlock()
 	}
 }
 
@@ -83,6 +113,11 @@ func (s *AuthService) Tracker() *auth.LoginAttemptsTracker {
 func (s *AuthService) SetupInitialAdmin(username, password, nickname, email string) (*model.User, error) {
 	if !s.IsSetupRequired() {
 		return nil, errors.New("系统已完成初始化，管理员账号已存在")
+	}
+
+	username = strings.ToLower(strings.TrimSpace(username))
+	if !pathclean.IsValidUsername(username) {
+		return nil, fmt.Errorf("用户名 '%s' 格式不合法或属于系统保留字，仅允许 3~32 位字母、数字、下划线及连字符", username)
 	}
 
 	hash, err := auth.HashPassword(password)
@@ -141,6 +176,30 @@ func (s *AuthService) GenerateMFAToken(userID uint) string {
 	return tok
 }
 
+// ValidateMFAToken checks if an MFA token is valid without consuming it, returning the associated UserID
+func (s *AuthService) ValidateMFAToken(mfaToken string) (uint, bool) {
+	if mfaToken == "" {
+		return 0, false
+	}
+	s.mfaLock.Lock()
+	defer s.mfaLock.Unlock()
+	entry, ok := s.mfaTokens[mfaToken]
+	if !ok || time.Now().After(entry.ExpiresAt) {
+		return 0, false
+	}
+	return entry.UserID, true
+}
+
+// RevokeMFAToken removes the MFA token after it has been consumed
+func (s *AuthService) RevokeMFAToken(mfaToken string) {
+	if mfaToken == "" {
+		return
+	}
+	s.mfaLock.Lock()
+	defer s.mfaLock.Unlock()
+	delete(s.mfaTokens, mfaToken)
+}
+
 func (s *AuthService) GenerateSetupToken(userID uint) string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
@@ -184,12 +243,13 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 
 	// 2. Find user by username or email
 	var user model.User
-	err := s.db.Preload("Role").Where("username = ? OR email = ?", account, account).First(&user).Error
+	lowerAccount := strings.ToLower(strings.TrimSpace(account))
+	err := s.db.Preload("Role").Where("LOWER(username) = ? OR LOWER(email) = ?", lowerAccount, lowerAccount).First(&user).Error
 	if err != nil {
 		s.tracker.RecordFailure(trackerKey)
-		// Dummy check to mitigate timing attacks
-		_, _ = auth.VerifyPassword(password, "$2a$10$abcdefghijklmnopqrstuuNOPQRSTUVWXYZ0123456789012345678901")
-		return nil, common.ErrAuthInvalidCredentials
+		// Dummy check with valid Argon2id hash format to mitigate timing attacks
+		_, _ = auth.VerifyPassword(password, "$argon2id$v=19$m=65536,t=3,p=2$c29tZXNhbHQxMjM0NTY$RdescudvJCsgt3ub+b+dWRWJTmaaJObG")
+		return &LoginResult{RequiresCaptcha: true}, common.ErrAuthInvalidCredentials
 	}
 
 	// 3. Check if user is permanently banned by administrator (Requirement 10)
@@ -214,7 +274,7 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 
 	// 5. Check if CAPTCHA is required (Immediately after 1 failure, per requirement 10)
 	if user.FailedLoginAttempts >= 1 || s.tracker.RequiresCaptcha(trackerKey) {
-		if captchaSolution == "" || !s.captchaManager.VerifyAltcha(captchaSolution) {
+		if !s.VerifyCaptcha(captchaSolution, clientIP) {
 			return &LoginResult{RequiresCaptcha: true}, common.ErrAuthCaptchaRequired
 		}
 	}
@@ -318,9 +378,9 @@ func (s *AuthService) Register(username, email, password, nickname string) (*mod
 		return nil, "", common.ErrRegistrationDisabled
 	}
 
-	username = strings.TrimSpace(username)
-	email = strings.TrimSpace(email)
-	if len(username) < 3 {
+	username = strings.ToLower(strings.TrimSpace(username))
+	email = strings.ToLower(strings.TrimSpace(email))
+	if !pathclean.IsValidUsername(username) {
 		return nil, "", common.ErrValidationFailed
 	}
 	if !strings.Contains(email, "@") {
@@ -330,13 +390,13 @@ func (s *AuthService) Register(username, email, password, nickname string) (*mod
 		return nil, "", common.ErrAuthPasswordTooShort
 	}
 
-	// Check duplicates
+	// Check duplicates (including soft-deleted users to protect unique index)
 	var count int64
-	s.db.Model(&model.User{}).Where("username = ?", username).Count(&count)
+	s.db.Unscoped().Model(&model.User{}).Where("LOWER(username) = ?", username).Count(&count)
 	if count > 0 {
 		return nil, "", common.ErrAuthUsernameTaken
 	}
-	s.db.Model(&model.User{}).Where("email = ?", email).Count(&count)
+	s.db.Unscoped().Model(&model.User{}).Where("LOWER(email) = ?", email).Count(&count)
 	if count > 0 {
 		return nil, "", common.ErrAuthEmailTaken
 	}
@@ -421,7 +481,8 @@ func (s *AuthService) RequestPasswordReset(accountOrEmail string) (*model.User, 
 	}
 
 	var user model.User
-	if err := s.db.Where("email = ? OR username = ?", accountOrEmail, accountOrEmail).First(&user).Error; err != nil {
+	lowerAccount := strings.ToLower(accountOrEmail)
+	if err := s.db.Where("LOWER(email) = ? OR LOWER(username) = ?", lowerAccount, lowerAccount).First(&user).Error; err != nil {
 		return nil, "", common.ErrAuthUserNotFound
 	}
 
@@ -491,7 +552,8 @@ func (s *AuthService) Request2FAReset(accountOrEmail string) (*model.User, strin
 	}
 
 	var user model.User
-	if err := s.db.Where("email = ? OR username = ?", accountOrEmail, accountOrEmail).First(&user).Error; err != nil {
+	lowerAccount := strings.ToLower(accountOrEmail)
+	if err := s.db.Where("LOWER(email) = ? OR LOWER(username) = ?", lowerAccount, lowerAccount).First(&user).Error; err != nil {
 		return nil, "", common.ErrAuthUserNotFound
 	}
 
@@ -571,7 +633,7 @@ func (s *AuthService) ResetPasswordWithToken(tokenStr, newPassword string) strin
 	}
 
 	var tokenRecord model.PasswordResetToken
-	if err := s.db.Where("token = ? AND token_type != '2fa' AND used = ? AND expires_at > ?", tokenStr, false, time.Now()).First(&tokenRecord).Error; err != nil {
+	if err := s.db.Where("token = ? AND token_type = 'password' AND used = ? AND expires_at > ?", tokenStr, false, time.Now()).First(&tokenRecord).Error; err != nil {
 		return common.ErrResetTokenInvalid
 	}
 
@@ -641,6 +703,17 @@ func (s *AuthService) VerifyMFAAndLogin(mfaToken, code, clientIP, userAgent stri
 		return "", errors.New("too many failed MFA attempts from this IP, please try again later")
 	}
 
+	var user model.User
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return "", errors.New("user not found")
+	}
+	if user.Status != "active" {
+		return "", errors.New("user account is not active or has been disabled")
+	}
+	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
+		return "", errors.New("user account is temporarily locked")
+	}
+
 	var sec model.TOTPSecret
 	if err := s.db.Where("user_id = ? AND confirmed_at IS NOT NULL", userID).First(&sec).Error; err != nil {
 		return "", errors.New("2FA not configured")
@@ -683,6 +756,10 @@ func (s *AuthService) CreateApiToken(userID uint, name, scopes string, expiresDa
 		expiresAt = &exp
 	}
 
+	if strings.TrimSpace(scopes) == "" {
+		scopes = "*"
+	}
+
 	token := &model.ApiToken{
 		UserID:    userID,
 		Name:      name,
@@ -705,16 +782,49 @@ func (s *AuthService) GenerateCaptchaChallenge() (*auth.AltchaChallenge, error) 
 	return s.captchaManager.GenerateAltchaChallenge(50000)
 }
 
+func (s *AuthService) GetCaptchaProvider() string {
+	var setting model.Setting
+	if err := s.db.Where("key = ?", "captcha_provider").First(&setting).Error; err == nil {
+		p := strings.ToLower(strings.TrimSpace(setting.Value))
+		if p != "" {
+			return p
+		}
+	}
+	return "altcha" // default
+}
+
+// VerifyCaptcha verifies an ALTCHA payload or Cloudflare Turnstile token depending on captcha_provider setting
+func (s *AuthService) VerifyCaptcha(payloadOrToken string, clientIP ...string) bool {
+	provider := s.GetCaptchaProvider()
+	if provider == "none" {
+		return true
+	}
+	if strings.TrimSpace(payloadOrToken) == "" {
+		return false
+	}
+	ip := ""
+	if len(clientIP) > 0 {
+		ip = clientIP[0]
+	}
+	if provider == "turnstile" {
+		if s.captchaManager == nil {
+			return true
+		}
+		return s.captchaManager.VerifyTurnstile(payloadOrToken, ip)
+	}
+	// default: altcha
+	if s.captchaManager == nil {
+		return true
+	}
+	return s.captchaManager.VerifyAltcha(payloadOrToken)
+}
+
 // ChangeUsername updates a user's username and migrates all existing public_paths
 // like GitHub does when a user or organization renames
 func (s *AuthService) ChangeUsername(userID uint, newUsername string) error {
 	newUsername = strings.ToLower(strings.TrimSpace(newUsername))
-	if len(newUsername) < 3 || len(newUsername) > 32 {
-		return errors.New("username must be between 3 and 32 characters")
-	}
-
-	if pathclean.IsReservedWord(newUsername) {
-		return fmt.Errorf("username '%s' is a reserved system path", newUsername)
+	if !pathclean.IsValidUsername(newUsername) {
+		return errors.New("invalid username format or reserved system path")
 	}
 
 	var user model.User
@@ -726,30 +836,33 @@ func (s *AuthService) ChangeUsername(userID uint, newUsername string) error {
 		return nil
 	}
 
-	// Check if username is already taken
 	var count int64
-	s.db.Model(&model.User{}).Where("username = ?", newUsername).Count(&count)
+	s.db.Unscoped().Model(&model.User{}).Where("LOWER(username) = ?", newUsername).Count(&count)
 	if count > 0 {
 		return errors.New("username is already taken")
 	}
 
-	oldPrefix := user.Username + "/"
+	oldUsername := user.Username
+	oldPrefix := oldUsername + "/"
 	newPrefix := newUsername + "/"
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		// 1. Update user record
 		if err := tx.Model(&user).Update("username", newUsername).Error; err != nil {
 			return err
 		}
 
-		// 2. Migrate all file public_path entries for this user
 		var files []model.FileRecord
-		tx.Where("user_id = ?", userID).Find(&files)
+		if err := tx.Where("user_id = ?", userID).Find(&files).Error; err != nil {
+			return err
+		}
 
 		for _, f := range files {
 			if strings.HasPrefix(f.PublicPath, oldPrefix) {
 				newPublicPath := newPrefix + strings.TrimPrefix(f.PublicPath, oldPrefix)
-				if err := tx.Model(&model.FileRecord{}).Where("id = ?", f.ID).Update("public_path", newPublicPath).Error; err != nil {
+				if err := tx.Model(&model.FileRecord{}).Where("id = ?", f.ID).Updates(map[string]any{
+					"public_path":  newPublicPath,
+					"sign_version": gorm.Expr("sign_version + 1"),
+				}).Error; err != nil {
 					return err
 				}
 			}

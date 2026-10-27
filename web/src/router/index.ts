@@ -58,5 +58,18 @@ router.beforeEach(async (to, from, next) => {
     }
   } catch {}
 
+  if (to.path.startsWith('/console/admin')) {
+    try {
+      const meRes = await api.get('/me')
+      const user = meRes.data
+      const isAdmin = user.role_id === 1 || user.role?.name === 'admin'
+      if (!isAdmin) {
+        return next('/console/upload')
+      }
+    } catch {
+      return next('/login')
+    }
+  }
+
   next()
 })

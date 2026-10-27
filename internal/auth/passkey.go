@@ -286,6 +286,12 @@ func (pm *PasskeyManager) FinishLogin(sessionKey string, r *protocol.ParsedCrede
 	if err := pm.db.Where("id = ?", credRecord.UserID).First(&user).Error; err != nil {
 		return nil, errors.New("user not found")
 	}
+	if user.Status != "active" {
+		return nil, errors.New("user account is not active or has been disabled")
+	}
+	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
+		return nil, errors.New("user account is temporarily locked")
+	}
 
 	creds := pm.loadUserCredentials(user.ID)
 

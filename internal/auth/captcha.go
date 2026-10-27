@@ -178,15 +178,48 @@ func (cm *CaptchaManager) VerifyTurnstile(token, remoteIP string) bool {
 
 // LoginAttemptsTracker tracks consecutive failed attempts per IP / Username in memory (thread-safe)
 type LoginAttemptsTracker struct {
-	mutex    sync.RWMutex
-	attempts map[string]int
-	lockouts map[string]time.Time
+	mutex       sync.RWMutex
+	attempts    map[string]int
+	lockouts    map[string]time.Time
+	lastAttempt map[string]time.Time
 }
 
 func NewLoginAttemptsTracker() *LoginAttemptsTracker {
-	return &LoginAttemptsTracker{
-		attempts: make(map[string]int),
-		lockouts: make(map[string]time.Time),
+	t := &LoginAttemptsTracker{
+		attempts:    make(map[string]int),
+		lockouts:    make(map[string]time.Time),
+		lastAttempt: make(map[string]time.Time),
+	}
+	go t.startCleanup()
+	return t
+}
+
+func (t *LoginAttemptsTracker) startCleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	for range ticker.C {
+		t.cleanup()
+	}
+}
+
+func (t *LoginAttemptsTracker) cleanup() {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	now := time.Now()
+	for k, until := range t.lockouts {
+		if now.After(until) {
+			delete(t.lockouts, k)
+			delete(t.attempts, k)
+			delete(t.lastAttempt, k)
+		}
+	}
+	for k, last := range t.lastAttempt {
+		if now.Sub(last) > 1*time.Hour {
+			delete(t.attempts, k)
+			delete(t.lastAttempt, k)
+			if until, ok := t.lockouts[k]; !ok || now.After(until) {
+				delete(t.lockouts, k)
+			}
+		}
 	}
 }
 
@@ -194,11 +227,13 @@ func (t *LoginAttemptsTracker) RecordFailure(key string) (int, bool) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	now := time.Now()
 	t.attempts[key]++
+	t.lastAttempt[key] = now
 	count := t.attempts[key]
 	locked := false
 	if count >= 5 {
-		t.lockouts[key] = time.Now().Add(15 * time.Minute)
+		t.lockouts[key] = now.Add(15 * time.Minute)
 		locked = true
 	}
 	return count, locked
@@ -215,6 +250,7 @@ func (t *LoginAttemptsTracker) IsLocked(key string) bool {
 	if time.Now().After(until) {
 		delete(t.lockouts, key)
 		t.attempts[key] = 0
+		delete(t.lastAttempt, key)
 		return false
 	}
 	return true
@@ -226,6 +262,7 @@ func (t *LoginAttemptsTracker) RecordSuccess(key string) {
 
 	delete(t.attempts, key)
 	delete(t.lockouts, key)
+	delete(t.lastAttempt, key)
 }
 
 func (t *LoginAttemptsTracker) RequiresCaptcha(key string) bool {

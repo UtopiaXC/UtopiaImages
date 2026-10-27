@@ -54,3 +54,5 @@ Thumbs.db
 web/node_modules/
 web/dist/
 
+/UtopiaImages
+/UtopiaImages.exe

@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/base64"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"os"
@@ -54,21 +55,21 @@ func (ctrl *FileController) RegisterRoutes(rg *gin.RouterGroup) {
 	files := rg.Group("/files")
 	files.Use(auth.RequireAuth())
 	{
-		files.GET("", ctrl.ListFiles)
-		files.GET("/ids", ctrl.ListFileIDs)
-		files.GET("/:id", ctrl.GetFile)
-		files.PATCH("/:id", ctrl.UpdateFile)
-		files.DELETE("/:id", ctrl.DeleteFile)
-		files.POST("/batch-delete", ctrl.BatchDeleteFiles)
-		files.POST("/batch-update", ctrl.BatchUpdateFiles)
-		files.GET("/:id/raw", ctrl.DownloadRaw)
-		files.GET("/:id/temp-links", ctrl.ListTempLinks)
-		files.POST("/:id/temp-links", ctrl.CreateTempLink)
-		files.POST("/:id/temp-link", ctrl.CreateTempLink)
-		files.DELETE("/:id/temp-links/:link_id", ctrl.RevokeTempLink)
-		files.DELETE("/:id/temp-links", ctrl.RevokeAllTempLinks)
-		files.POST("/:id/revoke-links", ctrl.RevokeAllTempLinks)
-		files.POST("/:id/edit", ctrl.EditFile)
+		files.GET("", auth.RequirePermission("file.read"), ctrl.ListFiles)
+		files.GET("/ids", auth.RequirePermission("file.read"), ctrl.ListFileIDs)
+		files.GET("/:id", auth.RequirePermission("file.read"), ctrl.GetFile)
+		files.PATCH("/:id", auth.RequirePermission("file.write"), ctrl.UpdateFile)
+		files.DELETE("/:id", auth.RequirePermission("file.delete"), ctrl.DeleteFile)
+		files.POST("/batch-delete", auth.RequirePermission("file.delete"), ctrl.BatchDeleteFiles)
+		files.POST("/batch-update", auth.RequirePermission("file.write"), ctrl.BatchUpdateFiles)
+		files.GET("/:id/raw", auth.RequirePermission("file.read"), ctrl.DownloadRaw)
+		files.GET("/:id/temp-links", auth.RequirePermission("file.read"), ctrl.ListTempLinks)
+		files.POST("/:id/temp-links", auth.RequirePermission("file.write"), ctrl.CreateTempLink)
+		files.POST("/:id/temp-link", auth.RequirePermission("file.write"), ctrl.CreateTempLink)
+		files.DELETE("/:id/temp-links/:link_id", auth.RequirePermission("file.write"), ctrl.RevokeTempLink)
+		files.DELETE("/:id/temp-links", auth.RequirePermission("file.write"), ctrl.RevokeAllTempLinks)
+		files.POST("/:id/revoke-links", auth.RequirePermission("file.write"), ctrl.RevokeAllTempLinks)
+		files.POST("/:id/edit", auth.RequirePermission("file.write"), ctrl.EditFile)
 	}
 
 	rg.POST("/upload", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.Upload)
@@ -76,7 +77,25 @@ func (ctrl *FileController) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/import/zip", auth.RequireAuth(), auth.RequirePermission("import.use"), ctrl.ImportArchive)
 }
 
+func (ctrl *FileController) getMaxUploadSize() int64 {
+	var s model.Setting
+	if err := ctrl.db.Where("key = ?", "max_single_file_size").First(&s).Error; err == nil {
+		if mb, err := strconv.ParseInt(strings.TrimSpace(s.Value), 10, 64); err == nil && mb > 0 {
+			return mb * 1024 * 1024
+		}
+	}
+	return 50 * 1024 * 1024
+}
+
+func isValidMode(mode string) bool {
+	return mode == "inherit" || mode == "on" || mode == "off"
+}
+
 func (ctrl *FileController) Upload(c *gin.Context) {
+	maxSize := ctrl.getMaxUploadSize()
+	// Add 10MB tolerance for multipart form boundaries
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize+10*1024*1024)
+
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
 
@@ -95,6 +114,10 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 
 	policyID := ParseUintSafe(c.PostForm("policy_id"), 0)
 	watermarkMode := c.DefaultPostForm("watermark_mode", "inherit")
+	if !isValidMode(watermarkMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark_mode, must be inherit, on, or off"})
+		return
+	}
 	displayName := c.PostForm("display_name")
 	if displayName == "" {
 		displayName = fileHeader.Filename
@@ -139,10 +162,12 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 
 func (ctrl *FileController) buildFileLinks(file *model.FileRecord) gin.H {
 	directURL := fmt.Sprintf("%s/%s", ctrl.baseURL, file.PublicPath)
+	safeHTMLName := html.EscapeString(file.DisplayName)
+	safeMdName := strings.ReplaceAll(strings.ReplaceAll(file.DisplayName, "[", "\\["), "]", "\\]")
 	links := gin.H{
 		"url":       directURL,
-		"markdown":  fmt.Sprintf("![%s](%s)", file.DisplayName, directURL),
-		"html":      fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", directURL, file.DisplayName),
+		"markdown":  fmt.Sprintf("![%s](%s)", safeMdName, directURL),
+		"html":      fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", directURL, safeHTMLName),
 		"bbcode":    fmt.Sprintf("[img]%s[/img]", directURL),
 		"thumb_url": fmt.Sprintf("%s?s=thumb", directURL),
 	}
@@ -152,8 +177,8 @@ func (ctrl *FileController) buildFileLinks(file *model.FileRecord) gin.H {
 		baseNoExt := strings.TrimSuffix(file.PublicPath, ext)
 		webpURL := fmt.Sprintf("%s/%s.webp", ctrl.baseURL, baseNoExt)
 		links["webp_url"] = webpURL
-		links["webp_markdown"] = fmt.Sprintf("![%s](%s)", file.DisplayName, webpURL)
-		links["webp_html"] = fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", webpURL, file.DisplayName)
+		links["webp_markdown"] = fmt.Sprintf("![%s](%s)", safeMdName, webpURL)
+		links["webp_html"] = fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", webpURL, safeHTMLName)
 		links["webp_bbcode"] = fmt.Sprintf("[img]%s[/img]", webpURL)
 	}
 
@@ -303,11 +328,11 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 	}
 
 	var req struct {
-		DisplayName           string `json:"display_name"`
-		WatermarkMode         string `json:"watermark_mode"`
-		WatermarkTemplateID   *uint  `json:"watermark_template_id"`
-		HotlinkMode           string `json:"hotlink_mode"`
-		HotlinkAllowedDomains string `json:"hotlink_allowed_domains"`
+		DisplayName           *string `json:"display_name"`
+		WatermarkMode         *string `json:"watermark_mode"`
+		WatermarkTemplateID   *uint   `json:"watermark_template_id"`
+		HotlinkMode           *string `json:"hotlink_mode"`
+		HotlinkAllowedDomains *string `json:"hotlink_allowed_domains"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -315,11 +340,15 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 	}
 
 	updates := map[string]any{}
-	if req.DisplayName != "" {
-		updates["display_name"] = req.DisplayName
+	if req.DisplayName != nil && strings.TrimSpace(*req.DisplayName) != "" {
+		updates["display_name"] = strings.TrimSpace(*req.DisplayName)
 	}
-	if req.WatermarkMode != "" {
-		updates["watermark_mode"] = req.WatermarkMode
+	if req.WatermarkMode != nil && *req.WatermarkMode != "" {
+		if !isValidMode(*req.WatermarkMode) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark_mode, must be inherit, on, or off"})
+			return
+		}
+		updates["watermark_mode"] = *req.WatermarkMode
 	}
 	if req.WatermarkTemplateID != nil {
 		if *req.WatermarkTemplateID > 0 {
@@ -336,12 +365,18 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 			updates["watermark_template_id"] = nil
 		}
 	}
-	if req.HotlinkMode != "" {
-		updates["hotlink_mode"] = req.HotlinkMode
+	if req.HotlinkMode != nil && *req.HotlinkMode != "" {
+		if !isValidMode(*req.HotlinkMode) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid hotlink_mode, must be inherit, on, or off"})
+			return
+		}
+		updates["hotlink_mode"] = *req.HotlinkMode
 	}
-	updates["hotlink_allowed_domains"] = req.HotlinkAllowedDomains
+	if req.HotlinkAllowedDomains != nil {
+		updates["hotlink_allowed_domains"] = *req.HotlinkAllowedDomains
+	}
 
-	if req.WatermarkMode != "" || req.WatermarkTemplateID != nil {
+	if (req.WatermarkMode != nil && *req.WatermarkMode != "") || req.WatermarkTemplateID != nil {
 		updates["sign_version"] = gorm.Expr("sign_version + 1")
 	}
 
@@ -404,7 +439,11 @@ func (ctrl *FileController) BatchUpdateFiles(c *gin.Context) {
 	updates := map[string]any{
 		"updated_at": time.Now(),
 	}
-	if req.WatermarkMode != nil {
+	if req.WatermarkMode != nil && *req.WatermarkMode != "" {
+		if !isValidMode(*req.WatermarkMode) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark_mode, must be inherit, on, or off"})
+			return
+		}
 		updates["watermark_mode"] = *req.WatermarkMode
 	}
 	if req.WatermarkTemplateID != nil {
@@ -422,7 +461,11 @@ func (ctrl *FileController) BatchUpdateFiles(c *gin.Context) {
 			updates["watermark_template_id"] = nil
 		}
 	}
-	if req.HotlinkMode != nil {
+	if req.HotlinkMode != nil && *req.HotlinkMode != "" {
+		if !isValidMode(*req.HotlinkMode) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid hotlink_mode, must be inherit, on, or off"})
+			return
+		}
 		updates["hotlink_mode"] = *req.HotlinkMode
 	}
 	if req.WatermarkMode != nil || req.WatermarkTemplateID != nil {
@@ -447,6 +490,9 @@ func (ctrl *FileController) DownloadRaw(c *gin.Context) {
 }
 
 func (ctrl *FileController) ImportArchive(c *gin.Context) {
+	// Restrict archive upload payload to 500MB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 500*1024*1024)
+
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
 
@@ -495,6 +541,14 @@ func (ctrl *FileController) ImportArchive(c *gin.Context) {
 	policyID := ParseUintSafe(c.PostForm("policy_id"), 0)
 	watermarkMode := c.DefaultPostForm("watermark_mode", "inherit")
 	hotlinkMode := c.DefaultPostForm("hotlink_mode", "inherit")
+	if !isValidMode(watermarkMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark_mode, must be inherit, on, or off"})
+		return
+	}
+	if !isValidMode(hotlinkMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid hotlink_mode, must be inherit, on, or off"})
+		return
+	}
 
 	var wmTemplateID *uint
 	if tidStr := c.PostForm("watermark_template_id"); tidStr != "" {
@@ -686,6 +740,9 @@ func (ctrl *FileController) RevokeAllTempLinks(c *gin.Context) {
 }
 
 func (ctrl *FileController) EditFile(c *gin.Context) {
+	maxSize := ctrl.getMaxUploadSize()
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize*2)
+
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
 	fileID := ParseUintSafe(c.Param("id"), 0)
@@ -712,6 +769,10 @@ func (ctrl *FileController) EditFile(c *gin.Context) {
 	rawBytes, err := base64.StdEncoding.DecodeString(b64Data)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid base64 image data"})
+		return
+	}
+	if int64(len(rawBytes)) > maxSize {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Image payload exceeds maximum allowed file size"})
 		return
 	}
 

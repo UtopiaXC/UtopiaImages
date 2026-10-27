@@ -128,6 +128,20 @@ func RequireAdmin() gin.HandlerFunc {
 	}
 }
 
+func hasTokenScope(scopesStr string, requiredPermission string) bool {
+	if scopesStr == "" {
+		return false
+	}
+	scopes := strings.Split(scopesStr, ",")
+	for _, item := range scopes {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "*" || trimmed == "all" || trimmed == requiredPermission {
+			return true
+		}
+	}
+	return false
+}
+
 func RequirePermission(permission string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uVal, exists := c.Get(CtxUserKey)
@@ -140,20 +154,33 @@ func RequirePermission(permission string) gin.HandlerFunc {
 		}
 
 		user := uVal.(*model.User)
-		if user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin") {
-			c.Next()
+		if user.Status != "active" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    "FORBIDDEN",
+				"message": "User account is not active",
+			})
 			return
 		}
 
-		// Standard user permissions for active users
-		if user.Status == "active" {
-			c.Next()
-			return
+		if isApi, ok := c.Get(CtxIsApiTokenKey); ok && isApi.(bool) {
+			tokVal, tokExists := c.Get(CtxApiTokenKey)
+			if !tokExists {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"code":    "FORBIDDEN",
+					"message": "Invalid API token context",
+				})
+				return
+			}
+			apiToken := tokVal.(*model.ApiToken)
+			if !hasTokenScope(apiToken.Scopes, permission) {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"code":    "FORBIDDEN",
+					"message": "API token lacks required scope: " + permission,
+				})
+				return
+			}
 		}
 
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-			"code":    "FORBIDDEN",
-			"message": "Insufficient permissions for " + permission,
-		})
+		c.Next()
 	}
 }

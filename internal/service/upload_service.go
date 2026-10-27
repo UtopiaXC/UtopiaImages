@@ -8,10 +8,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"image"
+	_ "golang.org/x/image/webp"
+	image "image"
+	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -53,8 +56,23 @@ type UploadOptions struct {
 	WatermarkTemplateID *uint
 }
 
+func (s *UploadService) getMaxSingleFileSize() int64 {
+	var setting model.Setting
+	if err := s.db.Where("key = ?", "max_single_file_size").First(&setting).Error; err == nil {
+		if mb, err := strconv.ParseInt(strings.TrimSpace(setting.Value), 10, 64); err == nil && mb > 0 {
+			return mb * 1024 * 1024
+		}
+	}
+	return 50 * 1024 * 1024 // 50MB default
+}
+
 // Upload processes and stores an incoming file stream in its original form
 func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reader, originalFilename string, declaredSize int64, opts UploadOptions) (*model.FileRecord, error) {
+	maxSingleFileSize := s.getMaxSingleFileSize()
+	if declaredSize > maxSingleFileSize {
+		return nil, fmt.Errorf("file size %d exceeds system single file limit of %d bytes", declaredSize, maxSingleFileSize)
+	}
+
 	// 1. Read first 4KB to detect MIME type via magic number
 	headerBuf := make([]byte, 4096)
 	n, err := io.ReadFull(r, headerBuf)
@@ -78,7 +96,25 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 
 	isImage := strings.HasPrefix(detectedMime, "image/") && !strings.Contains(detectedMime, "svg")
 
-	// 2. Buffer the full stream into memory to know exact size and sha256
+	// Determine max allowed bytes considering user role quota
+	var role model.Role
+	if user.Role != nil {
+		role = *user.Role
+	} else {
+		s.db.Where("id = ?", user.RoleID).First(&role)
+	}
+	maxAllowedBytes := maxSingleFileSize
+	if role.QuotaBytes > 0 {
+		remainingUserQuota := role.QuotaBytes - user.UsedBytes
+		if remainingUserQuota <= 0 {
+			return nil, fmt.Errorf("user storage quota exceeded: current %d >= limit %d", user.UsedBytes, role.QuotaBytes)
+		}
+		if remainingUserQuota < maxAllowedBytes {
+			maxAllowedBytes = remainingUserQuota
+		}
+	}
+
+	// 2. Buffer the full stream into memory using LimitReader to prevent OOM
 	var fullBuf bytes.Buffer
 	hasher := sha256.New()
 	multiWriter := io.MultiWriter(&fullBuf, hasher)
@@ -86,26 +122,26 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	// Write the initial header bytes
 	multiWriter.Write(headerBuf)
 
-	// Stream the remaining content
-	copied, err := io.Copy(multiWriter, r)
+	remainingAllowed := maxAllowedBytes - int64(n)
+	if remainingAllowed < 0 {
+		return nil, fmt.Errorf("file exceeds maximum allowed size (%d bytes)", maxAllowedBytes)
+	}
+
+	// Stream remaining content bounded by remainingAllowed + 1
+	limitedReader := io.LimitReader(r, remainingAllowed+1)
+	copied, err := io.Copy(multiWriter, limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read full payload: %w", err)
 	}
 	actualSize := int64(n) + copied
+	if actualSize > maxAllowedBytes {
+		if role.QuotaBytes > 0 && user.UsedBytes+actualSize > role.QuotaBytes {
+			return nil, fmt.Errorf("user storage quota exceeded: current %d + upload %d > limit %d",
+				user.UsedBytes, actualSize, role.QuotaBytes)
+		}
+		return nil, fmt.Errorf("file size %d exceeds allowed limit of %d bytes", actualSize, maxAllowedBytes)
+	}
 	fileSha256 := hex.EncodeToString(hasher.Sum(nil))
-
-	// 3. Check storage capacity limit against User's Role
-	var role model.Role
-	if user.Role != nil {
-		role = *user.Role
-	} else {
-		s.db.Where("id = ?", user.RoleID).First(&role)
-	}
-
-	if role.QuotaBytes > 0 && user.UsedBytes+actualSize > role.QuotaBytes {
-		return nil, fmt.Errorf("user storage quota exceeded: current %d + upload %d > limit %d",
-			user.UsedBytes, actualSize, role.QuotaBytes)
-	}
 
 	// 4. Resolve Storage Policy permitted for user's Role
 	var policy model.StoragePolicy
@@ -196,6 +232,25 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	}
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if role.QuotaBytes > 0 {
+			var currentUser model.User
+			if err := tx.Select("used_bytes").Where("id = ?", user.ID).First(&currentUser).Error; err != nil {
+				return err
+			}
+			if currentUser.UsedBytes+finalSize > role.QuotaBytes {
+				return errors.New("user storage quota exceeded")
+			}
+		}
+		if policy.MaxCapacityBytes > 0 {
+			var currentPolicy model.StoragePolicy
+			if err := tx.Select("used_bytes").Where("id = ?", policy.ID).First(&currentPolicy).Error; err != nil {
+				return err
+			}
+			if currentPolicy.UsedBytes+finalSize > policy.MaxCapacityBytes {
+				return fmt.Errorf("storage policy '%s' capacity exceeded", policy.Name)
+			}
+		}
+
 		if err := tx.Create(fileRecord).Error; err != nil {
 			return err
 		}
@@ -227,7 +282,18 @@ func (s *UploadService) buildPublicPath(user *model.User, policy model.StoragePo
 
 	parts = append(parts, filename)
 	raw := strings.Join(parts, "/")
-	return pathclean.CleanPath(raw)
+	clean := pathclean.CleanPath(raw)
+
+	// Ensure public path does not shadow top-level system reserved routes
+	firstSegment := clean
+	if idx := strings.Index(clean, "/"); idx != -1 {
+		firstSegment = clean[:idx]
+	}
+	if pathclean.IsReservedWord(firstSegment) {
+		clean = "f/" + clean
+	}
+
+	return clean
 }
 
 func (s *UploadService) renderPathPrefix(prefix string, user *model.User) string {
@@ -276,9 +342,6 @@ func (s *UploadService) renderNamingRule(rule, origName, ext, sha string) string
 	rule = strings.ReplaceAll(rule, "{time}", strconv.FormatInt(now.Unix(), 10))
 	rule = strings.ReplaceAll(rule, "{ext}", ext)
 
-	cleanOrig := strings.TrimSuffix(filepath.Base(origName), filepath.Ext(origName))
-	rule = strings.ReplaceAll(rule, "{filename}", cleanOrig)
-
 	if len(sha) >= 16 {
 		rule = strings.ReplaceAll(rule, "{sha1}", sha[:16])
 		rule = strings.ReplaceAll(rule, "{md5}", sha[:16])
@@ -307,6 +370,9 @@ func (s *UploadService) renderNamingRule(rule, origName, ext, sha string) string
 		rule = rule[:idx] + randHex + rule[idx+end+1:]
 	}
 
+	cleanOrig := strings.TrimSuffix(filepath.Base(origName), filepath.Ext(origName))
+	rule = strings.ReplaceAll(rule, "{filename}", cleanOrig)
+
 	return rule
 }
 
@@ -321,15 +387,19 @@ func (s *UploadService) DeleteFile(ctx context.Context, fileID, userID uint, isA
 	}
 
 	// Delete from storage
-	s.storage.Delete(ctx, file.StorageKey)
+	if err := s.storage.Delete(ctx, file.StorageKey); err != nil {
+		slog.Warn("Failed to delete physical file", "storage_key", file.StorageKey, "error", err)
+	}
 	if file.SourceKey != "" {
-		s.storage.Delete(ctx, file.SourceKey)
+		if err := s.storage.Delete(ctx, file.SourceKey); err != nil {
+			slog.Warn("Failed to delete physical source file", "source_key", file.SourceKey, "error", err)
+		}
 	}
 
 	// Delete from DB & return storage capacity
 	totalSize := file.Size + file.SourceSize
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(&file).Error; err != nil {
+		if err := tx.Unscoped().Delete(&file).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&model.User{}).Where("id = ?", file.UserID).Updates(map[string]any{
@@ -419,6 +489,27 @@ func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fi
 	file.UpdatedAt = time.Now()
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if sizeDiff > 0 {
+			if role.QuotaBytes > 0 {
+				var currentUser model.User
+				if err := tx.Select("used_bytes").Where("id = ?", file.UserID).First(&currentUser).Error; err != nil {
+					return err
+				}
+				if currentUser.UsedBytes+sizeDiff > role.QuotaBytes {
+					return errors.New("user storage quota exceeded")
+				}
+			}
+			if policy.MaxCapacityBytes > 0 {
+				var currentPolicy model.StoragePolicy
+				if err := tx.Select("used_bytes").Where("id = ?", file.PolicyID).First(&currentPolicy).Error; err != nil {
+					return err
+				}
+				if currentPolicy.UsedBytes+sizeDiff > policy.MaxCapacityBytes {
+					return fmt.Errorf("storage policy '%s' capacity exceeded", policy.Name)
+				}
+			}
+		}
+
 		if err := tx.Save(&file).Error; err != nil {
 			return err
 		}

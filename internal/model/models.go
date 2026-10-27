@@ -169,7 +169,7 @@ type TemporaryLink struct {
 type WatermarkTemplate struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	OwnerID   *uint     `gorm:"index" json:"owner_id"` // nil = site-wide global template
-	Name      string    `gorm:"uniqueIndex;size:64;not null" json:"name"`
+	Name      string    `gorm:"index;size:64;not null" json:"name"`
 	Layers    string    `gorm:"type:text;not null" json:"layers"` // JSON definition of layers
 	Version   int64     `gorm:"default:1" json:"version"`
 	CreatedAt time.Time `json:"created_at"`

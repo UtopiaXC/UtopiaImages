@@ -187,6 +187,13 @@ func (s *DispatchService) isFormatConversionEnabled() bool {
 	return true
 }
 
+func shortHash(h string) string {
+	if len(h) >= 16 {
+		return h[:16]
+	}
+	return h
+}
+
 func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord) {
 	mimeType := file.MimeType
 	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
@@ -201,7 +208,7 @@ func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord) {
 
 	c.Header("Content-Type", mimeType)
 	c.Header("Cache-Control", "public, no-cache, must-revalidate")
-	etag := fmt.Sprintf("\"%s-%d\"", file.Sha256[:16], file.SignVersion)
+	etag := fmt.Sprintf("\"%s-%d\"", shortHash(file.Sha256), file.SignVersion)
 	c.Header("ETag", etag)
 	c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
 
@@ -222,12 +229,11 @@ func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord) {
 	}
 	defer r.Close()
 
-	http.ServeContent(c.Writer, c.Request, filepath.Base(file.PublicPath), file.UpdatedAt, r.(readSeekerFallback))
-}
-
-type readSeekerFallback interface {
-	Read([]byte) (int, error)
-	Seek(int64, int) (int64, error)
+	if rs, ok := r.(io.ReadSeeker); ok {
+		http.ServeContent(c.Writer, c.Request, filepath.Base(file.PublicPath), file.UpdatedAt, rs)
+	} else {
+		_, _ = io.Copy(c.Writer, r)
+	}
 }
 
 func (s *DispatchService) serveProcessed(
@@ -264,6 +270,23 @@ func (s *DispatchService) serveProcessed(
 	} else {
 		targetW = reqW
 		targetH = reqH
+		// Quantize custom dimensions to steps of 32 and clamp to 8192 to prevent cache exhaustion
+		if targetW > 0 {
+			targetW = ((targetW + 15) / 32) * 32
+			if targetW < 32 {
+				targetW = 32
+			} else if targetW > 8192 {
+				targetW = 8192
+			}
+		}
+		if targetH > 0 {
+			targetH = ((targetH + 15) / 32) * 32
+			if targetH < 32 {
+				targetH = 32
+			} else if targetH > 8192 {
+				targetH = 8192
+			}
+		}
 	}
 
 	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
@@ -334,7 +357,7 @@ func (s *DispatchService) serveProcessed(
 
 	// If no watermark needed: serve base image directly
 	if !watermark {
-		etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-nowm\"", file.Sha256[:16], file.SignVersion, targetFormat, targetW, targetH, targetQuality)
+		etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-nowm\"", shortHash(file.Sha256), file.SignVersion, targetFormat, targetW, targetH, targetQuality)
 		c.Header("Cache-Control", "public, no-cache, must-revalidate")
 		c.Header("ETag", etag)
 		c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
@@ -425,11 +448,11 @@ func (s *DispatchService) serveProcessed(
 
 	// Static Watermark: Can be cached
 	wmConfigJSON, _ := json.Marshal(wmConfig)
-	wmParam := fmt.Sprintf("%s_%s_f%s_q%d", file.Sha256, HashSHA256(wmConfigJSON)[:16], targetFormat, targetQuality)
+	wmParam := fmt.Sprintf("%s_%s_f%s_w%d_h%d_q%d", file.Sha256, shortHash(HashSHA256(wmConfigJSON)), targetFormat, targetW, targetH, targetQuality)
 	wmCacheKey := s.cache.GenerateKey(file.PublicPath, wmParam, strconv.FormatInt(file.SignVersion, 10))
 	wmCacheExt := "." + targetFormat
 
-	etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-wm\"", file.Sha256[:16], file.SignVersion, targetFormat, targetW, targetH, targetQuality)
+	etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-wm\"", shortHash(file.Sha256), file.SignVersion, targetFormat, targetW, targetH, targetQuality)
 	c.Header("Cache-Control", "public, no-cache, must-revalidate")
 	c.Header("ETag", etag)
 	c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
@@ -470,7 +493,6 @@ func (s *DispatchService) renderDynamicWatermarkText(text string, file *model.Fi
 	text = strings.ReplaceAll(text, "{date}", now.Format("2006-01-02"))
 	text = strings.ReplaceAll(text, "{time}", now.Format("15:04:05"))
 	text = strings.ReplaceAll(text, "{ip}", c.ClientIP())
-	text = strings.ReplaceAll(text, "{filename}", file.DisplayName)
 	text = strings.ReplaceAll(text, "{ext}", strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
 	text = strings.ReplaceAll(text, "{dimensions}", fmt.Sprintf("%dx%d", file.Width, file.Height))
 	text = strings.ReplaceAll(text, "{filesize}", formatBytesHelper(file.Size))
@@ -487,6 +509,8 @@ func (s *DispatchService) renderDynamicWatermarkText(text string, file *model.Fi
 			text = strings.ReplaceAll(text, "{owner}", "admin")
 		}
 	}
+
+	text = strings.ReplaceAll(text, "{filename}", file.DisplayName)
 	return text
 }
 
@@ -649,7 +673,8 @@ func (s *DispatchService) ServeRaw(c *gin.Context, fileID uint, currentUserID ui
 		key = file.SourceKey
 	}
 
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.DisplayName))
+	safeName := strings.NewReplacer("\r", "", "\n", "", "\"", "\\\"").Replace(file.DisplayName)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"; filename*=UTF-8''%s", safeName, url.PathEscape(file.DisplayName)))
 	c.Header("Content-Type", file.MimeType)
 
 	if localPath, ok := s.storage.GetLocalPath(key); ok {

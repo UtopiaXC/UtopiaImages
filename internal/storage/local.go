@@ -28,8 +28,24 @@ func (d *LocalStorageDriver) resolvePath(key string) (string, error) {
 	if cleaned == "" || strings.HasPrefix(cleaned, "..") {
 		return "", fmt.Errorf("invalid storage key: %s", key)
 	}
-	full := filepath.Join(d.basePath, filepath.FromSlash(cleaned))
-	return full, nil
+
+	absBase, err := filepath.Abs(d.basePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute base path: %w", err)
+	}
+
+	full := filepath.Join(absBase, filepath.FromSlash(cleaned))
+	absFull, err := filepath.Abs(full)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute full path: %w", err)
+	}
+
+	rel, err := filepath.Rel(absBase, absFull)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return "", fmt.Errorf("path traversal attempt detected: %s", key)
+	}
+
+	return absFull, nil
 }
 
 func (d *LocalStorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {

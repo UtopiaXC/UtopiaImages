@@ -1,7 +1,9 @@
 package http
 
 import (
+	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/common"
 	"github.com/UtopiaXC/UtopiaImages/internal/logger"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
+	"github.com/UtopiaXC/UtopiaImages/internal/pkg/pathclean"
 	"github.com/UtopiaXC/UtopiaImages/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -277,6 +280,19 @@ func (ctrl *AdminController) CreateUser(c *gin.Context) {
 		return
 	}
 
+	req.Username = strings.ToLower(strings.TrimSpace(req.Username))
+	if !pathclean.IsValidUsername(req.Username) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名格式不合法或属于系统保留字，仅允许 3~32 位字母、数字、下划线及连字符"})
+		return
+	}
+
+	var existingCount int64
+	ctrl.db.Unscoped().Model(&model.User{}).Where("LOWER(username) = ?", req.Username).Count(&existingCount)
+	if existingCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名已被使用"})
+		return
+	}
+
 	if req.RoleID == 0 {
 		req.RoleID = 2 // Default regular user role
 	}
@@ -316,7 +332,7 @@ func (ctrl *AdminController) CreateUser(c *gin.Context) {
 func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 	userID := c.Param("id")
 	var user model.User
-	if err := ctrl.db.Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := ctrl.db.Preload("Role").Where("id = ?", userID).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
@@ -333,6 +349,30 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 		return
 	}
 
+	uVal, _ := c.Get(auth.CtxUserKey)
+	currentAdmin := uVal.(*model.User)
+
+	if user.ID == 1 || user.ID == currentAdmin.ID {
+		if req.RoleID > 0 && req.RoleID != 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot downgrade primary administrator or yourself"})
+			return
+		}
+		if req.Status != "" && req.Status != "active" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot disable or ban primary administrator or yourself"})
+			return
+		}
+	}
+
+	isAdminTarget := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
+	if (req.RoleID > 0 && req.RoleID != 1 && isAdminTarget) || (req.Status != "" && req.Status != "active" && isAdminTarget) {
+		var activeAdminCount int64
+		ctrl.db.Model(&model.User{}).Where("role_id = 1 AND status = 'active' AND id != ?", user.ID).Count(&activeAdminCount)
+		if activeAdminCount == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "System must retain at least one active administrator"})
+			return
+		}
+	}
+
 	updates := map[string]any{}
 	if req.Nickname != "" {
 		updates["nickname"] = req.Nickname
@@ -346,9 +386,10 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 	}
 	if req.Status != "" {
 		updates["status"] = req.Status
-		if req.Status == "disabled" {
+		if req.Status == "disabled" || req.Status == "banned" {
 			updates["token_version"] = gorm.Expr("token_version + 1")
 			ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+			ctrl.db.Where("user_id = ?", user.ID).Delete(&model.ApiToken{})
 		}
 	}
 	if req.Password != "" {
@@ -356,6 +397,7 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 		updates["password_hash"] = h
 		updates["token_version"] = gorm.Expr("token_version + 1")
 		ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+		ctrl.db.Where("user_id = ?", user.ID).Delete(&model.ApiToken{})
 	}
 
 	if err := ctrl.db.Model(&user).Updates(updates).Error; err != nil {
@@ -390,10 +432,32 @@ func (ctrl *AdminController) DeleteUser(c *gin.Context) {
 			common.RespondError(c, http.StatusBadRequest, "CANNOT_DELETE_ADMIN")
 			return
 		}
+	} else {
+		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
+		return
 	}
 
-	res := ctrl.db.Where("id = ?", id).Delete(&model.User{})
-	if res.RowsAffected == 0 {
+	// Clean up user's files from storage and return storage policy capacity
+	var userFiles []model.FileRecord
+	ctrl.db.Where("user_id = ?", id).Find(&userFiles)
+	for _, f := range userFiles {
+		_ = ctrl.uploadService.DeleteFile(c.Request.Context(), f.ID, id, true)
+	}
+
+	err := ctrl.db.Transaction(func(tx *gorm.DB) error {
+		tx.Where("user_id = ?", id).Delete(&model.Session{})
+		tx.Where("user_id = ?", id).Delete(&model.ApiToken{})
+		tx.Where("user_id = ?", id).Delete(&model.TOTPSecret{})
+		tx.Where("user_id = ?", id).Delete(&model.WebAuthnCredential{})
+		tx.Where("user_id = ?", id).Delete(&model.RecoveryCode{})
+		tx.Where("user_id = ?", id).Delete(&model.PasswordResetToken{})
+		res := tx.Unscoped().Where("id = ?", id).Delete(&model.User{})
+		if res.RowsAffected == 0 {
+			return errors.New("user not found")
+		}
+		return nil
+	})
+	if err != nil {
 		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
 		return
 	}
@@ -433,6 +497,8 @@ func (ctrl *AdminController) BanUser(c *gin.Context) {
 		common.RespondError(c, http.StatusInternalServerError, common.ErrInternalServerError)
 		return
 	}
+	ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+	ctrl.db.Where("user_id = ?", user.ID).Delete(&model.ApiToken{})
 	slog.Warn("User banned by admin", "admin_id", currentAdmin.ID, "target_user_id", user.ID, "username", user.Username)
 	c.JSON(http.StatusOK, gin.H{"message": "User banned successfully", "status": user.Status})
 }
@@ -1055,14 +1121,17 @@ func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
 	baseNoExt := strings.TrimSuffix(file.PublicPath, ext)
 	webpURL := fmt.Sprintf("%s/%s.webp", ctrl.baseURL, baseNoExt)
 
+	safeHTMLName := html.EscapeString(file.DisplayName)
+	safeMdName := strings.ReplaceAll(strings.ReplaceAll(file.DisplayName, "[", "\\["), "]", "\\]")
+
 	links := map[string]string{
 		"url":           rawURL,
 		"webp_url":      webpURL,
-		"markdown":      fmt.Sprintf("![%s](%s)", file.DisplayName, rawURL),
+		"markdown":      fmt.Sprintf("![%s](%s)", safeMdName, rawURL),
 		"bbcode":        fmt.Sprintf("[img]%s[/img]", rawURL),
-		"html":          fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", rawURL, file.DisplayName),
-		"webp_markdown": fmt.Sprintf("![%s](%s)", file.DisplayName, webpURL),
-		"webp_html":     fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", webpURL, file.DisplayName),
+		"html":          fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", rawURL, safeHTMLName),
+		"webp_markdown": fmt.Sprintf("![%s](%s)", safeMdName, webpURL),
+		"webp_html":     fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", webpURL, safeHTMLName),
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1092,10 +1161,6 @@ func (ctrl *AdminController) DeleteSiteFile(c *gin.Context) {
 		return
 	}
 
-	if ctrl.derivedCache != nil {
-		ctrl.derivedCache.Clear()
-	}
-
 	c.JSON(http.StatusOK, gin.H{"message": "File deleted successfully"})
 }
 
@@ -1113,10 +1178,6 @@ func (ctrl *AdminController) BatchDeleteSiteFiles(c *gin.Context) {
 		if err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true); err == nil {
 			deletedCount++
 		}
-	}
-
-	if ctrl.derivedCache != nil {
-		ctrl.derivedCache.Clear()
 	}
 
 	c.JSON(http.StatusOK, gin.H{"deleted": deletedCount})

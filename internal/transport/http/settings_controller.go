@@ -142,6 +142,10 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 	}
 
 	if req.WatermarkMode != "" {
+		if req.WatermarkMode != "on" && req.WatermarkMode != "off" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark_mode, must be on or off"})
+			return
+		}
 		ctrl.setSettingVal("user_wm_mode_"+strconvUint(userID), req.WatermarkMode)
 	}
 	if req.WatermarkTemplateID != "" {
@@ -292,6 +296,41 @@ func (ctrl *SettingsController) ChangePassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully"})
 }
 
+var allowedSystemSettings = map[string]bool{
+	"site_name":                 true,
+	"site_description":          true,
+	"base_url":                  true,
+	"max_single_file_size":      true,
+	"max_process_image_size":    true,
+	"captcha_provider":          true,
+	"session_timeout_days":      true,
+	"require_2fa":               true,
+	"enable_format_conversion":  true,
+	"default_convert_format":    true,
+	"convert_quality":           true,
+	"enable_hotlink":            true,
+	"hotlink_allow_empty":       true,
+	"hotlink_allowed_domains":   true,
+	"hotlink_action":            true,
+	"log_level":                 true,
+	"log_permanent_level":       true,
+	"log_max_size_mb":           true,
+	"log_max_backups":           true,
+	"log_max_age_days":          true,
+	"derived_cache_max_size_mb": true,
+	"derived_cache_ttl_days":    true,
+	"allow_registration":        true,
+	"default_register_role_id":  true,
+	"smtp_enabled":              true,
+	"smtp_host":                 true,
+	"smtp_port":                 true,
+	"smtp_encryption":           true,
+	"smtp_from":                 true,
+	"smtp_from_name":            true,
+	"smtp_user":                 true,
+	"smtp_password":             true,
+}
+
 func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 	var settings []model.Setting
 	ctrl.db.Find(&settings)
@@ -366,6 +405,10 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 		res["smtp_enabled"] = strconv.FormatBool(ctrl.cfg.SMTP.Enabled)
 	}
 
+	if res["smtp_password"] != "" {
+		res["smtp_password"] = "********"
+	}
+
 	c.JSON(http.StatusOK, res)
 }
 
@@ -389,6 +432,12 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 	}
 
 	for k, v := range req {
+		if !allowedSystemSettings[k] || k == "site_favicon_binary" {
+			continue
+		}
+		if k == "smtp_password" && v == "********" {
+			continue
+		}
 		ctrl.setSettingVal(k, v)
 	}
 
@@ -454,7 +503,7 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 		if val, ok := req["smtp_user"]; ok {
 			ctrl.cfg.SMTP.User = val
 		}
-		if val, ok := req["smtp_password"]; ok {
+		if val, ok := req["smtp_password"]; ok && val != "********" {
 			ctrl.cfg.SMTP.Password = val
 		}
 		if val, ok := req["derived_cache_max_size_mb"]; ok {
@@ -496,13 +545,22 @@ func (ctrl *SettingsController) TestSMTPConnection(c *gin.Context) {
 		return
 	}
 
+	password := req.Password
+	if password == "********" || password == "" {
+		if ctrl.cfg != nil && ctrl.cfg.SMTP.Password != "" {
+			password = ctrl.cfg.SMTP.Password
+		} else {
+			password = ctrl.getSettingVal("smtp_password", "")
+		}
+	}
+
 	testCfg := config.SMTPConfig{
 		Enabled:    true,
 		Host:       req.Host,
 		Port:       req.Port,
 		From:       req.From,
 		User:       req.User,
-		Password:   req.Password,
+		Password:   password,
 		Encryption: req.Encryption,
 	}
 
@@ -581,11 +639,20 @@ func (ctrl *SettingsController) getSettingVal(key, def string) string {
 }
 
 func (ctrl *SettingsController) setSettingVal(key, val string) {
-	s := model.Setting{
-		Key:   key,
-		Value: val,
+	if key == "site_favicon_binary" {
+		return
 	}
-	ctrl.db.Save(&s)
+	var s model.Setting
+	if err := ctrl.db.Where("key = ?", key).First(&s).Error; err == nil {
+		s.Value = val
+		ctrl.db.Save(&s)
+	} else {
+		s = model.Setting{
+			Key:   key,
+			Value: val,
+		}
+		ctrl.db.Save(&s)
+	}
 }
 
 func strconvUint(u uint) string {
