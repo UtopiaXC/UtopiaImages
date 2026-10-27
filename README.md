@@ -3,7 +3,7 @@
 > Yet Another Self Hoste
 > d Image Hosting System By GoLang.
 
-Utopia Images是一个自托管图床系统，集成了图片编辑、水印、多存储策略、多语言、批量导入与路径映射等特性，并且出了图片外，也支持上传其他类型的文件比如CSS与JS。使用相对高效快速的Go语言开发。  
+Utopia Images是一个自托管图床系统，集成了图片编辑、水印、多存储策略、多语言、批量导入与路径映射等特性，并且除了图片外，也支持上传其他类型的文件比如CSS与JS。使用相对高效快速的Go语言开发。  
 
 Demo图请见最底部。  
 
