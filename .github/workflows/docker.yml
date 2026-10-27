@@ -1,4 +1,5 @@
-name: Release and Docker Publish
+name: Release
+run-name: Release ${{ github.ref_name }} by @${{ github.actor }}
 
 on:
   push:
@@ -45,15 +46,15 @@ jobs:
       - name: Check Release Note File
         id: notes
         run: |
+          TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
-          NOTE_FILE="assets/documentation/release_note/${VERSION}.md"
-          if [ -f "$NOTE_FILE" ]; then
-            echo "has_note=true" >> "$GITHUB_OUTPUT"
-            echo "note_file=${NOTE_FILE}" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_note=false" >> "$GITHUB_OUTPUT"
-            echo "note_file=" >> "$GITHUB_OUTPUT"
+          NOTE_FILE=""
+          if [ -f "assets/documentation/release_note/${VERSION}.md" ]; then
+            NOTE_FILE="assets/documentation/release_note/${VERSION}.md"
+          elif [ -f "assets/documentation/release_note/${TAG}.md" ]; then
+            NOTE_FILE="assets/documentation/release_note/${TAG}.md"
           fi
+          echo "note_file=${NOTE_FILE}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -143,7 +144,7 @@ jobs:
       - name: Determine Docker Image Name
         id: image-name
         run: |
-          NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE }}"
+          NAMESPACE="${{ secrets.DOCKERHUB_USERNAME }}"
           echo "image_name=${NAMESPACE}/utopia_images" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
