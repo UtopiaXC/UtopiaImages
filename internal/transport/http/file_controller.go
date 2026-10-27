@@ -25,6 +25,7 @@ type FileController struct {
 	uploadService   *service.UploadService
 	dispatchService *service.DispatchService
 	importService   *service.ImportService
+	chunkService    *service.ChunkService
 	baseURL         string
 	derivedCache    *cache.DerivedCache
 }
@@ -34,6 +35,7 @@ func NewFileController(
 	us *service.UploadService,
 	ds *service.DispatchService,
 	is *service.ImportService,
+	cs *service.ChunkService,
 	baseURL string,
 	dc *cache.DerivedCache,
 ) *FileController {
@@ -42,6 +44,7 @@ func NewFileController(
 		uploadService:   us,
 		dispatchService: ds,
 		importService:   is,
+		chunkService:    cs,
 		baseURL:         baseURL,
 		derivedCache:    dc,
 	}
@@ -144,8 +147,18 @@ func (ctrl *FileController) RegisterRoutes(rg *gin.RouterGroup) {
 	}
 
 	rg.POST("/upload", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.Upload)
+	rg.POST("/upload/chunk/init", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.InitChunkUpload)
+	rg.POST("/upload/chunk/part", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.UploadChunkPart)
+	rg.GET("/upload/chunk/status", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.GetChunkStatus)
+	rg.POST("/upload/chunk/complete", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.CompleteChunkUpload)
+	rg.POST("/upload/chunk/abort", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.AbortChunkUpload)
+	rg.DELETE("/upload/chunk/:upload_id", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.AbortChunkUpload)
 	rg.POST("/import/archive", auth.RequireAuth(), auth.RequirePermission("import.use"), ctrl.ImportArchive)
 	rg.POST("/import/zip", auth.RequireAuth(), auth.RequirePermission("import.use"), ctrl.ImportArchive)
+}
+
+func (ctrl *FileController) SetChunkService(cs *service.ChunkService) {
+	ctrl.chunkService = cs
 }
 
 func (ctrl *FileController) getMaxUploadSize() int64 {
@@ -235,6 +248,207 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 		"file":  record,
 		"links": links,
 	})
+}
+
+type InitChunkUploadRequest struct {
+	Filename            string `json:"filename" binding:"required"`
+	TotalSize           int64  `json:"total_size" binding:"required"`
+	ChunkSize           int64  `json:"chunk_size" binding:"required"`
+	TotalChunks         int    `json:"total_chunks" binding:"required"`
+	FileSHA256          string `json:"file_sha256"`
+	UploadType          string `json:"upload_type"` // "file" or "archive"
+	PolicyID            uint   `json:"policy_id"`
+	WatermarkMode       string `json:"watermark_mode"`
+	WatermarkTemplateID *uint  `json:"watermark_template_id"`
+	HotlinkMode         string `json:"hotlink_mode"`
+	PreservePath        bool   `json:"preserve_path"`
+	StripTopDir         bool   `json:"strip_top_dir"`
+	ConflictAction      string `json:"conflict_action"`
+}
+
+func (ctrl *FileController) InitChunkUpload(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+
+	var req InitChunkUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.UploadType == "" {
+		req.UploadType = "file"
+	}
+	if req.WatermarkMode == "" {
+		req.WatermarkMode = "inherit"
+	}
+	if req.HotlinkMode == "" {
+		req.HotlinkMode = "inherit"
+	}
+	if req.ConflictAction == "" {
+		req.ConflictAction = "skip"
+	}
+
+	meta, uploaded, err := ctrl.chunkService.InitChunkUpload(user, service.ChunkUploadMeta{
+		Filename:            req.Filename,
+		TotalSize:           req.TotalSize,
+		ChunkSize:           req.ChunkSize,
+		TotalChunks:         req.TotalChunks,
+		FileSHA256:          strings.ToLower(strings.TrimSpace(req.FileSHA256)),
+		UploadType:          req.UploadType,
+		PolicyID:            req.PolicyID,
+		WatermarkMode:       req.WatermarkMode,
+		WatermarkTemplateID: req.WatermarkTemplateID,
+		HotlinkMode:         req.HotlinkMode,
+		PreservePath:        req.PreservePath,
+		StripTopDir:         req.StripTopDir,
+		ConflictAction:      req.ConflictAction,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"upload_id":       meta.UploadID,
+		"total_chunks":    meta.TotalChunks,
+		"chunk_size":      meta.ChunkSize,
+		"uploaded_chunks": uploaded,
+	})
+}
+
+func (ctrl *FileController) UploadChunkPart(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+
+	uploadID := c.PostForm("upload_id")
+	if uploadID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upload_id is required"})
+		return
+	}
+
+	chunkIndexStr := c.PostForm("chunk_index")
+	chunkIndex, err := strconv.Atoi(chunkIndexStr)
+	if err != nil || chunkIndex < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk_index"})
+		return
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file field is required"})
+		return
+	}
+
+	src, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to open uploaded chunk"})
+		return
+	}
+	defer src.Close()
+
+	if err := ctrl.chunkService.SaveChunkPart(user, uploadID, chunkIndex, src); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"upload_id":   uploadID,
+		"chunk_index": chunkIndex,
+	})
+}
+
+func (ctrl *FileController) GetChunkStatus(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+
+	uploadID := c.Query("upload_id")
+	if uploadID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upload_id is required"})
+		return
+	}
+
+	meta, uploaded, err := ctrl.chunkService.GetChunkStatus(user, uploadID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"upload_id":       meta.UploadID,
+		"filename":        meta.Filename,
+		"total_chunks":    meta.TotalChunks,
+		"chunk_size":      meta.ChunkSize,
+		"uploaded_chunks": uploaded,
+	})
+}
+
+func (ctrl *FileController) CompleteChunkUpload(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+
+	var req struct {
+		UploadID string `json:"upload_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	record, archiveResult, err := ctrl.chunkService.CompleteChunkUpload(c.Request.Context(), user, req.UploadID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if archiveResult != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"total":    archiveResult.Total,
+			"imported": archiveResult.Imported,
+			"skipped":  archiveResult.Skipped,
+		})
+		return
+	}
+
+	if record != nil {
+		currentBaseURL := ctrl.resolveBaseURL(c)
+		links := ctrl.buildFileLinks(record, currentBaseURL)
+		c.JSON(http.StatusOK, gin.H{
+			"file":  record,
+			"links": links,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+func (ctrl *FileController) AbortChunkUpload(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+
+	var req struct {
+		UploadID string `json:"upload_id"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if req.UploadID == "" {
+		req.UploadID = c.Param("upload_id")
+	}
+	if req.UploadID == "" {
+		req.UploadID = c.PostForm("upload_id")
+	}
+	if req.UploadID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upload_id is required"})
+		return
+	}
+
+	if err := ctrl.chunkService.AbortChunkUpload(user, req.UploadID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 func (ctrl *FileController) buildFileLinks(file *model.FileRecord, customBaseURL ...string) gin.H {

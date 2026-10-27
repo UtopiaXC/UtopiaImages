@@ -236,9 +236,10 @@
     "archiveImportSuccess": "归档导入完成",
     "policyRemaining": "策略剩余空间",
     "domainSelect": "分发域名",
-    "cfUploadWarning": "注意：受 Cloudflare 免费版/专业版 100MB 请求体及反向代理超时限制，超过 100MB 的大归档可能会被拦截导致 413 错误或超时。建议分卷拆包导入，或配置灰云朵直连域名后导入。",
     "archiveUploading": "正在上传归档压缩包...",
-    "archiveProcessing": "上传完成，服务端正在解压导入并生成元数据..."
+    "archiveProcessing": "上传完成，服务端正在解压导入并生成元数据...",
+    "cancelImportAndClear": "取消导入并清空缓存",
+    "chunkModeNotice": "由于文件过大，将采用分片上传的方式进行传输。"
   },
   "files": {
     "title": "图库管理",

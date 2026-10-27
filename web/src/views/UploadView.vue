@@ -141,8 +141,8 @@
 
     <!-- ZIP Archive Import Modal -->
     <n-modal v-model:show="showImportModal" preset="card" :title="$t('upload.archiveImport')" style="width: 520px; max-width: 95vw; border-radius: 12px;">
-      <n-alert type="warning" :show-icon="false" style="margin-bottom: 16px; font-size: 12px; line-height: 1.5;">
-        {{ $t('upload.cfUploadWarning') }}
+      <n-alert v-if="selectedZipFile && selectedZipFile.size > 20 * 1024 * 1024" type="info" :show-icon="false" style="margin-bottom: 16px; font-size: 12px; line-height: 1.5;">
+        {{ $t('upload.chunkModeNotice') }}
       </n-alert>
 
       <p style="color: #aaa; font-size: 13px; margin-bottom: 20px;">
@@ -207,7 +207,8 @@
 
       <template #footer>
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
-          <n-button @click="showImportModal = false">{{ $t('common.cancel') }}</n-button>
+          <n-button v-if="importing" type="error" ghost @click="cancelImport">{{ $t('upload.cancelImportAndClear') }}</n-button>
+          <n-button v-else @click="showImportModal = false">{{ $t('common.cancel') }}</n-button>
           <n-button type="primary" :loading="importing" :disabled="!selectedZipFile" @click="handleImportZip">
             {{ $t('upload.startImport') }}
           </n-button>
@@ -223,6 +224,7 @@ import { useMessage, type UploadCustomRequestOptions } from 'naive-ui'
 import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
+import { uploadInChunks } from '../utils/chunkUploader'
 import FileLinksPanel from '../components/FileLinksPanel.vue'
 import ImageEditorModal from '../components/ImageEditorModal.vue'
 
@@ -240,6 +242,19 @@ const policyOptions = ref<any[]>([])
 const showImportModal = ref(false)
 const selectedZipFile = ref<File | null>(null)
 const importing = ref(false)
+let importAbortController: AbortController | null = null
+
+const cancelImport = () => {
+  if (importAbortController) {
+    importAbortController.abort()
+    importAbortController = null
+  }
+  importing.value = false
+  uploadStatus.value = 'warning'
+  uploadStatusText.value = '导入任务已取消，临时缓存已清除'
+  message.warning('任务已取消，已清空服务端分片缓存')
+}
+
 const importOptions = ref({
   policy_id: null as number | null,
   watermark_mode: 'inherit',
@@ -293,25 +308,57 @@ const handleImportZip = async () => {
   uploadPercentage.value = 0
   uploadStatus.value = 'default'
   uploadStatusText.value = t('upload.archiveUploading')
+  importAbortController = new AbortController()
 
-  const formData = new FormData()
-  formData.append('archive_file', selectedZipFile.value)
-  formData.append('preserve_path', importOptions.value.preserve_path ? 'true' : 'false')
-  formData.append('strip_top_dir', importOptions.value.strip_top_dir ? 'true' : 'false')
-  formData.append('conflict_action', importOptions.value.conflict_action)
-  formData.append('watermark_mode', importOptions.value.watermark_mode)
-  formData.append('hotlink_mode', importOptions.value.hotlink_mode)
-  if (importOptions.value.watermark_template_id) {
-    formData.append('watermark_template_id', importOptions.value.watermark_template_id)
-  }
   const policyToUse = importOptions.value.policy_id || selectedPolicyId.value
-  if (policyToUse) {
-    formData.append('policy_id', String(policyToUse))
-  }
 
   try {
+    // If archive > 20MB, use 20MB chunked streaming & SHA-256 verification
+    if (selectedZipFile.value.size > 20 * 1024 * 1024) {
+      const res = await uploadInChunks({
+        file: selectedZipFile.value,
+        uploadType: 'archive',
+        params: {
+          policy_id: policyToUse,
+          watermark_mode: importOptions.value.watermark_mode,
+          watermark_template_id: importOptions.value.watermark_template_id,
+          hotlink_mode: importOptions.value.hotlink_mode,
+          preserve_path: importOptions.value.preserve_path,
+          strip_top_dir: importOptions.value.strip_top_dir,
+          conflict_action: importOptions.value.conflict_action
+        },
+        abortController: importAbortController,
+        onProgress: (p) => {
+          uploadPercentage.value = p.percent
+          uploadStatusText.value = p.text
+        }
+      })
+      uploadStatus.value = 'success'
+      message.success(`${t('upload.importSuccess')}: ${res.imported} / ${res.total}`)
+      window.dispatchEvent(new CustomEvent('refresh-quota'))
+      showImportModal.value = false
+      selectedZipFile.value = null
+      return
+    }
+
+    // Direct upload for small archives (<= 20MB)
+    const formData = new FormData()
+    formData.append('archive_file', selectedZipFile.value)
+    formData.append('preserve_path', importOptions.value.preserve_path ? 'true' : 'false')
+    formData.append('strip_top_dir', importOptions.value.strip_top_dir ? 'true' : 'false')
+    formData.append('conflict_action', importOptions.value.conflict_action)
+    formData.append('watermark_mode', importOptions.value.watermark_mode)
+    formData.append('hotlink_mode', importOptions.value.hotlink_mode)
+    if (importOptions.value.watermark_template_id) {
+      formData.append('watermark_template_id', importOptions.value.watermark_template_id)
+    }
+    if (policyToUse) {
+      formData.append('policy_id', String(policyToUse))
+    }
+
     const res = await api.post('/import/archive', formData, {
       timeout: 0,
+      signal: importAbortController.signal,
       onUploadProgress: (progressEvent) => {
         if (progressEvent.total) {
           const percent = Math.min(Math.round((progressEvent.loaded * 100) / progressEvent.total), 99)
@@ -329,13 +376,18 @@ const handleImportZip = async () => {
     showImportModal.value = false
     selectedZipFile.value = null
   } catch (err: any) {
+    if (err.message === 'Upload cancelled by user' || importAbortController?.signal?.aborted) {
+      uploadStatus.value = 'warning'
+      uploadStatusText.value = '导入任务已取消，临时缓存已清除'
+      return
+    }
     uploadStatus.value = 'error'
     let errMsg = err.response?.data?.error
     if (!errMsg) {
       if (err.response?.status === 413) {
-        errMsg = '上传文件过大被拦截 (413 Payload Too Large)。若经过 Cloudflare 代理，免费/专业版单请求体上限为 100MB。请拆包导入或使用灰云朵直连域名。'
+        errMsg = '上传文件过大被拦截 (413 Payload Too Large)。若经过 Cloudflare 代理，免费/专业版单请求体上限为 100MB。'
       } else if (err.code === 'ECONNABORTED' || err.message?.includes('timeout') || err.response?.status === 524) {
-        errMsg = '上传超时 (524 Timeout)。若经过 Cloudflare 代理或反向代理，长时间大文件请求会超时中断。建议分卷拆包导入或直连解析。'
+        errMsg = '上传超时 (524 Timeout)。'
       } else {
         errMsg = err.message || t('upload.importFailed')
       }
@@ -343,6 +395,7 @@ const handleImportZip = async () => {
     message.error(errMsg, { duration: 6000 })
   } finally {
     importing.value = false
+    importAbortController = null
   }
 }
 
@@ -401,6 +454,9 @@ const loadPolicies = async () => {
 }
 
 watch(showImportModal, (show) => {
+  if (!show && importing.value) {
+    cancelImport()
+  }
   if (show) {
     if (!importOptions.value.policy_id && selectedPolicyId.value) {
       importOptions.value.policy_id = selectedPolicyId.value
@@ -414,8 +470,38 @@ watch(showImportModal, (show) => {
 })
 
 const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomRequestOptions) => {
+  const rawFile = file.file as File
+  if (!rawFile) {
+    onError()
+    return
+  }
+
+  // If file > 20MB, use chunked upload with 20MB chunks
+  if (rawFile.size > 20 * 1024 * 1024) {
+    try {
+      const data = await uploadInChunks({
+        file: rawFile,
+        uploadType: 'file',
+        params: {
+          watermark_mode: watermarkMode.value,
+          watermark_template_id: selectedTemplateId.value,
+          policy_id: selectedPolicyId.value
+        }
+      })
+      results.value.unshift(data)
+      message.success(`${file.name} ${t('upload.uploadSuccess')}`)
+      window.dispatchEvent(new CustomEvent('refresh-quota'))
+      onFinish()
+      return
+    } catch (err: any) {
+      message.error(err.response?.data?.error || err.message || `${file.name} ${t('upload.uploadFailed')}`)
+      onError()
+      return
+    }
+  }
+
   const formData = new FormData()
-  formData.append('file', file.file as File)
+  formData.append('file', rawFile)
   formData.append('watermark_mode', watermarkMode.value)
   if (selectedTemplateId.value) {
     formData.append('watermark_template_id', selectedTemplateId.value)

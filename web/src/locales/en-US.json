@@ -236,9 +236,10 @@
     "archiveImportSuccess": "Archive import completed",
     "policyRemaining": "Policy Remaining",
     "domainSelect": "Distribution Domain",
-    "cfUploadWarning": "Notice: Cloudflare Free/Pro limits request bodies to 100MB and imposes proxy timeouts. Archives over 100MB may receive 413 errors or timeouts. We recommend splitting archives or using a direct DNS (grey-clouded) subdomain.",
     "archiveUploading": "Uploading archive package...",
-    "archiveProcessing": "Upload completed. Server is extracting files and generating metadata..."
+    "archiveProcessing": "Upload completed. Server is extracting files and generating metadata...",
+    "cancelImportAndClear": "Cancel & Clear Cache",
+    "chunkModeNotice": "Because the file is too large, chunked upload will be used."
   },
   "files": {
     "title": "File Gallery",

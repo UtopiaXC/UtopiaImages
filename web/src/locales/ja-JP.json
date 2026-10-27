@@ -241,9 +241,10 @@
     "tempLinkFailed": "一時リンクの生成に失敗しました",
     "storagePolicy": "ストレージポリシー",
     "domainSelect": "配信ドメイン",
-    "cfUploadWarning": "注意：Cloudflare無料/プロ版の100MBリクエスト制限とプロキシタイムアウトにより、100MBを超えるアーカイブは413エラーやタイムアウトになる可能性があります。分割インポートまたは直通DNSドメインの使用を推奨します。",
     "archiveUploading": "アーカイブをアップロード中...",
-    "archiveProcessing": "アップロード完了。サーバーが展開・メタデータ生成処理を行っています..."
+    "archiveProcessing": "アップロード完了。サーバーが展開・メタデータ生成処理を行っています...",
+    "cancelImportAndClear": "キャンセルしてキャッシュをクリア",
+    "chunkModeNotice": "元のファイルが大きすぎるため、分割アップロードを使用して転送されます。"
   },
   "files": {
     "title": "画像ギャラリー",

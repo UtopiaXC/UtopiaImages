@@ -102,10 +102,11 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 	uploadService := service.NewUploadService(db, stDriver, processor, derivedCache)
 	dispatchService := service.NewDispatchService(db, stDriver, processor, derivedCache)
 	importService := service.NewImportService(db, uploadService)
+	chunkService := service.NewChunkService(db, cfg.Cache.Dir, uploadService, importService)
 
 	// 6. Initialize Controllers
 	authController := NewAuthController(authService, db, cfg, configPath)
-	fileController := NewFileController(db, uploadService, dispatchService, importService, cfg.Server.BaseURL, derivedCache)
+	fileController := NewFileController(db, uploadService, dispatchService, importService, chunkService, cfg.Server.BaseURL, derivedCache)
 	adminController := NewAdminController(db, uploadService, cfg.Server.BaseURL, derivedCache)
 	watermarkController := NewWatermarkController(db, processor, derivedCache)
 	settingsController := NewSettingsController(db, derivedCache, cfg, configPath, passkeyManager)
@@ -133,6 +134,7 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 		uploadService.SetDB(newDB)
 		dispatchService.SetDB(newDB)
 		importService.SetDB(newDB)
+		chunkService.SetDB(newDB)
 		fileController.SetDB(newDB)
 		adminController.SetDB(newDB)
 		watermarkController.SetDB(newDB)
