@@ -49,6 +49,11 @@ func (s *DispatchService) SetDB(db *gorm.DB) {
 	s.db = db
 }
 
+func (s *DispatchService) abortWithError(c *gin.Context, code int) {
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.AbortWithStatus(code)
+}
+
 // ServeFile handles client requests for public files
 func (s *DispatchService) ServeFile(c *gin.Context) {
 	// 1. Sanitize request path
@@ -56,7 +61,7 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 	publicPath := pathclean.CleanPath(rawPath)
 
 	if publicPath == "" {
-		c.AbortWithStatus(http.StatusNotFound)
+		s.abortWithError(c, http.StatusNotFound)
 		return
 	}
 
@@ -90,14 +95,14 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 		}
 
 		if file.ID == 0 {
-			c.AbortWithStatus(http.StatusNotFound)
+			s.abortWithError(c, http.StatusNotFound)
 			return
 		}
 	}
 
 	// 3. Multi-level Hotlink Protection Check (File -> User -> System)
 	if !s.checkReferer(c, &file) {
-		c.AbortWithStatus(http.StatusForbidden)
+		s.abortWithError(c, http.StatusForbidden)
 		return
 	}
 
@@ -110,7 +115,7 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 	if requestedFormat != "" && !s.isFormatConversionEnabled() {
 		origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
 		if requestedFormat != origExt {
-			c.AbortWithStatus(http.StatusNotFound)
+			s.abortWithError(c, http.StatusNotFound)
 			return
 		}
 	}
@@ -609,6 +614,9 @@ func (s *DispatchService) checkReferer(c *gin.Context, file *model.FileRecord) b
 
 	refHost := strings.ToLower(u.Hostname())
 	currentHost := strings.ToLower(c.Request.Host)
+	if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
+		currentHost = strings.ToLower(xfh)
+	}
 	if idx := strings.Index(currentHost, ":"); idx != -1 {
 		currentHost = currentHost[:idx]
 	}
@@ -620,8 +628,16 @@ func (s *DispatchService) checkReferer(c *gin.Context, file *model.FileRecord) b
 
 	var baseUrlSetting model.Setting
 	if err := s.db.Where("key = 'base_url'").First(&baseUrlSetting).Error; err == nil && baseUrlSetting.Value != "" {
-		if bu, err := url.Parse(baseUrlSetting.Value); err == nil && strings.ToLower(bu.Hostname()) == refHost {
-			return true
+		for _, rawURL := range strings.FieldsFunc(baseUrlSetting.Value, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == ';' || r == ' '
+		}) {
+			rawURL = strings.TrimSpace(rawURL)
+			if !strings.Contains(rawURL, "://") {
+				rawURL = "https://" + rawURL
+			}
+			if bu, err := url.Parse(rawURL); err == nil && strings.ToLower(bu.Hostname()) == refHost {
+				return true
+			}
 		}
 	}
 

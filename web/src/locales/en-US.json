@@ -48,6 +48,7 @@
     "siteName": "Site Name",
     "siteDesc": "Site Description",
     "baseUrl": "Base URL",
+    "baseUrlTip": "Supports configuring multiple domains (one per line or comma-separated)",
     "defaultLocale": "Default Language",
     "dbDriver": "Database Engine",
     "dbSqliteDesc": "Recommended for lightweight deployments. No external server required; stored in a single disk file.",
@@ -233,7 +234,11 @@
     "storagePolicy": "Storage Policy",
     "selectArchiveFile": "Select Archive File",
     "archiveImportSuccess": "Archive import completed",
-    "policyRemaining": "Policy Remaining"
+    "policyRemaining": "Policy Remaining",
+    "domainSelect": "Distribution Domain",
+    "cfUploadWarning": "Notice: Cloudflare Free/Pro limits request bodies to 100MB and imposes proxy timeouts. Archives over 100MB may receive 413 errors or timeouts. We recommend splitting archives or using a direct DNS (grey-clouded) subdomain.",
+    "archiveUploading": "Uploading archive package...",
+    "archiveProcessing": "Upload completed. Server is extracting files and generating metadata..."
   },
   "files": {
     "title": "File Gallery",
@@ -544,6 +549,7 @@
     "siteDesc": "Site Description",
     "defaultDescription": "Yet another self-hosted Utopia Images service",
     "baseUrl": "External Base URL",
+    "baseUrlTip": "Supports configuring multiple domains (one per line or comma-separated). Multiple domains will be used for Passkey authentication and dynamic link generation.",
     "limits": "Technical Limits",
     "limitsAndConversion": "Limits and Format Conversion",
     "maxFileSize": "Max File Size",

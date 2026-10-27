@@ -737,7 +737,7 @@ func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
 	if req.NamingRule == "" {
 		req.NamingRule = "{Y}/{m}/{d}/{random:16}.{ext}"
 	}
-	pathPrefix := "uploads"
+	pathPrefix := ""
 	if req.PathPrefix != nil {
 		pathPrefix = strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
 	}

@@ -103,11 +103,18 @@ func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
 
 func (ctrl *AuthController) GetSetupStatus(c *gin.Context) {
 	required := ctrl.authService.IsSetupRequired()
+	detectedProto := "http"
+	if c.Request.TLS != nil || c.Request.Header.Get("X-Forwarded-Proto") == "https" {
+		detectedProto = "https"
+	}
+	detectedBaseURL := fmt.Sprintf("%s://%s", detectedProto, getRequestHost(c))
+
 	c.JSON(http.StatusOK, gin.H{
 		"setup_required":   required,
 		"site_name":        ctrl.cfg.Site.Name,
 		"site_description": ctrl.cfg.Site.Description,
 		"base_url":         ctrl.cfg.Server.BaseURL,
+		"detected_url":     detectedBaseURL,
 		"current_locale":   ctrl.cfg.Site.Locale,
 		"current_driver":   ctrl.cfg.Database.Driver,
 	})
@@ -378,6 +385,9 @@ func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
 		ctrl.cfg.Site.BaseURL = strings.TrimRight(req.Site.BaseURL, "/")
 		ctrl.cfg.Server.BaseURL = ctrl.cfg.Site.BaseURL
 		ctrl.db.Save(&model.Setting{Key: "base_url", Value: ctrl.cfg.Site.BaseURL})
+		if ctrl.authService != nil && ctrl.authService.PasskeyManager() != nil {
+			_ = ctrl.authService.PasskeyManager().UpdateBaseURL(ctrl.cfg.Site.BaseURL)
+		}
 	}
 	if req.Site.Locale != "" {
 		ctrl.cfg.Site.Locale = req.Site.Locale
@@ -968,6 +978,13 @@ func (ctrl *AuthController) ChangeUsername(c *gin.Context) {
 	})
 }
 
+func getRequestHost(c *gin.Context) string {
+	if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
+		return xfh
+	}
+	return c.Request.Host
+}
+
 // Passkey Handlers
 
 func (ctrl *AuthController) BeginPasskeyLogin(c *gin.Context) {
@@ -987,7 +1004,7 @@ func (ctrl *AuthController) BeginPasskeyLogin(c *gin.Context) {
 			username = u.Username
 		}
 	}
-	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginLogin(username)
+	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginLogin(username, getRequestHost(c))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -1082,7 +1099,7 @@ func (ctrl *AuthController) BeginMFAPasskey(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "User account is temporarily locked"})
 		return
 	}
-	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginLogin(user.Username)
+	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginLogin(user.Username, getRequestHost(c))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -1185,7 +1202,7 @@ func (ctrl *AuthController) BeginPasskeyRegister(c *gin.Context) {
 	}
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
-	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginRegistration(user)
+	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginRegistration(user, getRequestHost(c))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -1363,7 +1380,7 @@ func (ctrl *AuthController) Setup2FAPasskeyBegin(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginRegistration(&user)
+	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginRegistration(&user, getRequestHost(c))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

@@ -27,7 +27,7 @@ type StoragePolicy struct {
 	MaxCapacityBytes int64     `gorm:"default:0" json:"max_capacity_bytes"` // 0 = unlimited
 	UsedBytes        int64     `gorm:"default:0" json:"used_bytes"`
 	IsDefault        bool      `gorm:"default:false" json:"is_default"`
-	PathPrefix       string    `gorm:"size:128;default:uploads" json:"path_prefix"`
+	PathPrefix       string    `gorm:"size:128" json:"path_prefix"`
 	NamingRule       string    `gorm:"size:255;default:{Y}/{m}/{d}/{random:16}.{ext}" json:"naming_rule"`
 	Roles            []*Role   `gorm:"many2many:role_policies;joinForeignKey:policy_id;joinReferences:role_id;" json:"roles,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`

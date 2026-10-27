@@ -1,15 +1,28 @@
 <template>
   <div style="background: rgba(255, 255, 255, 0.02); border-radius: 8px; padding: 14px;">
-    <!-- Top toolbar: Image Size Selector -->
-    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 13px; color: #aaa;">{{ $t('upload.imageSize') }}</span>
-        <n-select
-          v-model:value="selectedSize"
-          :options="sizeOptions"
-          size="small"
-          style="width: 170px;"
-        />
+    <!-- Top toolbar: Image Size Selector & Domain Selector -->
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <!-- Domain Selector (Multi-Domain Support) -->
+        <div v-if="domainOptions.length > 1" style="display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.domainSelect') }}</span>
+          <n-select
+            v-model:value="selectedDomain"
+            :options="domainOptions"
+            size="small"
+            style="width: 210px;"
+          />
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.imageSize') }}</span>
+          <n-select
+            v-model:value="selectedSize"
+            :options="sizeOptions"
+            size="small"
+            style="width: 150px;"
+          />
+        </div>
       </div>
       <div v-if="file.is_image && file.width && file.height" style="font-size: 12px; color: #777;">
         {{ file.width }} × {{ file.height }} px
@@ -95,8 +108,8 @@
 
       <!-- Active link input or creation controls -->
       <div v-if="activeLink" style="display: flex; align-items: center; gap: 8px;">
-        <n-input :value="formatContent(activeLink.url)" size="small" readonly style="flex: 1;" />
-        <n-button size="small" type="primary" quaternary @click="copyText(formatContent(activeLink.url))">
+        <n-input :value="formatContent(applySelectedDomain(activeLink.url))" size="small" readonly style="flex: 1;" />
+        <n-button size="small" type="primary" quaternary @click="copyText(formatContent(applySelectedDomain(activeLink.url)))">
           {{ $t('common.copy') }}
         </n-button>
         <n-popconfirm @positive-click="revokeSingleLink(activeLink.id)">
@@ -179,7 +192,7 @@
             <td style="font-size: 12px;">{{ formatDate(item.created_at) }}</td>
             <td style="text-align: right;">
               <div style="display: flex; gap: 4px; justify-content: flex-end;">
-                <n-button size="tiny" quaternary type="primary" @click="copyText(item.url)">
+                <n-button size="tiny" quaternary type="primary" @click="copyText(applySelectedDomain(item.url))">
                   {{ $t('common.copy') }}
                 </n-button>
                 <n-popconfirm v-if="item.is_active" @positive-click="revokeSingleLink(item.id)">
@@ -225,6 +238,43 @@ const generatingTemp = ref(false)
 const showHistoryModal = ref(false)
 const tempLinks = ref<any[]>([])
 
+const configuredDomains = ref<string[]>([])
+const selectedDomain = ref<string>(window.location.origin)
+
+const loadSiteDomains = async () => {
+  try {
+    const res = await api.get('/site')
+    if (res.data.base_urls && Array.isArray(res.data.base_urls) && res.data.base_urls.length > 0) {
+      configuredDomains.value = res.data.base_urls
+    } else if (res.data.base_url) {
+      configuredDomains.value = [res.data.base_url]
+    }
+  } catch {}
+}
+
+const domainOptions = computed(() => {
+  const set = new Set<string>()
+  if (window.location.origin) {
+    set.add(window.location.origin)
+  }
+  if (props.file?.base_urls && Array.isArray(props.file.base_urls)) {
+    props.file.base_urls.forEach((u: string) => { if (u) set.add(u.replace(/\/+$/, '')) })
+  }
+  configuredDomains.value.forEach((u: string) => {
+    if (u) set.add(u.replace(/\/+$/, ''))
+  })
+  return Array.from(set).map((d) => ({
+    label: d,
+    value: d
+  }))
+})
+
+const applySelectedDomain = (url: string) => {
+  if (!url) return ''
+  const domain = selectedDomain.value || window.location.origin
+  return url.replace(/^https?:\/\/[^\/]+/, domain)
+}
+
 const durationOptions = computed(() => [
   { label: t('files.hour1'), value: 1 },
   { label: t('files.hour24'), value: 24 },
@@ -264,6 +314,7 @@ const loadTempLinks = async () => {
 
 onMounted(() => {
   loadTempLinks()
+  loadSiteDomains()
 })
 
 watch(() => props.file?.id, () => {
@@ -271,9 +322,12 @@ watch(() => props.file?.id, () => {
 })
 
 const getRawUrl = () => {
-  if (props.initialUrl) return props.initialUrl
-  const origin = window.location.origin
-  return `${origin}/${props.file.public_path}`
+  if (props.initialUrl) {
+    return applySelectedDomain(props.initialUrl)
+  }
+  const domain = selectedDomain.value || window.location.origin
+  const path = props.file?.public_path ? props.file.public_path.replace(/^\/+/, '') : ''
+  return `${domain}/${path}`
 }
 
 const originalExt = computed(() => {

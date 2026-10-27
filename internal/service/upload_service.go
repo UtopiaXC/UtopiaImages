@@ -15,6 +15,7 @@ import (
 	_ "image/png"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -59,17 +60,20 @@ type UploadOptions struct {
 func (s *UploadService) getMaxSingleFileSize() int64 {
 	var setting model.Setting
 	if err := s.db.Where("key = ?", "max_single_file_size").First(&setting).Error; err == nil {
-		if mb, err := strconv.ParseInt(strings.TrimSpace(setting.Value), 10, 64); err == nil && mb > 0 {
+		if mb, err := strconv.ParseInt(strings.TrimSpace(setting.Value), 10, 64); err == nil {
+			if mb <= 0 {
+				return 0 // 0 means unlimited
+			}
 			return mb * 1024 * 1024
 		}
 	}
 	return 50 * 1024 * 1024 // 50MB default
 }
 
-// Upload processes and stores an incoming file stream in its original form
+// Upload processes and stores an incoming file stream in its original form via true disk streaming
 func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reader, originalFilename string, declaredSize int64, opts UploadOptions) (*model.FileRecord, error) {
 	maxSingleFileSize := s.getMaxSingleFileSize()
-	if declaredSize > maxSingleFileSize {
+	if maxSingleFileSize > 0 && declaredSize > maxSingleFileSize {
 		return nil, fmt.Errorf("file size %d exceeds system single file limit of %d bytes", declaredSize, maxSingleFileSize)
 	}
 
@@ -104,6 +108,9 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		s.db.Where("id = ?", user.RoleID).First(&role)
 	}
 	maxAllowedBytes := maxSingleFileSize
+	if maxAllowedBytes <= 0 {
+		maxAllowedBytes = 100 * 1024 * 1024 * 1024 // 100GB safety ceiling when unlimited
+	}
 	if role.QuotaBytes > 0 {
 		remainingUserQuota := role.QuotaBytes - user.UsedBytes
 		if remainingUserQuota <= 0 {
@@ -114,13 +121,23 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		}
 	}
 
-	// 2. Buffer the full stream into memory using LimitReader to prevent OOM
-	var fullBuf bytes.Buffer
+	// 2. Stream into a temporary disk file bounded by LimitReader while computing SHA-256 (Constant O(1) RAM)
+	tempFile, err := os.CreateTemp("", "uimg-upload-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file for upload: %w", err)
+	}
+	defer func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempFile.Name())
+	}()
+
 	hasher := sha256.New()
-	multiWriter := io.MultiWriter(&fullBuf, hasher)
+	multiWriter := io.MultiWriter(tempFile, hasher)
 
 	// Write the initial header bytes
-	multiWriter.Write(headerBuf)
+	if _, err := multiWriter.Write(headerBuf); err != nil {
+		return nil, fmt.Errorf("failed to write header: %w", err)
+	}
 
 	remainingAllowed := maxAllowedBytes - int64(n)
 	if remainingAllowed < 0 {
@@ -134,12 +151,12 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		return nil, fmt.Errorf("failed to read full payload: %w", err)
 	}
 	actualSize := int64(n) + copied
-	if actualSize > maxAllowedBytes {
-		if role.QuotaBytes > 0 && user.UsedBytes+actualSize > role.QuotaBytes {
-			return nil, fmt.Errorf("user storage quota exceeded: current %d + upload %d > limit %d",
-				user.UsedBytes, actualSize, role.QuotaBytes)
-		}
-		return nil, fmt.Errorf("file size %d exceeds allowed limit of %d bytes", actualSize, maxAllowedBytes)
+	if maxSingleFileSize > 0 && actualSize > maxSingleFileSize {
+		return nil, fmt.Errorf("file size %d exceeds allowed limit of %d bytes", actualSize, maxSingleFileSize)
+	}
+	if role.QuotaBytes > 0 && user.UsedBytes+actualSize > role.QuotaBytes {
+		return nil, fmt.Errorf("user storage quota exceeded: current %d + upload %d > limit %d",
+			user.UsedBytes, actualSize, role.QuotaBytes)
 	}
 	fileSha256 := hex.EncodeToString(hasher.Sum(nil))
 
@@ -187,21 +204,27 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	renderedName := s.renderNamingRule(policy.NamingRule, originalFilename, finalExt, fileSha256)
 	publicPath := s.buildPublicPath(user, policy, renderedName)
 
-	finalBytes := fullBuf.Bytes()
 	finalMime := detectedMime
 	finalSize := actualSize
 
 	var imgW, imgH int
 	if isImage {
-		// Read dimensions for metadata
-		w, h, _ := s.processor.GetDimensions(bytes.NewReader(finalBytes))
-		imgW = w
-		imgH = h
+		// Rewind to start and read dimensions for image metadata without loading in RAM
+		if _, err := tempFile.Seek(0, io.SeekStart); err == nil {
+			w, h, _ := s.processor.GetDimensions(tempFile)
+			imgW = w
+			imgH = h
+		}
 	}
 
-	// 6. Store original file strictly (never converted on upload)
+	// Rewind temp file to start before streaming to storage driver
+	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("failed to rewind temp file: %w", err)
+	}
+
+	// 6. Store original file strictly (stream directly from disk temp file to destination)
 	storageKey := publicPath
-	if err := s.storage.Put(ctx, storageKey, bytes.NewReader(finalBytes), finalSize); err != nil {
+	if err := s.storage.Put(ctx, storageKey, tempFile, finalSize); err != nil {
 		return nil, fmt.Errorf("failed to save file: %w", err)
 	}
 

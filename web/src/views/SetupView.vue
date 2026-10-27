@@ -41,7 +41,17 @@
               <n-input v-model:value="form.site.description" />
             </n-form-item>
             <n-form-item :label="$t('setup.baseUrl')">
-              <n-input v-model:value="form.site.base_url" placeholder="http://localhost:2983" />
+              <div style="display: flex; flex-direction: column; gap: 4px; width: 100%;">
+                <n-input
+                  v-model:value="form.site.base_url"
+                  type="textarea"
+                  :autosize="{ minRows: 2, maxRows: 4 }"
+                  placeholder="https://imgs.utopiaxc.com&#10;https://imgs.utopiaxc.cn"
+                />
+                <span style="font-size: 12px; color: #888;">
+                  {{ $t('setup.baseUrlTip') }}
+                </span>
+              </div>
             </n-form-item>
             <n-form-item :label="$t('setup.defaultLocale')">
               <n-select v-model:value="form.site.locale" :options="localeOptions" />
@@ -446,7 +456,12 @@ const handleFinishSetup = async () => {
 onMounted(async () => {
   try {
     const res = await api.get('/setup/status')
-    if (res.data.base_url) {
+    const currentOrigin = window.location.origin
+    if (res.data.detected_url && !res.data.detected_url.includes('localhost')) {
+      form.value.site.base_url = res.data.detected_url
+    } else if (currentOrigin && !currentOrigin.includes('localhost')) {
+      form.value.site.base_url = currentOrigin
+    } else if (res.data.base_url) {
       form.value.site.base_url = res.data.base_url
     }
     if (res.data.site_name) {

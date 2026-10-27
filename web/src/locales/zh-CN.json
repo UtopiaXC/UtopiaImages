@@ -48,6 +48,7 @@
     "siteName": "站点名称",
     "siteDesc": "站点描述",
     "baseUrl": "对外访问地址",
+    "baseUrlTip": "支持配置多个域名（每行一个或逗号分隔）",
     "defaultLocale": "默认界面语言",
     "dbDriver": "数据库驱动类型",
     "dbSqliteDesc": "推荐中小型轻量部署，无需额外安装服务，数据存储于单文件磁盘数据库。",
@@ -233,7 +234,11 @@
     "storagePolicy": "存储策略",
     "selectArchiveFile": "选择归档文件",
     "archiveImportSuccess": "归档导入完成",
-    "policyRemaining": "策略剩余空间"
+    "policyRemaining": "策略剩余空间",
+    "domainSelect": "分发域名",
+    "cfUploadWarning": "注意：受 Cloudflare 免费版/专业版 100MB 请求体及反向代理超时限制，超过 100MB 的大归档可能会被拦截导致 413 错误或超时。建议分卷拆包导入，或配置灰云朵直连域名后导入。",
+    "archiveUploading": "正在上传归档压缩包...",
+    "archiveProcessing": "上传完成，服务端正在解压导入并生成元数据..."
   },
   "files": {
     "title": "图库管理",
@@ -544,6 +549,7 @@
     "siteDesc": "站点描述",
     "defaultDescription": "又一个Utopia Images自部署图床",
     "baseUrl": "对外访问域名",
+    "baseUrlTip": "支持配置多个域名（每行一个或逗号分隔，如 https://imgs.utopiaxc.com 和 https://imgs.utopiaxc.cn）。多域名将用于 Passkey 身份认证与外链分发自适应。",
     "limits": "技术上限与配额",
     "limitsAndConversion": "技术限制与格式转换",
     "maxFileSize": "单文件大小上限",

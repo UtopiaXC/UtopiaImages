@@ -105,14 +105,14 @@
 
         <n-form-item :label="$t('adminPolicies.pathPrefix')">
           <div style="width: 100%;">
-            <n-input v-model:value="policyForm.path_prefix" placeholder="留空则无前缀，默认 uploads" clearable />
+            <n-input v-model:value="policyForm.path_prefix" placeholder="留空为根路径 /，或输入前缀如 uploads" clearable />
             <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center;">
               <span style="font-size: 12px; color: #888;">{{ $t('adminPolicies.insertToken') }}:</span>
               <n-button size="tiny" secondary type="warning" @click="policyForm.path_prefix = ''">
-                留空 (无前缀)
+                留空 / (根路径)
               </n-button>
               <n-button size="tiny" secondary type="info" @click="policyForm.path_prefix = 'uploads'">
-                uploads (默认)
+                uploads
               </n-button>
               <n-button size="tiny" secondary type="info" @click="insertPathPrefixToken('{username}')">
                 {username} · {{ $t('adminPolicies.tokenUsername') }}
@@ -278,7 +278,7 @@ const loadData = async () => {
 
 const formatPathPrefix = (prefix: string | undefined | null) => {
   if (prefix === undefined || prefix === null || prefix.trim() === '' || prefix.trim() === '/') {
-    return '/ (无前缀)'
+    return '/ (根路径)'
   }
   const clean = prefix.replace(/^\/+|\/+$/g, '')
   return '/' + clean
@@ -291,7 +291,7 @@ const openCreateModal = () => {
   policyForm.value = {
     name: '',
     driver: 'local',
-    path_prefix: 'uploads',
+    path_prefix: '',
     naming_rule: '{Y}/{m}/{d}/{random:16}.{ext}',
     is_default: false,
     role_ids: roles.value.map(r => r.id)

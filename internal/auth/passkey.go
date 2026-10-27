@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -17,8 +18,84 @@ import (
 	"gorm.io/gorm"
 )
 
+func normalizeBaseURL(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return "http://localhost:2983"
+	}
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "https://" + baseURL
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+func parseBaseURLs(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	})
+	var result []string
+	seen := make(map[string]bool)
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			norm := normalizeBaseURL(f)
+			if !seen[norm] {
+				seen[norm] = true
+				result = append(result, norm)
+			}
+		}
+	}
+	if len(result) == 0 {
+		result = []string{normalizeBaseURL(raw)}
+	}
+	return result
+}
+
+func createWebAuthn(rawBaseURLs string) (*webauthn.WebAuthn, error) {
+	urls := parseBaseURLs(rawBaseURLs)
+	primaryURL := urls[0]
+	u, err := url.Parse(primaryURL)
+	primaryRPID := "localhost"
+	if err == nil && u.Hostname() != "" {
+		primaryRPID = u.Hostname()
+	}
+
+	origins := []string{
+		"http://localhost:5173",
+		"http://localhost:2983",
+	}
+
+	for _, rawURL := range urls {
+		cleanURL := normalizeBaseURL(rawURL)
+		pu, err := url.Parse(cleanURL)
+		if err == nil && pu.Hostname() != "" {
+			origins = append(origins, cleanURL)
+			if pu.Hostname() != "localhost" {
+				origins = append(origins, "https://"+pu.Host, "http://"+pu.Host)
+			}
+		}
+	}
+
+	originSet := make(map[string]bool)
+	var uniqueOrigins []string
+	for _, o := range origins {
+		trimmed := strings.TrimRight(o, "/")
+		if trimmed != "" && !originSet[trimmed] {
+			originSet[trimmed] = true
+			uniqueOrigins = append(uniqueOrigins, trimmed)
+		}
+	}
+
+	return webauthn.New(&webauthn.Config{
+		RPDisplayName: "Utopia Images",
+		RPID:          primaryRPID,
+		RPOrigins:     uniqueOrigins,
+	})
+}
+
 type PasskeyManager struct {
 	db          *gorm.DB
+	mu          sync.RWMutex
 	webAuthn    *webauthn.WebAuthn
 	baseURL     string
 	sessions    map[string]*sessionEntry
@@ -32,19 +109,7 @@ type sessionEntry struct {
 }
 
 func NewPasskeyManager(db *gorm.DB, baseURL string) (*PasskeyManager, error) {
-	u, err := url.Parse(baseURL)
-	rpID := "localhost"
-	rpOrigin := "http://localhost:2983"
-	if err == nil && u.Hostname() != "" {
-		rpID = u.Hostname()
-		rpOrigin = strings.TrimRight(baseURL, "/")
-	}
-
-	w, err := webauthn.New(&webauthn.Config{
-		RPDisplayName: "Utopia Images",
-		RPID:          rpID,
-		RPOrigins:     []string{rpOrigin, "http://localhost:5173", "http://localhost:2983"},
-	})
+	w, err := createWebAuthn(baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +117,7 @@ func NewPasskeyManager(db *gorm.DB, baseURL string) (*PasskeyManager, error) {
 	pm := &PasskeyManager{
 		db:       db,
 		webAuthn: w,
-		baseURL:  baseURL,
+		baseURL:  normalizeBaseURL(baseURL),
 		sessions: make(map[string]*sessionEntry),
 	}
 
@@ -65,6 +130,45 @@ func NewPasskeyManager(db *gorm.DB, baseURL string) (*PasskeyManager, error) {
 	}()
 
 	return pm, nil
+}
+
+func (pm *PasskeyManager) getWebAuthn() *webauthn.WebAuthn {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.webAuthn
+}
+
+func (pm *PasskeyManager) UpdateBaseURL(baseURL string) error {
+	w, err := createWebAuthn(baseURL)
+	if err != nil {
+		return err
+	}
+	pm.mu.Lock()
+	pm.webAuthn = w
+	pm.baseURL = normalizeBaseURL(baseURL)
+	pm.mu.Unlock()
+	return nil
+}
+
+func (pm *PasskeyManager) RPID() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.webAuthn != nil && pm.webAuthn.Config != nil {
+		return pm.webAuthn.Config.RPID
+	}
+	return "localhost"
+}
+
+func (pm *PasskeyManager) BaseURL() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.baseURL
+}
+
+func (pm *PasskeyManager) BaseURLs() []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return parseBaseURLs(pm.baseURL)
 }
 
 func (pm *PasskeyManager) SetDB(db *gorm.DB) {
@@ -146,12 +250,57 @@ func (pm *PasskeyManager) loadUserCredentials(userID uint) []webauthn.Credential
 	return creds
 }
 
-// BeginRegistration starts Passkey registration flow
-func (pm *PasskeyManager) BeginRegistration(user *model.User) (*protocol.CredentialCreation, string, error) {
+func (pm *PasskeyManager) resolveCeremonyRPIDAndOrigin(requestHost string) (string, string) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	defaultRPID := "localhost"
+	if pm.webAuthn != nil && pm.webAuthn.Config != nil {
+		defaultRPID = pm.webAuthn.Config.RPID
+	}
+
+	if requestHost == "" {
+		return defaultRPID, ""
+	}
+
+	// Clean host (strip port if present)
+	host := strings.ToLower(requestHost)
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	if pm.webAuthn != nil && pm.webAuthn.Config != nil {
+		for _, o := range pm.webAuthn.Config.RPOrigins {
+			if ou, err := url.Parse(o); err == nil && strings.ToLower(ou.Hostname()) == host {
+				scheme := "https"
+				if ou.Scheme != "" {
+					scheme = ou.Scheme
+				}
+				return host, fmt.Sprintf("%s://%s", scheme, host)
+			}
+		}
+	}
+
+	return defaultRPID, ""
+}
+
+// BeginRegistration starts Passkey registration flow with optional requestHost
+func (pm *PasskeyManager) BeginRegistration(user *model.User, requestHost ...string) (*protocol.CredentialCreation, string, error) {
 	creds := pm.loadUserCredentials(user.ID)
 	waUser := &WebAuthnUser{User: user, Credentials: creds}
 
-	options, sessionData, err := pm.webAuthn.BeginRegistration(waUser)
+	var regOpts []webauthn.RegistrationOption
+	if len(requestHost) > 0 && requestHost[0] != "" {
+		rpID, origin := pm.resolveCeremonyRPIDAndOrigin(requestHost[0])
+		if rpID != "" {
+			regOpts = append(regOpts, webauthn.WithRegistrationRelyingPartyID(rpID))
+		}
+		if origin != "" {
+			regOpts = append(regOpts, webauthn.WithRegistrationOrigin(origin))
+		}
+	}
+
+	options, sessionData, err := pm.getWebAuthn().BeginRegistration(waUser, regOpts...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -189,7 +338,7 @@ func (pm *PasskeyManager) FinishRegistration(sessionKey, passkeyName string, r *
 	creds := pm.loadUserCredentials(user.ID)
 	waUser := &WebAuthnUser{User: &user, Credentials: creds}
 
-	credential, err := pm.webAuthn.CreateCredential(waUser, *entry.sessionData, r)
+	credential, err := pm.getWebAuthn().CreateCredential(waUser, *entry.sessionData, r)
 	if err != nil {
 		return nil, err
 	}
@@ -221,11 +370,22 @@ func (pm *PasskeyManager) FinishRegistration(sessionKey, passkeyName string, r *
 	return credRecord, nil
 }
 
-// BeginLogin starts Passkey assertion login flow
-func (pm *PasskeyManager) BeginLogin(username string) (*protocol.CredentialAssertion, string, error) {
+// BeginLogin starts Passkey assertion login flow with optional requestHost
+func (pm *PasskeyManager) BeginLogin(username string, requestHost ...string) (*protocol.CredentialAssertion, string, error) {
 	var options *protocol.CredentialAssertion
 	var sessionData *webauthn.SessionData
 	var err error
+
+	var loginOpts []webauthn.LoginOption
+	if len(requestHost) > 0 && requestHost[0] != "" {
+		rpID, origin := pm.resolveCeremonyRPIDAndOrigin(requestHost[0])
+		if rpID != "" {
+			loginOpts = append(loginOpts, webauthn.WithLoginRelyingPartyID(rpID))
+		}
+		if origin != "" {
+			loginOpts = append(loginOpts, webauthn.WithLoginOrigin(origin))
+		}
+	}
 
 	if username != "" {
 		var user model.User
@@ -237,10 +397,10 @@ func (pm *PasskeyManager) BeginLogin(username string) (*protocol.CredentialAsser
 			return nil, "", errors.New("no Passkey registered for this user")
 		}
 		waUser := &WebAuthnUser{User: &user, Credentials: creds}
-		options, sessionData, err = pm.webAuthn.BeginLogin(waUser)
+		options, sessionData, err = pm.getWebAuthn().BeginLogin(waUser, loginOpts...)
 	} else {
 		// Discoverable credentials (resident key)
-		options, sessionData, err = pm.webAuthn.BeginDiscoverableLogin()
+		options, sessionData, err = pm.getWebAuthn().BeginDiscoverableLogin(loginOpts...)
 	}
 
 	if err != nil {
@@ -320,7 +480,7 @@ func (pm *PasskeyManager) FinishLogin(sessionKey string, r *protocol.ParsedCrede
 		return nil, errors.New("passkey user does not match login user")
 	}
 
-	credential, err := pm.webAuthn.ValidateLogin(waUser, *entry.sessionData, r)
+	credential, err := pm.getWebAuthn().ValidateLogin(waUser, *entry.sessionData, r)
 	if err != nil {
 		return nil, err
 	}

@@ -28,7 +28,17 @@
           <n-input v-model:value="settings.site_description" style="max-width: 400px;" />
         </n-form-item>
         <n-form-item :label="$t('adminSettings.baseUrl')">
-          <n-input v-model:value="settings.base_url" placeholder="http://localhost:2983" style="max-width: 400px;" />
+          <div style="display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 500px;">
+            <n-input
+              v-model:value="settings.base_url"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 4 }"
+              placeholder="https://imgs.utopiaxc.com&#10;https://imgs.utopiaxc.cn"
+            />
+            <span style="font-size: 12px; color: #888;">
+              {{ $t('adminSettings.baseUrlTip') }}
+            </span>
+          </div>
         </n-form-item>
         <n-form-item :label="$t('adminSettings.faviconTitle')">
           <div style="display: flex; align-items: center; gap: 16px;">
@@ -93,8 +103,8 @@
 
         <n-form-item :label="$t('adminSettings.maxFileSize')">
           <div style="display: flex; align-items: center; gap: 10px;">
-            <n-input-number v-model:value="maxFileSize" :min="1" :max="1024" style="max-width: 200px;" />
-            <span style="color: #888; font-size: 13px;">MB</span>
+            <n-input-number v-model:value="maxFileSize" :min="0" :max="102400" style="max-width: 200px;" />
+            <span style="color: #888; font-size: 13px;">MB (填 0 为无限制)</span>
             <n-tooltip trigger="hover">
               <template #trigger>
                 <n-icon size="16" style="color: #888; cursor: pointer;">

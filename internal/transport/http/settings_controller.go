@@ -21,23 +21,29 @@ import (
 )
 
 type SettingsController struct {
-	db           *gorm.DB
-	derivedCache *cache.DerivedCache
-	cfg          *config.Config
-	configPath   string
+	db             *gorm.DB
+	derivedCache   *cache.DerivedCache
+	cfg            *config.Config
+	configPath     string
+	passkeyManager *auth.PasskeyManager
 }
 
-func NewSettingsController(db *gorm.DB, dc *cache.DerivedCache, cfg *config.Config, configPath string) *SettingsController {
+func NewSettingsController(db *gorm.DB, dc *cache.DerivedCache, cfg *config.Config, configPath string, pm *auth.PasskeyManager) *SettingsController {
 	return &SettingsController{
-		db:           db,
-		derivedCache: dc,
-		cfg:          cfg,
-		configPath:   configPath,
+		db:             db,
+		derivedCache:   dc,
+		cfg:            cfg,
+		configPath:     configPath,
+		passkeyManager: pm,
 	}
 }
 
 func (ctrl *SettingsController) SetDB(db *gorm.DB) {
 	ctrl.db = db
+}
+
+func (ctrl *SettingsController) SetPasskeyManager(pm *auth.PasskeyManager) {
+	ctrl.passkeyManager = pm
 }
 
 func (ctrl *SettingsController) RegisterRoutes(rg *gin.RouterGroup) {
@@ -477,6 +483,9 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 	if baseURL, ok := req["base_url"]; ok && baseURL != "" && ctrl.cfg != nil {
 		ctrl.cfg.Site.BaseURL = baseURL
 		ctrl.cfg.Server.BaseURL = baseURL
+		if ctrl.passkeyManager != nil {
+			_ = ctrl.passkeyManager.UpdateBaseURL(baseURL)
+		}
 	}
 
 	if ctrl.cfg != nil {

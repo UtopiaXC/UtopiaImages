@@ -141,6 +141,10 @@
 
     <!-- ZIP Archive Import Modal -->
     <n-modal v-model:show="showImportModal" preset="card" :title="$t('upload.archiveImport')" style="width: 520px; max-width: 95vw; border-radius: 12px;">
+      <n-alert type="warning" :show-icon="false" style="margin-bottom: 16px; font-size: 12px; line-height: 1.5;">
+        {{ $t('upload.cfUploadWarning') }}
+      </n-alert>
+
       <p style="color: #aaa; font-size: 13px; margin-bottom: 20px;">
         {{ $t('upload.archiveImportTip') }}
       </p>
@@ -186,6 +190,20 @@
           </n-radio-group>
         </n-form-item>
       </n-form>
+
+      <!-- Upload Progress Indicator -->
+      <div v-if="importing" style="margin-top: 16px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
+        <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px;">
+          <span>{{ uploadStatusText }}</span>
+          <span v-if="uploadPercentage < 100">{{ uploadPercentage }}%</span>
+        </div>
+        <n-progress
+          type="line"
+          :percentage="uploadPercentage"
+          :processing="uploadPercentage === 100"
+          :status="uploadStatus"
+        />
+      </div>
 
       <template #footer>
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
@@ -265,9 +283,17 @@ const hotlinkModeOptions = computed(() => [
   { label: t('files.hotlinkOff'), value: 'off' }
 ])
 
+const uploadPercentage = ref(0)
+const uploadStatus = ref<'default' | 'success' | 'error' | 'warning' | 'info'>('default')
+const uploadStatusText = ref('')
+
 const handleImportZip = async () => {
   if (!selectedZipFile.value) return
   importing.value = true
+  uploadPercentage.value = 0
+  uploadStatus.value = 'default'
+  uploadStatusText.value = t('upload.archiveUploading')
+
   const formData = new FormData()
   formData.append('archive_file', selectedZipFile.value)
   formData.append('preserve_path', importOptions.value.preserve_path ? 'true' : 'false')
@@ -284,13 +310,37 @@ const handleImportZip = async () => {
   }
 
   try {
-    const res = await api.post('/import/archive', formData)
+    const res = await api.post('/import/archive', formData, {
+      timeout: 0,
+      onUploadProgress: (progressEvent) => {
+        if (progressEvent.total) {
+          const percent = Math.min(Math.round((progressEvent.loaded * 100) / progressEvent.total), 99)
+          uploadPercentage.value = percent
+          if (percent >= 99) {
+            uploadPercentage.value = 100
+            uploadStatusText.value = t('upload.archiveProcessing')
+          }
+        }
+      }
+    })
+    uploadStatus.value = 'success'
     message.success(`${t('upload.importSuccess')}: ${res.data.imported} / ${res.data.total}`)
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     showImportModal.value = false
     selectedZipFile.value = null
   } catch (err: any) {
-    message.error(err.response?.data?.error || t('upload.importFailed'))
+    uploadStatus.value = 'error'
+    let errMsg = err.response?.data?.error
+    if (!errMsg) {
+      if (err.response?.status === 413) {
+        errMsg = '上传文件过大被拦截 (413 Payload Too Large)。若经过 Cloudflare 代理，免费/专业版单请求体上限为 100MB。请拆包导入或使用灰云朵直连域名。'
+      } else if (err.code === 'ECONNABORTED' || err.message?.includes('timeout') || err.response?.status === 524) {
+        errMsg = '上传超时 (524 Timeout)。若经过 Cloudflare 代理或反向代理，长时间大文件请求会超时中断。建议分卷拆包导入或直连解析。'
+      } else {
+        errMsg = err.message || t('upload.importFailed')
+      }
+    }
+    message.error(errMsg, { duration: 6000 })
   } finally {
     importing.value = false
   }
