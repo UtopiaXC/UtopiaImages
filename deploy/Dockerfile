@@ -1,7 +1,8 @@
 # Stage 1: Build Vue 3 Frontend
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS frontend-builder
+ENV PNPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS=true
 WORKDIR /web
-COPY web/package.json web/pnpm-lock.yaml* ./
+COPY web/package.json web/pnpm-lock.yaml* web/pnpm-workspace.yaml* ./
 RUN npm install -g pnpm && (pnpm install --frozen-lockfile || pnpm install)
 COPY web/ ./
 RUN pnpm build

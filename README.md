@@ -27,13 +27,26 @@ Demo图请见最底部。
 
 #### 1. 使用预编译镜像运行
 
-所有持久化数据统一归集在 `/app/data` 目录下，包含配置文件、数据库、图片存储、派生缓存与运行日志：
+系统核心数据统一保存在 `/app/data` 目录下（包含配置文件、数据库与原始图片存储）。只要挂载 `/app/data` 即可完整保证数据安全与整站迁移。  
+`logs`（服务日志）与 `cache`（派生图片缩略图缓存）与 `data` 同级，属于可选项：若不挂载，则直接写在容器内部；若希望在宿主机留存日志或缩略图缓存，可按需添加映射。
 
+基础运行（推荐，仅挂载核心数据）：
 ```bash
 docker run -d \
   --name utopia_images \
   -p 2983:2983 \
   -v $(pwd)/data:/app/data \
+  utopiaxc/utopia_images:latest
+```
+
+包含可选目录的完整挂载运行：
+```bash
+docker run -d \
+  --name utopia_images \
+  -p 2983:2983 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/cache:/app/cache \
   utopiaxc/utopia_images:latest
 ```
 
@@ -51,12 +64,17 @@ services:
       - "2983:2983"
     volumes:
       - ./data:/app/data
+      # 可选挂载：如需在宿主机留存日志或缩略图缓存，可取消以下注释
+      # - ./logs:/app/logs
+      # - ./cache:/app/cache
     environment:
       - TZ=Asia/Shanghai
 ```
 
 挂载目录说明：
-- `/app/data`：包含 `config/`（配置文件 `config.yaml`）、`db/`（数据库文件）、`storage/`（原始图片存储）、`cache/`（派生图片缓存）及 `logs/`（服务运行与轮转日志）。宿主机备份此单个目录即可完整迁移整站数据与配置。
+- `/app/data`（必需）：包含 `config/`（配置文件 `config.yaml`）、`db/`（数据库文件）与 `storage/`（原始图片存储）。日常备份只需备份此目录即可完整迁移整站数据与核心配置。
+- `/app/logs`（可选）：服务运行日志（基于 lumberjack 自动轮转）。不挂载时自动保存在容器内。
+- `/app/cache`（可选）：派生图片缩略图及处理缓存。不挂载时自动保存在容器内。
 
 #### 2. 自行编译 Docker 镜像
 

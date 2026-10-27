@@ -19,9 +19,18 @@ storage:
 
 # 缓存配置
 cache:
-  dir: "data/cache"
+  dir: "cache"
   max_size_mb: 5120 # 缓存容量上限(MB)，0表示无上限
   ttl_days: 0 # 缓存保留时间(天)，0表示无上限（永久保存）
+
+# 日志配置
+logging:
+  level: "info" # debug | info | warn | error
+  dir: "logs"
+  max_size_mb: 20
+  max_backups: 10
+  max_age_days: 30
+  compress: true
 
 # 安全与认证
 security:

@@ -125,7 +125,7 @@ func LoadConfig(path string) (*Config, error) {
 			},
 		},
 		Cache: CacheConfig{
-			Dir:       "data/cache",
+			Dir:       "cache",
 			MaxSizeMB: 5120,
 			TTLDays:   0,
 		},
@@ -155,7 +155,7 @@ func LoadConfig(path string) (*Config, error) {
 		},
 		Logging: LoggingConfig{
 			Level:          "info",
-			Dir:            "data/logs",
+			Dir:            "logs",
 			MaxSizeMB:      20,
 			MaxBackups:     10,
 			MaxAgeDays:     30,
@@ -255,9 +255,9 @@ func EnsureDataDirectories(cfg *Config) {
 		"data",
 		"data/config",
 		"data/db",
-		"data/cache",
 		"data/storage",
-		"data/logs",
+		"cache",
+		"logs",
 	}
 	if cfg != nil {
 		if (cfg.Database.Driver == "sqlite" || cfg.Database.Driver == "sqlite3" || cfg.Database.Driver == "") && cfg.Database.DSN != "" {
