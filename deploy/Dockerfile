@@ -7,7 +7,8 @@ COPY web/ ./
 RUN pnpm build
 
 # Stage 2: Build Go Backend with Embedded Frontend
-FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS backend-builder
+ENV GOTOOLCHAIN=auto
 ARG TARGETOS
 ARG TARGETARCH
 ARG APP_VERSION=dev
