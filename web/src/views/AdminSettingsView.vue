@@ -494,7 +494,7 @@ const clearingCache = ref(false)
 const settings = ref<any>({
   site_name: 'Utopia Images',
   site_description: '',
-  base_url: 'http://localhost:2983',
+  base_url: (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : '',
   max_single_file_size: '50',
   max_process_image_size: '5',
   captcha_provider: 'altcha',
@@ -710,6 +710,12 @@ const loadSettings = async () => {
   try {
     const res = await api.get('/admin/settings')
     settings.value = { ...settings.value, ...res.data }
+    const curOrigin = typeof window !== 'undefined' ? window.location.origin : ''
+    if (curOrigin && !curOrigin.includes('localhost') && !curOrigin.includes('127.0.0.1')) {
+      if (!settings.value.base_url || settings.value.base_url.includes('localhost') || settings.value.base_url.includes('127.0.0.1')) {
+        settings.value.base_url = curOrigin
+      }
+    }
     loadRoles()
     await nextTick()
     isLoaded = true

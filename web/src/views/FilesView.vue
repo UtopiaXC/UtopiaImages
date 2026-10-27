@@ -625,7 +625,8 @@ const openImageEditor = (file: any) => {
 
 const getFileUrl = (file: any, size?: string) => {
   if (!file) return ''
-  let url = `${baseURL.value}/${file.public_path}`
+  const cleanPath = (file.public_path || '').replace(/^\/+/, '')
+  let url = `/${cleanPath}`
   const params: string[] = []
   if (size) params.push(`size=${size}`)
   const v = file.sign_version || (file.updated_at ? new Date(file.updated_at).getTime() : '')

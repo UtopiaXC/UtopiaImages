@@ -254,15 +254,22 @@ const loadSiteDomains = async () => {
 
 const domainOptions = computed(() => {
   const set = new Set<string>()
+  const isOnline = window.location.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')
   if (window.location.origin) {
     set.add(window.location.origin)
   }
-  if (props.file?.base_urls && Array.isArray(props.file.base_urls)) {
-    props.file.base_urls.forEach((u: string) => { if (u) set.add(u.replace(/\/+$/, '')) })
+  const addDomain = (d: string) => {
+    if (!d) return
+    const clean = d.replace(/\/+$/, '')
+    if (isOnline && (clean.includes('localhost') || clean.includes('127.0.0.1'))) {
+      return // skip localhost on online environments
+    }
+    set.add(clean)
   }
-  configuredDomains.value.forEach((u: string) => {
-    if (u) set.add(u.replace(/\/+$/, ''))
-  })
+  if (props.file?.base_urls && Array.isArray(props.file.base_urls)) {
+    props.file.base_urls.forEach(addDomain)
+  }
+  configuredDomains.value.forEach(addDomain)
   return Array.from(set).map((d) => ({
     label: d,
     value: d
@@ -272,6 +279,9 @@ const domainOptions = computed(() => {
 const applySelectedDomain = (url: string) => {
   if (!url) return ''
   const domain = selectedDomain.value || window.location.origin
+  if (url.startsWith('/')) {
+    return `${domain}${url}`
+  }
   return url.replace(/^https?:\/\/[^\/]+/, domain)
 }
 

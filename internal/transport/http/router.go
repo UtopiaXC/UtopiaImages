@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
@@ -86,8 +85,11 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 	// Load base_url from DB if configured
 	var sBaseURL model.Setting
 	if err := db.Where("key = 'base_url'").First(&sBaseURL).Error; err == nil && sBaseURL.Value != "" {
-		cfg.Server.BaseURL = strings.TrimRight(sBaseURL.Value, "/")
-		cfg.Site.BaseURL = cfg.Server.BaseURL
+		fields := splitDomainList(sBaseURL.Value)
+		if len(fields) > 0 {
+			cfg.Server.BaseURL = fields[0]
+			cfg.Site.BaseURL = fields[0]
+		}
 	}
 
 	// 4. Initialize Auth components
@@ -142,9 +144,14 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 
 		var newBaseURL model.Setting
 		if err := newDB.Where("key = 'base_url'").First(&newBaseURL).Error; err == nil && newBaseURL.Value != "" {
-			cfg.Server.BaseURL = strings.TrimRight(newBaseURL.Value, "/")
-			cfg.Site.BaseURL = cfg.Server.BaseURL
-			_ = passkeyManager.UpdateBaseURL(cfg.Server.BaseURL)
+			fields := splitDomainList(newBaseURL.Value)
+			if len(fields) > 0 {
+				cfg.Server.BaseURL = fields[0]
+				cfg.Site.BaseURL = fields[0]
+				_ = passkeyManager.UpdateBaseURL(fields[0])
+				fileController.SetBaseURL(fields[0])
+				adminController.SetBaseURL(fields[0])
+			}
 		}
 	})
 
@@ -200,27 +207,14 @@ func (s *Server) setupRoutes(
 				fav = defaultFaviconSVG
 			}
 
-			var baseUrls []string
-			var baseUrlSetting model.Setting
-			if err := db.Where("key = 'base_url'").First(&baseUrlSetting).Error; err == nil && baseUrlSetting.Value != "" {
-				for _, u := range strings.FieldsFunc(baseUrlSetting.Value, func(r rune) bool {
-					return r == ',' || r == '\n' || r == '\r' || r == ';'
-				}) {
-					u = strings.TrimSpace(u)
-					if u != "" {
-						baseUrls = append(baseUrls, strings.TrimRight(u, "/"))
-					}
-				}
-			}
-			if len(baseUrls) == 0 && s.cfg.Server.BaseURL != "" {
-				baseUrls = []string{strings.TrimRight(s.cfg.Server.BaseURL, "/")}
-			}
+			baseUrls := GetConfiguredBaseURLs(c, db, s.cfg.Server.BaseURL)
+			detectedBaseURL := ResolveBaseURL(c, db, s.cfg.Server.BaseURL)
 
 			c.JSON(http.StatusOK, gin.H{
 				"site_name":          siteName,
 				"description":        siteDesc,
 				"version":            config.Version,
-				"base_url":           s.cfg.Server.BaseURL,
+				"base_url":           detectedBaseURL,
 				"base_urls":          baseUrls,
 				"allow_registration": allowReg,
 				"captcha_provider":   provider,

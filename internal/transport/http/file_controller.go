@@ -59,70 +59,11 @@ func (ctrl *FileController) SetBaseURL(baseURL string) {
 }
 
 func (ctrl *FileController) resolveBaseURL(c *gin.Context) string {
-	if c != nil {
-		if orig := c.Request.Header.Get("Origin"); orig != "" {
-			return strings.TrimRight(orig, "/")
-		}
-		host := c.Request.Host
-		if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
-			host = xfh
-		}
-		if host != "" {
-			proto := "http"
-			if c.Request.TLS != nil || c.Request.Header.Get("X-Forwarded-Proto") == "https" {
-				proto = "https"
-			}
-			return fmt.Sprintf("%s://%s", proto, host)
-		}
-	}
-
-	if ctrl.db != nil {
-		var s model.Setting
-		if err := ctrl.db.Where("key = 'base_url'").First(&s).Error; err == nil && s.Value != "" {
-			urls := strings.FieldsFunc(s.Value, func(r rune) bool {
-				return r == '\n' || r == '\r' || r == ',' || r == ';'
-			})
-			if len(urls) > 0 && strings.TrimSpace(urls[0]) != "" {
-				return strings.TrimRight(strings.TrimSpace(urls[0]), "/")
-			}
-		}
-	}
-
-	if ctrl.baseURL != "" {
-		urls := strings.FieldsFunc(ctrl.baseURL, func(r rune) bool {
-			return r == '\n' || r == '\r' || r == ',' || r == ';'
-		})
-		if len(urls) > 0 && strings.TrimSpace(urls[0]) != "" {
-			return strings.TrimRight(strings.TrimSpace(urls[0]), "/")
-		}
-	}
-	return "http://localhost:2983"
+	return ResolveBaseURL(c, ctrl.db, ctrl.baseURL)
 }
 
 func (ctrl *FileController) getBaseURLs() []string {
-	var raw string
-	if ctrl.db != nil {
-		var s model.Setting
-		if err := ctrl.db.Where("key = 'base_url'").First(&s).Error; err == nil && s.Value != "" {
-			raw = s.Value
-		}
-	}
-	if raw == "" {
-		raw = ctrl.baseURL
-	}
-	var result []string
-	if raw != "" {
-		fields := strings.FieldsFunc(raw, func(r rune) bool {
-			return r == '\n' || r == '\r' || r == ',' || r == ';'
-		})
-		for _, f := range fields {
-			f = strings.TrimSpace(f)
-			if f != "" {
-				result = append(result, strings.TrimRight(f, "/"))
-			}
-		}
-	}
-	return result
+	return GetConfiguredBaseURLs(nil, ctrl.db, ctrl.baseURL)
 }
 
 func (ctrl *FileController) RegisterRoutes(rg *gin.RouterGroup) {
@@ -452,22 +393,21 @@ func (ctrl *FileController) AbortChunkUpload(c *gin.Context) {
 }
 
 func (ctrl *FileController) buildFileLinks(file *model.FileRecord, customBaseURL ...string) gin.H {
-	baseURL := ctrl.baseURL
+	cleanPath := strings.TrimPrefix(file.PublicPath, "/")
+	var baseURL string
 	if len(customBaseURL) > 0 && customBaseURL[0] != "" {
-		baseURL = customBaseURL[0]
-	} else if ctrl.baseURL != "" {
-		urls := strings.FieldsFunc(ctrl.baseURL, func(r rune) bool {
-			return r == '\n' || r == '\r' || r == ',' || r == ';'
-		})
-		if len(urls) > 0 {
-			baseURL = strings.TrimRight(strings.TrimSpace(urls[0]), "/")
-		}
-	}
-	if baseURL == "" {
-		baseURL = "http://localhost:2983"
+		baseURL = strings.TrimRight(customBaseURL[0], "/")
+	} else {
+		baseURL = ctrl.resolveBaseURL(nil)
 	}
 
-	directURL := fmt.Sprintf("%s/%s", baseURL, file.PublicPath)
+	var directURL, webpURL string
+	if baseURL != "" {
+		directURL = fmt.Sprintf("%s/%s", baseURL, cleanPath)
+	} else {
+		directURL = fmt.Sprintf("/%s", cleanPath)
+	}
+
 	safeHTMLName := html.EscapeString(file.DisplayName)
 	safeMdName := strings.ReplaceAll(strings.ReplaceAll(file.DisplayName, "[", "\\["), "]", "\\]")
 	links := gin.H{
@@ -479,9 +419,13 @@ func (ctrl *FileController) buildFileLinks(file *model.FileRecord, customBaseURL
 	}
 
 	if file.IsImage {
-		ext := filepath.Ext(file.PublicPath)
-		baseNoExt := strings.TrimSuffix(file.PublicPath, ext)
-		webpURL := fmt.Sprintf("%s/%s.webp", baseURL, baseNoExt)
+		ext := filepath.Ext(cleanPath)
+		baseNoExt := strings.TrimSuffix(cleanPath, ext)
+		if baseURL != "" {
+			webpURL = fmt.Sprintf("%s/%s.webp", baseURL, baseNoExt)
+		} else {
+			webpURL = fmt.Sprintf("/%s.webp", baseNoExt)
+		}
 		links["webp_url"] = webpURL
 		links["webp_markdown"] = fmt.Sprintf("![%s](%s)", safeMdName, webpURL)
 		links["webp_html"] = fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", webpURL, safeHTMLName)
@@ -929,7 +873,13 @@ func (ctrl *FileController) CreateTempLink(c *gin.Context) {
 	}
 
 	currentBaseURL := ctrl.resolveBaseURL(c)
-	fullURL := fmt.Sprintf("%s/%s?token=%s", currentBaseURL, file.PublicPath, token)
+	cleanPath := strings.TrimPrefix(file.PublicPath, "/")
+	var fullURL string
+	if currentBaseURL == "" {
+		fullURL = fmt.Sprintf("/%s?token=%s", cleanPath, token)
+	} else {
+		fullURL = fmt.Sprintf("%s/%s?token=%s", currentBaseURL, cleanPath, token)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":            link.ID,
@@ -973,14 +923,21 @@ func (ctrl *FileController) ListTempLinks(c *gin.Context) {
 
 	now := time.Now()
 	currentBaseURL := ctrl.resolveBaseURL(c)
+	cleanPath := strings.TrimPrefix(file.PublicPath, "/")
 	items := make([]TempLinkItem, 0, len(links))
 	for _, l := range links {
 		isExpired := l.ExpiresAt.Before(now)
 		isRevoked := l.RevokedAt != nil
+		var linkURL string
+		if currentBaseURL == "" {
+			linkURL = fmt.Sprintf("/%s?token=%s", cleanPath, l.Token)
+		} else {
+			linkURL = fmt.Sprintf("%s/%s?token=%s", currentBaseURL, cleanPath, l.Token)
+		}
 		items = append(items, TempLinkItem{
 			ID:        l.ID,
 			Token:     l.Token,
-			URL:       fmt.Sprintf("%s/%s?token=%s", currentBaseURL, file.PublicPath, l.Token),
+			URL:       linkURL,
 			ExpiresAt: l.ExpiresAt,
 			CreatedAt: l.CreatedAt,
 			RevokedAt: l.RevokedAt,

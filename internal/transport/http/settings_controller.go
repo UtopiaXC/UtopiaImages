@@ -344,7 +344,7 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 	res := map[string]string{
 		"site_name":                 "Utopia Images",
 		"site_description":          "Next-generation self-hosted image & static asset host",
-		"base_url":                  "http://localhost:2983",
+		"base_url":                  ResolveBaseURL(c, ctrl.db, ""),
 		"max_single_file_size":      "50", // MB
 		"max_process_image_size":    "5",  // MB
 		"captcha_provider":          "altcha",

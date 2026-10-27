@@ -45,6 +45,14 @@ func (ctrl *AdminController) SetDB(db *gorm.DB) {
 	ctrl.db = db
 }
 
+func (ctrl *AdminController) SetBaseURL(baseURL string) {
+	ctrl.baseURL = baseURL
+}
+
+func (ctrl *AdminController) resolveBaseURL(c *gin.Context) string {
+	return ResolveBaseURL(c, ctrl.db, ctrl.baseURL)
+}
+
 func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
 	admin := rg.Group("/admin")
 	admin.Use(auth.RequireAuth(), auth.RequireAdmin())
@@ -1052,8 +1060,26 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 		}
 	}
 
+	currentBaseURL := ctrl.resolveBaseURL(c)
 	items := make([]AdminFileItem, 0, len(files))
 	for _, f := range files {
+		cleanPath := strings.TrimPrefix(f.PublicPath, "/")
+		var fileURL, thumbURL string
+		if currentBaseURL != "" {
+			fileURL = fmt.Sprintf("%s/%s", currentBaseURL, cleanPath)
+			if f.IsImage {
+				thumbURL = fmt.Sprintf("%s/%s?s=thumb", currentBaseURL, cleanPath)
+			} else {
+				thumbURL = fileURL
+			}
+		} else {
+			fileURL = fmt.Sprintf("/%s", cleanPath)
+			if f.IsImage {
+				thumbURL = fmt.Sprintf("/%s?s=thumb", cleanPath)
+			} else {
+				thumbURL = fileURL
+			}
+		}
 		item := AdminFileItem{
 			ID:            f.ID,
 			PublicPath:    f.PublicPath,
@@ -1067,13 +1093,9 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 			IsImage:       f.IsImage,
 			CreatedAt:     f.CreatedAt,
 			UpdatedAt:     f.UpdatedAt,
-			URL:           fmt.Sprintf("%s/%s", ctrl.baseURL, f.PublicPath),
+			URL:           fileURL,
+			ThumbnailURL:  thumbURL,
 			TempLinkCount: linkCountMap[f.ID],
-		}
-		if f.IsImage {
-			item.ThumbnailURL = fmt.Sprintf("%s/%s?s=thumb", ctrl.baseURL, f.PublicPath)
-		} else {
-			item.ThumbnailURL = item.URL
 		}
 		if u, ok := usersMap[f.UserID]; ok {
 			item.User.ID = u.ID
@@ -1096,6 +1118,8 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 		"page":      page,
 		"page_size": pageSize,
 		"items":     items,
+		"base_url":  currentBaseURL,
+		"base_urls": GetConfiguredBaseURLs(c, ctrl.db, ctrl.baseURL),
 	})
 }
 
@@ -1116,10 +1140,19 @@ func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
 	var tempLinks []model.TemporaryLink
 	ctrl.db.Where("file_id = ?", file.ID).Order("id DESC").Find(&tempLinks)
 
-	rawURL := fmt.Sprintf("%s/%s", ctrl.baseURL, file.PublicPath)
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	cleanPath := strings.TrimPrefix(file.PublicPath, "/")
 	ext := filepath.Ext(file.PublicPath)
-	baseNoExt := strings.TrimSuffix(file.PublicPath, ext)
-	webpURL := fmt.Sprintf("%s/%s.webp", ctrl.baseURL, baseNoExt)
+	baseNoExt := strings.TrimSuffix(cleanPath, ext)
+
+	var rawURL, webpURL string
+	if currentBaseURL != "" {
+		rawURL = fmt.Sprintf("%s/%s", currentBaseURL, cleanPath)
+		webpURL = fmt.Sprintf("%s/%s.webp", currentBaseURL, baseNoExt)
+	} else {
+		rawURL = fmt.Sprintf("/%s", cleanPath)
+		webpURL = fmt.Sprintf("/%s.webp", baseNoExt)
+	}
 
 	safeHTMLName := html.EscapeString(file.DisplayName)
 	safeMdName := strings.ReplaceAll(strings.ReplaceAll(file.DisplayName, "[", "\\["), "]", "\\]")

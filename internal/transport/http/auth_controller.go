@@ -56,6 +56,26 @@ func (ctrl *AuthController) isCookieSecure(c *gin.Context) bool {
 	return false
 }
 
+func (ctrl *AuthController) resolveBaseURL(c *gin.Context) string {
+	fallback := ""
+	if ctrl.cfg != nil {
+		fallback = ctrl.cfg.Server.BaseURL
+	}
+	u := ResolveBaseURL(c, ctrl.db, fallback)
+	if u != "" {
+		return u
+	}
+	detectedProto := "http"
+	if c.Request.TLS != nil || strings.EqualFold(c.Request.Header.Get("X-Forwarded-Proto"), "https") {
+		detectedProto = "https"
+	}
+	host := getRequestHost(c)
+	if host != "" {
+		return fmt.Sprintf("%s://%s", detectedProto, host)
+	}
+	return ""
+}
+
 func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/setup/status", ctrl.GetSetupStatus)
 	rg.POST("/setup/test-db", ctrl.TestDatabaseConnection)
@@ -103,17 +123,17 @@ func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
 
 func (ctrl *AuthController) GetSetupStatus(c *gin.Context) {
 	required := ctrl.authService.IsSetupRequired()
-	detectedProto := "http"
-	if c.Request.TLS != nil || c.Request.Header.Get("X-Forwarded-Proto") == "https" {
-		detectedProto = "https"
+	detectedBaseURL := ctrl.resolveBaseURL(c)
+	effectiveBaseURL := detectedBaseURL
+	if effectiveBaseURL == "" && ctrl.cfg != nil {
+		effectiveBaseURL = ctrl.cfg.Server.BaseURL
 	}
-	detectedBaseURL := fmt.Sprintf("%s://%s", detectedProto, getRequestHost(c))
 
 	c.JSON(http.StatusOK, gin.H{
 		"setup_required":   required,
 		"site_name":        ctrl.cfg.Site.Name,
 		"site_description": ctrl.cfg.Site.Description,
-		"base_url":         ctrl.cfg.Server.BaseURL,
+		"base_url":         effectiveBaseURL,
 		"detected_url":     detectedBaseURL,
 		"current_locale":   ctrl.cfg.Site.Locale,
 		"current_driver":   ctrl.cfg.Database.Driver,
@@ -539,7 +559,8 @@ func (ctrl *AuthController) Register(c *gin.Context) {
 	}
 
 	// Send email with activation link
-	activationLink := fmt.Sprintf("%s/login?action=activate&token=%s", ctrl.cfg.Server.BaseURL, token)
+	baseURL := ctrl.resolveBaseURL(c)
+	activationLink := fmt.Sprintf("%s/login?action=activate&token=%s", baseURL, token)
 	if err := ctrl.sendActivationEmail(*user.Email, user.Username, activationLink); err != nil {
 		slog.Error("Failed to send activation email", "error", err, "email", *user.Email)
 	}
@@ -617,7 +638,8 @@ func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
 	}
 
 	// Send email with reset token link
-	resetLink := fmt.Sprintf("%s/login?action=reset&token=%s", ctrl.cfg.Server.BaseURL, token)
+	baseURL := ctrl.resolveBaseURL(c)
+	resetLink := fmt.Sprintf("%s/login?action=reset&token=%s", baseURL, token)
 	err := ctrl.sendPasswordResetEmail(*user.Email, user.Username, resetLink)
 	if err != nil {
 		slog.Error("Failed to send password reset email", "error", err, "email", *user.Email)
@@ -719,7 +741,8 @@ func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 		return
 	}
 
-	resetLink := fmt.Sprintf("%s/login?action=reset-2fa&token=%s", ctrl.cfg.Server.BaseURL, token)
+	baseURL := ctrl.resolveBaseURL(c)
+	resetLink := fmt.Sprintf("%s/login?action=reset-2fa&token=%s", baseURL, token)
 	err := ctrl.send2FAResetEmail(*user.Email, user.Username, resetLink, token)
 	if err != nil {
 		slog.Error("Failed to send 2FA reset email", "error", err, "email", *user.Email)

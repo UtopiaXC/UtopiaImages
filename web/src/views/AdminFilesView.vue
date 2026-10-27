@@ -120,7 +120,7 @@
               <td>
                 <img
                   v-if="file.is_image"
-                  :src="file.thumbnail_url"
+                  :src="resolveFileThumbUrl(file)"
                   style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; cursor: pointer; border: 1px solid rgba(255, 255, 255, 0.1);"
                   @click="openPreviewModal(file)"
                 />
@@ -198,7 +198,7 @@
     <!-- Image Preview Modal -->
     <n-modal v-model:show="showPreviewModal" preset="card" style="max-width: 800px; width: 95vw;" :title="previewFile?.display_name">
       <div style="text-align: center; max-height: 70vh; overflow: auto;">
-        <img :src="previewFile?.url" style="max-width: 100%; max-height: 65vh; object-fit: contain; border-radius: 6px;" />
+        <img :src="resolveFileUrl(previewFile)" style="max-width: 100%; max-height: 65vh; object-fit: contain; border-radius: 6px;" />
       </div>
     </n-modal>
 
@@ -212,7 +212,7 @@
         <div style="display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap;">
           <div v-if="detailsData.file?.is_image" style="flex: 0 0 160px; text-align: center;">
             <img
-              :src="detailsData.links?.url"
+              :src="resolveFileUrl(detailsData.file)"
               style="width: 160px; height: 160px; object-fit: cover; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);"
             />
           </div>
@@ -241,18 +241,14 @@
           </div>
         </div>
 
-        <!-- Copyable Links -->
+        <!-- Copyable Links & Temporary Links -->
         <div style="margin-bottom: 20px;">
           <h4 style="margin: 0 0 10px; font-size: 14px; font-weight: 600;">{{ $t('adminFiles.links') }}</h4>
-          <div style="display: flex; flex-direction: column; gap: 8px;">
-            <n-input-group v-for="(val, key) in detailsData.links" :key="key">
-              <n-input-group-label style="width: 110px; font-size: 12px; text-transform: uppercase;">
-                {{ String(key).replace('_', ' ') }}
-              </n-input-group-label>
-              <n-input :value="val" readonly size="small" />
-              <n-button size="small" @click="copyText(val)">{{ $t('common.copy') }}</n-button>
-            </n-input-group>
-          </div>
+          <FileLinksPanel
+            v-if="detailsData.file"
+            :file="detailsData.file"
+            :initial-url="resolveFileUrl(detailsData.file)"
+          />
         </div>
 
         <!-- Temporary Links List -->
@@ -290,9 +286,37 @@ import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { SearchOutline } from '@vicons/ionicons5'
 import { api, getApiErrorMessage } from '../api/client'
+import FileLinksPanel from '../components/FileLinksPanel.vue'
 
 const message = useMessage()
 const { t } = useI18n()
+
+const isBrowserOnline = () => {
+  return typeof window !== 'undefined' &&
+    window.location?.origin &&
+    !window.location.origin.includes('localhost') &&
+    !window.location.origin.includes('127.0.0.1')
+}
+
+const resolveFileThumbUrl = (file: any) => {
+  if (!file) return ''
+  const cleanPath = (file.public_path || '').replace(/^\/+/, '')
+  const hasLocalhost = file.thumbnail_url && (file.thumbnail_url.includes('localhost') || file.thumbnail_url.includes('127.0.0.1'))
+  if (!file.thumbnail_url || (hasLocalhost && isBrowserOnline())) {
+    return `/${cleanPath}?s=thumb`
+  }
+  return file.thumbnail_url
+}
+
+const resolveFileUrl = (file: any) => {
+  if (!file) return ''
+  const cleanPath = (file.public_path || '').replace(/^\/+/, '')
+  const hasLocalhost = file.url && (file.url.includes('localhost') || file.url.includes('127.0.0.1'))
+  if (!file.url || (hasLocalhost && isBrowserOnline())) {
+    return `/${cleanPath}`
+  }
+  return file.url
+}
 
 const loading = ref(false)
 const batchDeleting = ref(false)
