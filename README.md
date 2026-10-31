@@ -10,7 +10,10 @@ Demo图请见最底部。
 
 ## 演示 DEMO
 
-如果希望在线尝试，可以点击下方会长打开GitHub Codespaces免费尝试，需要登录GitHub账号，默认端口2983。  
+> 注：该功能不太好用，暂不推荐使用。我正在尝试用更方便的办法来实现。  
+> 另外本演示使用的源码为最新源码，可能与docker发行版不一致。  
+
+如果希望在线尝试，可以点击下方徽章打开GitHub Codespaces免费尝试（GitHub每个月为每名用户提供120核时免费），需要登录GitHub账号，默认端口2983。  
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/UtopiaXC/UtopiaImages)
 

@@ -1,6 +1,11 @@
 {
   "name": "Utopia Images Demo",
-  "image": "utopiaxc/utopia_images:latest",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.23-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
   "forwardPorts": [2983],
   "portsAttributes": {
     "2983": {
@@ -8,11 +13,6 @@
       "onAutoForward": "openBrowser"
     }
   },
-  "mounts": [
-    "source=${localWorkspaceFolder}/data,target=/app/data,type=bind"
-  ],
-  "containerEnv": {
-    "TZ": "Asia/Shanghai"
-  },
-  "postStartCommand": "pgrep utopia_images || nohup /app/utopia_images > /app/data/utopia_images.log 2>&1 &"
+  "postCreateCommand": "npm --prefix web install && npm --prefix web run build && go build -o UtopiaImages ./cmd/utopia_images",
+  "postStartCommand": "./UtopiaImages"
 }
