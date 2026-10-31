@@ -103,7 +103,7 @@
           <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
             <img
               v-if="item.file.is_image"
-              :src="item.links.url"
+              :src="item.links.url ? (item.links.url.includes('?') ? item.links.url + '&from=console' : item.links.url + '?from=console') : ''"
               style="width: 110px; height: 110px; object-fit: contain; background: #0c0d12; border-radius: 8px; border: 1px solid #333;"
             />
             <n-button

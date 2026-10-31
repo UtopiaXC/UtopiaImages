@@ -33,7 +33,7 @@
               v-model:value="settings.base_url"
               type="textarea"
               :autosize="{ minRows: 2, maxRows: 4 }"
-              placeholder="https://imgs.utopiaxc.com&#10;https://imgs.utopiaxc.cn"
+              placeholder=""
             />
             <span style="font-size: 12px; color: #888;">
               {{ $t('adminSettings.baseUrlTip') }}
@@ -44,13 +44,15 @@
           <div style="display: flex; flex-direction: column; gap: 6px; max-width: 500px;">
             <div style="display: flex; align-items: center; gap: 10px;">
               <n-switch v-model:value="restrictDomains" />
-              <span style="font-size: 13px; color: #ccc;">
-                {{ $t('adminSettings.restrictDomainsDesc') }}
-              </span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('adminSettings.restrictDomainsDesc') }}
+            </n-tooltip>
             </div>
-            <span style="font-size: 12px; color: #888;">
-              {{ $t('adminSettings.restrictDomainsTip') }}
-            </span>
           </div>
         </n-form-item>
         <n-form-item :label="$t('adminSettings.faviconTitle')">
@@ -474,24 +476,21 @@
           </div>
         </n-form-item>
 
-        <n-form-item :label="$t('adminSettings.cdnCacheControl')">
-          <div style="display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 600px;">
+        <n-form-item :label="$t('adminSettings.globalCallStat')">
+          <div style="display: flex; flex-direction: column; gap: 6px; max-width: 500px;">
             <div style="display: flex; align-items: center; gap: 10px;">
-              <n-switch v-model:value="cdnCacheControl" @update:value="handleCDNCacheToggle" />
-              <span style="font-size: 13px; color: #ccc;">
-                {{ $t('adminSettings.cdnCacheControlDesc') }}
-              </span>
+              <n-switch v-model:value="globalCallStat" />
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-icon size="16" style="color: #888; cursor: pointer;">
+                    <InformationCircleOutline />
+                  </n-icon>
+                </template>
+                {{ $t('adminSettings.globalCallStatDesc') }}
+              </n-tooltip>
             </div>
-            <n-alert
-              v-if="cdnCacheControl"
-              type="warning"
-              :title="$t('adminSettings.cdnNoticeTitle')"
-              style="margin-top: 4px;"
-            >
-              {{ $t('adminSettings.cdnNoticeContent') }}
-            </n-alert>
-            <span v-else style="font-size: 12px; color: #888;">
-              {{ $t('adminSettings.cdnCacheControlTip') }}
+            <span style="font-size: 12px; color: #888;">
+              {{ $t('adminSettings.globalCallStatTip') }}
             </span>
           </div>
         </n-form-item>
@@ -550,7 +549,7 @@ const settings = ref<any>({
   allow_registration: 'false',
   default_register_role_id: '2',
   restrict_domains: 'false',
-  cdn_cache_control: 'false',
+  global_call_stat: 'false',
   smtp_enabled: 'false',
   smtp_host: '',
   smtp_port: '587',
@@ -695,20 +694,10 @@ const restrictDomains = computed({
   set: (v) => { settings.value.restrict_domains = v ? 'true' : 'false' }
 })
 
-const cdnCacheControl = computed({
-  get: () => settings.value.cdn_cache_control === 'true',
-  set: (v) => { settings.value.cdn_cache_control = v ? 'true' : 'false' }
+const globalCallStat = computed({
+  get: () => settings.value.global_call_stat === 'true',
+  set: (v) => { settings.value.global_call_stat = v ? 'true' : 'false' }
 })
-
-const handleCDNCacheToggle = (val: boolean) => {
-  if (val) {
-    dialog.warning({
-      title: t('adminSettings.cdnNoticeTitle'),
-      content: t('adminSettings.cdnNoticeContent'),
-      positiveText: t('common.confirm'),
-    })
-  }
-}
 
 const smtpPort = computed({
   get: () => parseInt(settings.value.smtp_port) || 587,
@@ -800,7 +789,7 @@ const autoSave = (immediate = false) => {
       }
     } catch (err: any) {
       message.error(getApiErrorMessage(err))
-      if (err.response?.data?.code === 'REGISTRATION_SMTP_REQUIRED') {
+      if (err.response?.data?.code === 'ERR_REGISTRATION_SMTP_REQUIRED') {
         settings.value.allow_registration = 'false'
       }
     } finally {

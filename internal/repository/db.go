@@ -66,6 +66,7 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		&model.Setting{},
 		&model.PasswordResetToken{},
 		&model.ImageCallStat{},
+		&model.ImageCallVisitor{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to auto migrate database tables: %w", err)

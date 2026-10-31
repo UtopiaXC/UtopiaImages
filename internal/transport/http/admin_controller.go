@@ -933,6 +933,7 @@ type AdminFileItem struct {
 	ThumbnailURL  string    `json:"thumbnail_url"`
 	TempLinkCount int64     `json:"temp_link_count"`
 	TotalCalls    int64     `json:"total_calls"`
+	TotalUV       int64     `json:"total_uv"`
 	User          struct {
 		ID       uint   `json:"id"`
 		Username string `json:"username"`
@@ -957,59 +958,7 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 	}
 
 	query := ctrl.db.Model(&model.FileRecord{})
-
-	if search := strings.TrimSpace(c.Query("search")); search != "" {
-		like := "%" + search + "%"
-		var matchingUserIDs []uint
-		ctrl.db.Model(&model.User{}).Where("username LIKE ? OR nickname LIKE ? OR email LIKE ?", like, like, like).Pluck("id", &matchingUserIDs)
-		if len(matchingUserIDs) > 0 {
-			query = query.Where("display_name LIKE ? OR public_path LIKE ? OR user_id IN (?)", like, like, matchingUserIDs)
-		} else {
-			query = query.Where("display_name LIKE ? OR public_path LIKE ?", like, like)
-		}
-	}
-
-	if policyID := c.Query("policy_id"); policyID != "" && policyID != "all" {
-		query = query.Where("policy_id = ?", policyID)
-	}
-
-	if uid := c.Query("user_id"); uid != "" && uid != "all" {
-		query = query.Where("user_id = ?", uid)
-	}
-
-	if format := strings.ToLower(c.Query("format")); format != "" && format != "all" {
-		switch format {
-		case "jpeg", "jpg":
-			query = query.Where("mime_type IN ('image/jpeg', 'image/jpg') OR public_path LIKE '%.jpg' OR public_path LIKE '%.jpeg'")
-		case "png":
-			query = query.Where("mime_type = 'image/png' OR public_path LIKE '%.png'")
-		case "webp":
-			query = query.Where("mime_type = 'image/webp' OR public_path LIKE '%.webp'")
-		case "gif":
-			query = query.Where("mime_type = 'image/gif' OR public_path LIKE '%.gif'")
-		case "svg":
-			query = query.Where("mime_type = 'image/svg+xml' OR public_path LIKE '%.svg'")
-		case "other":
-			query = query.Where("is_image = 0")
-		}
-	}
-
-	if timeRange := c.Query("time_range"); timeRange != "" && timeRange != "all" {
-		now := time.Now()
-		switch timeRange {
-		case "today":
-			startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-			query = query.Where("created_at >= ?", startOfDay)
-		case "7d":
-			query = query.Where("created_at >= ?", now.Add(-7*24*time.Hour))
-		case "30d":
-			query = query.Where("created_at >= ?", now.Add(-30*24*time.Hour))
-		}
-	}
-
-	if hasLinks := c.Query("has_temp_links"); hasLinks == "true" {
-		query = query.Where("id IN (SELECT DISTINCT file_id FROM temporary_links WHERE revoked_at IS NULL AND expires_at > ?)", time.Now())
-	}
+	query = ApplyAdvancedFileFilters(query, ctrl.db, c, true)
 
 	var total int64
 	query.Count(&total)
@@ -1062,6 +1011,7 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 	}
 
 	callCountMap := make(map[uint]int64)
+	callUVMap := make(map[uint]int64)
 	if len(fileIDs) > 0 {
 		type callResult struct {
 			FileID uint  `gorm:"column:file_id"`
@@ -1075,6 +1025,20 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 			Scan(&calls)
 		for _, cr := range calls {
 			callCountMap[cr.FileID] = cr.Cnt
+		}
+
+		type uvResult struct {
+			FileID uint  `gorm:"column:file_id"`
+			UV     int64 `gorm:"column:uv"`
+		}
+		var uvs []uvResult
+		ctrl.db.Model(&model.ImageCallVisitor{}).
+			Select("file_id, count(distinct visitor_id) as uv").
+			Where("file_id IN (?)", fileIDs).
+			Group("file_id").
+			Scan(&uvs)
+		for _, ur := range uvs {
+			callUVMap[ur.FileID] = ur.UV
 		}
 	}
 
@@ -1115,6 +1079,7 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 			ThumbnailURL:  thumbURL,
 			TempLinkCount: linkCountMap[f.ID],
 			TotalCalls:    callCountMap[f.ID],
+			TotalUV:       callUVMap[f.ID],
 		}
 		if u, ok := usersMap[f.UserID]; ok {
 			item.User.ID = u.ID
@@ -1209,6 +1174,11 @@ func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
 				return *sum
 			}
 			return 0
+		}(),
+		"total_uv": func() int64 {
+			var count int64
+			ctrl.db.Model(&model.ImageCallVisitor{}).Where("file_id = ?", file.ID).Distinct("visitor_id").Count(&count)
+			return count
 		}(),
 	})
 }

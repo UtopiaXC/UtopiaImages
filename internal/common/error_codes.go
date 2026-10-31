@@ -26,7 +26,7 @@ const (
 	ErrAuthEmailTaken           = "AUTH_EMAIL_TAKEN"
 	ErrAuthUserInactive         = "AUTH_USER_INACTIVE"
 	ErrRegistrationDisabled     = "REGISTRATION_DISABLED"
-	ErrRegistrationSMTPRequired = "REGISTRATION_SMTP_REQUIRED"
+	ErrRegistrationSMTPRequired = "ERR_REGISTRATION_SMTP_REQUIRED"
 	ErrSMTPNotConfigured        = "SMTP_NOT_CONFIGURED"
 	ErrResetTokenInvalid        = "RESET_TOKEN_INVALID"
 	ErrActivationTokenInvalid   = "ACTIVATION_TOKEN_INVALID"

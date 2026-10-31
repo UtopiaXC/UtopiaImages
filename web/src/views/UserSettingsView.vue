@@ -205,6 +205,28 @@
               />
             </n-form-item>
 
+            <n-divider style="margin: 16px 0;" />
+
+            <h3 style="font-size: 15px; margin-bottom: 12px; font-weight: 500;">{{ $t('settings.callStatTitle') }}</h3>
+            <div style="font-size: 13px; color: #888; margin-bottom: 16px;">
+              {{ $t('settings.callStatDesc') }}
+            </div>
+
+            <n-form-item :label="$t('settings.callStatSwitch')">
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <n-switch
+                    :value="globalCallStatEnabled ? true : callStatEnabled"
+                    :disabled="globalCallStatEnabled"
+                    @update:value="(val: boolean) => callStatEnabled = val"
+                  />
+                  <n-tag v-if="globalCallStatEnabled" size="small" type="warning" :bordered="false">
+                    {{ $t('settings.globalCallStatLocked') }}
+                  </n-tag>
+                </div>
+              </div>
+            </n-form-item>
+
             <div style="display: flex; justify-content: flex-end;">
               <n-button type="primary" :loading="savingImageSettings" @click="saveImageSettings">
                 {{ $t('common.save') }}
@@ -296,6 +318,9 @@ const hotlinkSettings = ref({
   hotlink_allowed_domains: ''
 })
 
+const callStatEnabled = ref(false)
+const globalCallStatEnabled = ref(false)
+
 const policyOptions = ref<any[]>([])
 const watermarkOptions = ref<any[]>([])
 const passkeys = ref<any[]>([])
@@ -340,6 +365,9 @@ const loadData = async () => {
     hotlinkSettings.value.hotlink_enabled = !!prefRes.data.hotlink_enabled
     hotlinkSettings.value.hotlink_allow_empty = prefRes.data.hotlink_allow_empty !== false
     hotlinkSettings.value.hotlink_allowed_domains = prefRes.data.hotlink_allowed_domains || ''
+
+    callStatEnabled.value = !!prefRes.data.call_stat_enabled
+    globalCallStatEnabled.value = !!prefRes.data.global_call_stat_enabled
 
     policyOptions.value = (prefRes.data.available_policies || []).map((p: any) => ({
       label: p.name,
@@ -483,6 +511,7 @@ const saveImageSettings = async () => {
       watermark_mode: preferences.value.watermark_mode,
       watermark_template_id: preferences.value.watermark_template_id,
       default_link_format: preferences.value.default_link_format,
+      call_stat_enabled: callStatEnabled.value,
       hotlink_enabled: hotlinkSettings.value.hotlink_enabled,
       hotlink_allow_empty: hotlinkSettings.value.hotlink_allow_empty,
       hotlink_allowed_domains: hotlinkSettings.value.hotlink_allowed_domains

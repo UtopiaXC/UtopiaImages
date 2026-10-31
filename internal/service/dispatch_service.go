@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +24,8 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	glogger "gorm.io/gorm/logger"
 )
 
 type DispatchService struct {
@@ -54,10 +58,60 @@ func (s *DispatchService) abortWithError(c *gin.Context, code int) {
 	c.AbortWithStatus(code)
 }
 
+// GetRealClientIP extracts the real client IP considering CDNs and proxies.
+func GetRealClientIP(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	headers := []string{
+		"CF-Connecting-IP",
+		"True-Client-IP",
+		"X-Real-IP",
+		"Ali-CDN-Real-IP",
+		"Cdn-Src-Ip",
+		"X-Client-IP",
+		"Fastly-Client-IP",
+	}
+	for _, h := range headers {
+		if val := strings.TrimSpace(c.GetHeader(h)); val != "" {
+			return val
+		}
+	}
+	if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			first := strings.TrimSpace(parts[0])
+			if first != "" {
+				return first
+			}
+		}
+	}
+	return c.ClientIP()
+}
+
+// GenerateVisitorID creates a unique client fingerprint based on IP and User-Agent
+func GenerateVisitorID(c *gin.Context) string {
+	ip := GetRealClientIP(c)
+	ua := ""
+	if c != nil && c.Request != nil {
+		ua = c.Request.UserAgent()
+	}
+	h := sha256.Sum256([]byte(ip + "|" + ua))
+	return hex.EncodeToString(h[:16])
+}
+
 // ServeFile handles client requests for public files
 func (s *DispatchService) ServeFile(c *gin.Context) {
+	s.handleFileRequest(c, strings.TrimPrefix(c.Request.URL.Path, "/"), false)
+}
+
+// ServeRawImage handles requests redirected to the raw image API endpoint
+func (s *DispatchService) ServeRawImage(c *gin.Context, rawPath string) {
+	s.handleFileRequest(c, rawPath, true)
+}
+
+func (s *DispatchService) handleFileRequest(c *gin.Context, rawPath string, isRawRedirect bool) {
 	// 1. Sanitize request path
-	rawPath := strings.TrimPrefix(c.Request.URL.Path, "/")
 	publicPath := pathclean.CleanPath(rawPath)
 
 	if publicPath == "" {
@@ -149,6 +203,62 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 		requestedFormat = strings.ToLower(formatQuery)
 	}
 
+	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
+	targetFormat := origExt
+	if requestedFormat != "" {
+		targetFormat = requestedFormat
+	}
+
+	targetSizeLabel := "original"
+	if reqStyle != "" {
+		targetSizeLabel = reqStyle
+	} else if sizeParam := c.Query("size"); sizeParam != "" {
+		targetSizeLabel = strings.ToLower(sizeParam)
+	} else if reqW > 0 || reqH > 0 {
+		if reqW > 0 && reqH > 0 {
+			targetSizeLabel = fmt.Sprintf("%dx%d", reqW, reqH)
+		} else if reqW > 0 {
+			targetSizeLabel = fmt.Sprintf("%dw", reqW)
+		} else if reqH > 0 {
+			targetSizeLabel = fmt.Sprintf("%dh", reqH)
+		}
+	}
+
+	// 7. Check if request should be intercepted for Call Statistics
+	if !isRawRedirect {
+		isPrefetch := strings.EqualFold(c.GetHeader("Purpose"), "prefetch") ||
+			strings.EqualFold(c.GetHeader("Sec-Purpose"), "prefetch") ||
+			strings.EqualFold(c.GetHeader("Sec-Purpose"), "prerender") ||
+			strings.EqualFold(c.GetHeader("X-Moz"), "prefetch") ||
+			strings.EqualFold(c.GetHeader("X-Purpose"), "preview")
+
+		referer := c.Request.Referer()
+		isConsole := c.Query("from") == "console" ||
+			c.Query("internal") == "1" ||
+			strings.Contains(referer, "/console") ||
+			c.Request.Method == http.MethodHead ||
+			c.Request.Method == http.MethodOptions
+
+		if !isConsole && s.isCallStatEnabled(file.UserID) {
+			if !isPrefetch {
+				s.recordCallStat(file.ID, targetFormat, targetSizeLabel, c)
+			}
+
+			redirectURL := "/api/v1/images/raw/" + strings.TrimPrefix(publicPath, "/")
+			if c.Request.URL.RawQuery != "" {
+				redirectURL += "?" + c.Request.URL.RawQuery
+			}
+
+			c.Header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0")
+			c.Header("Pragma", "no-cache")
+			c.Header("Expires", "0")
+			c.Header("CDN-Cache-Control", "no-store")
+			c.Header("Cloudflare-CDN-Cache-Control", "no-store")
+			c.Redirect(http.StatusFound, redirectURL)
+			return
+		}
+	}
+
 	needsWatermark := file.WatermarkMode == "on"
 	if file.WatermarkMode == "inherit" || file.WatermarkMode == "" {
 		var userSetting model.Setting
@@ -171,20 +281,22 @@ func (s *DispatchService) ServeFile(c *gin.Context) {
 		needsWatermark = false
 	}
 
-	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
 	hasTransformParams := reqW > 0 || reqH > 0 || reqStyle != "" || (requestedFormat != "" && requestedFormat != origExt)
 
 	// Vector images (.svg) and icon containers (.ico) or non-images should bypass raster processing
 	if !file.IsImage || (!needsWatermark && !hasTransformParams) || origExt == "ico" || origExt == "svg" {
-		s.serveDirect(c, file)
+		s.serveDirect(c, file, isRawRedirect)
 		return
 	}
 
-	// 7. Handle Image Processing with 2-Stage Caching
-	s.serveProcessed(c, file, reqW, reqH, reqStyle, requestedFormat, needsWatermark)
+	// 8. Handle Image Processing with 2-Stage Caching
+	s.serveProcessed(c, file, reqW, reqH, reqStyle, requestedFormat, needsWatermark, isRawRedirect)
 }
 
 func (s *DispatchService) isFormatConversionEnabled() bool {
+	if s.db == nil {
+		return true
+	}
 	var setting model.Setting
 	if err := s.db.Where("key = 'enable_format_conversion'").First(&setting).Error; err == nil {
 		return setting.Value != "false" && setting.Value != "0"
@@ -192,24 +304,28 @@ func (s *DispatchService) isFormatConversionEnabled() bool {
 	return true
 }
 
-func (s *DispatchService) isCDNCacheControlEnabled() bool {
-	var setting model.Setting
-	if err := s.db.Where("key = 'cdn_cache_control'").First(&setting).Error; err == nil {
-		return setting.Value == "true"
+func (s *DispatchService) isCallStatEnabled(userID uint) bool {
+	if s.db == nil {
+		return false
+	}
+	var globalSetting model.Setting
+	if err := s.db.Where("key = 'global_call_stat'").First(&globalSetting).Error; err == nil {
+		if globalSetting.Value == "true" {
+			return true
+		}
+	}
+	if userID == 0 {
+		return false
+	}
+	var userSetting model.Setting
+	if err := s.db.Where("key = ?", fmt.Sprintf("user_call_stat_%d", userID)).First(&userSetting).Error; err == nil {
+		return userSetting.Value == "true"
 	}
 	return false
 }
 
-func (s *DispatchService) applyCacheControl(c *gin.Context) {
-	if s.isCDNCacheControlEnabled() {
-		c.Header("Cache-Control", "no-cache")
-	} else {
-		c.Header("Cache-Control", "public, no-cache, must-revalidate")
-	}
-}
-
-func (s *DispatchService) recordCallStat(fileID uint, format, size string) {
-	if fileID == 0 {
+func (s *DispatchService) recordCallStat(fileID uint, format, size string, c *gin.Context) {
+	if fileID == 0 || s.db == nil {
 		return
 	}
 	format = strings.ToLower(strings.TrimSpace(format))
@@ -221,10 +337,17 @@ func (s *DispatchService) recordCallStat(fileID uint, format, size string) {
 		size = "original"
 	}
 
+	realIP := GetRealClientIP(c)
+	visitorID := GenerateVisitorID(c)
+
 	go func() {
 		defer func() {
 			_ = recover()
 		}()
+
+		silentDB := s.db.Session(&gorm.Session{Logger: s.db.Logger.LogMode(glogger.Silent)})
+
+		// 1. Update or create ImageCallStat for PV
 		res := s.db.Model(&model.ImageCallStat{}).
 			Where("file_id = ? AND format = ? AND size = ?", fileID, format, size).
 			Update("count", gorm.Expr("count + 1"))
@@ -234,8 +357,33 @@ func (s *DispatchService) recordCallStat(fileID uint, format, size string) {
 				Format: format,
 				Size:   size,
 				Count:  1,
+				UV:     0,
 			}
-			_ = s.db.Create(&stat).Error
+			_ = silentDB.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "file_id"}, {Name: "format"}, {Name: "size"}},
+				DoUpdates: clause.Assignments(map[string]interface{}{"count": gorm.Expr("image_call_stats.count + 1")}),
+			}).Create(&stat).Error
+		}
+
+		// 2. Track unique visitor for UV
+		var exists int64
+		s.db.Model(&model.ImageCallVisitor{}).
+			Where("file_id = ? AND format = ? AND size = ? AND visitor_id = ?", fileID, format, size, visitorID).
+			Count(&exists)
+		if exists == 0 {
+			vis := model.ImageCallVisitor{
+				FileID:    fileID,
+				Format:    format,
+				Size:      size,
+				VisitorID: visitorID,
+				IP:        realIP,
+			}
+			resVis := silentDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&vis)
+			if resVis.Error == nil && resVis.RowsAffected > 0 {
+				s.db.Model(&model.ImageCallStat{}).
+					Where("file_id = ? AND format = ? AND size = ?", fileID, format, size).
+					Update("uv", gorm.Expr("uv + 1"))
+			}
 		}
 	}()
 }
@@ -247,7 +395,7 @@ func shortHash(h string) string {
 	return h
 }
 
-func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord) {
+func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord, isRawRedirect bool) {
 	mimeType := file.MimeType
 	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
 	if origExt == "ico" && (mimeType == "" || mimeType == "application/octet-stream") {
@@ -255,9 +403,12 @@ func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord) {
 	} else if origExt == "svg" && (mimeType == "" || mimeType == "application/octet-stream") {
 		mimeType = "image/svg+xml"
 	}
-	s.recordCallStat(file.ID, origExt, "original")
 	c.Header("Content-Type", mimeType)
-	s.applyCacheControl(c)
+	if isRawRedirect {
+		c.Header("Cache-Control", "public, max-age=2592000, must-revalidate")
+	} else {
+		c.Header("Cache-Control", "public, no-cache, must-revalidate")
+	}
 	etag := fmt.Sprintf("\"%s-%d\"", shortHash(file.Sha256), file.SignVersion)
 	c.Header("ETag", etag)
 	c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
@@ -292,6 +443,7 @@ func (s *DispatchService) serveProcessed(
 	reqW, reqH int,
 	style, format string,
 	watermark bool,
+	isRawRedirect bool,
 ) {
 	// Find preset
 	var presets []model.ImagePreset
@@ -349,22 +501,6 @@ func (s *DispatchService) serveProcessed(
 
 	needsTransform := (targetW > 0 || targetH > 0) || (targetFormat != origExt)
 
-	targetSizeLabel := "original"
-	if style != "" {
-		targetSizeLabel = style
-	} else if sizeParam := c.Query("size"); sizeParam != "" {
-		targetSizeLabel = strings.ToLower(sizeParam)
-	} else if reqW > 0 || reqH > 0 {
-		if targetW > 0 && targetH > 0 {
-			targetSizeLabel = fmt.Sprintf("%dx%d", targetW, targetH)
-		} else if targetW > 0 {
-			targetSizeLabel = fmt.Sprintf("%dw", targetW)
-		} else if targetH > 0 {
-			targetSizeLabel = fmt.Sprintf("%dh", targetH)
-		}
-	}
-	s.recordCallStat(file.ID, targetFormat, targetSizeLabel)
-
 	// Step 1: Resolve Base Image (with dynamic format conversion / resize cached)
 	var baseBytes []byte
 	var baseMime string
@@ -396,7 +532,7 @@ func (s *DispatchService) serveProcessed(
 			})
 			if err != nil {
 				slog.Warn("Image transform failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-				s.serveDirect(c, file)
+				s.serveDirect(c, file, isRawRedirect)
 				return
 			}
 			s.cache.Put(baseCacheKey, baseCacheExt, baseBytes)
@@ -424,7 +560,11 @@ func (s *DispatchService) serveProcessed(
 	// If no watermark needed: serve base image directly
 	if !watermark {
 		etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-nowm\"", shortHash(file.Sha256), file.SignVersion, targetFormat, targetW, targetH, targetQuality)
-		s.applyCacheControl(c)
+		if isRawRedirect {
+			c.Header("Cache-Control", "public, max-age=2592000, must-revalidate")
+		} else {
+			c.Header("Cache-Control", "public, no-cache, must-revalidate")
+		}
 		c.Header("ETag", etag)
 		c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
 		if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
@@ -502,7 +642,7 @@ func (s *DispatchService) serveProcessed(
 		})
 		if err != nil {
 			slog.Warn("Dynamic watermark processing failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-			s.serveDirect(c, file)
+			s.serveDirect(c, file, isRawRedirect)
 			return
 		}
 
@@ -519,7 +659,11 @@ func (s *DispatchService) serveProcessed(
 	wmCacheExt := "." + targetFormat
 
 	etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-wm\"", shortHash(file.Sha256), file.SignVersion, targetFormat, targetW, targetH, targetQuality)
-	s.applyCacheControl(c)
+	if isRawRedirect {
+		c.Header("Cache-Control", "public, max-age=2592000, must-revalidate")
+	} else {
+		c.Header("Cache-Control", "public, no-cache, must-revalidate")
+	}
 	c.Header("ETag", etag)
 	c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
 
@@ -542,7 +686,7 @@ func (s *DispatchService) serveProcessed(
 	})
 	if err != nil {
 		slog.Warn("Static watermark processing failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-		s.serveDirect(c, file)
+		s.serveDirect(c, file, isRawRedirect)
 		return
 	}
 

@@ -149,6 +149,8 @@ type FileRecord struct {
 	HotlinkMode           string         `gorm:"size:16;default:inherit" json:"hotlink_mode"` // inherit / on / off
 	HotlinkAllowedDomains string         `gorm:"type:text" json:"hotlink_allowed_domains"`
 	SignVersion           int64          `gorm:"default:1" json:"sign_version"`
+	TotalCalls            int64          `gorm:"-" json:"total_calls"`
+	TotalUV               int64          `gorm:"-" json:"total_uv"`
 	CreatedAt             time.Time      `json:"created_at"`
 	UpdatedAt             time.Time      `json:"updated_at"`
 	DeletedAt             gorm.DeletedAt `gorm:"index" json:"-"`
@@ -225,13 +227,25 @@ type PasswordResetToken struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ImageCallStat tracks image access frequency by format and size
+// ImageCallStat tracks image access frequency by format and size (PV and UV)
 type ImageCallStat struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	FileID    uint      `gorm:"index:idx_file_fmt_size,unique;not null" json:"file_id"`
 	Format    string    `gorm:"size:32;index:idx_file_fmt_size,unique;not null;default:'original'" json:"format"`
 	Size      string    `gorm:"size:64;index:idx_file_fmt_size,unique;not null;default:'original'" json:"size"`
-	Count     int64     `gorm:"default:0" json:"count"`
+	Count     int64     `gorm:"default:0" json:"count"` // PV
+	UV        int64     `gorm:"default:0" json:"uv"`    // UV
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ImageCallVisitor tracks unique visitors for images
+type ImageCallVisitor struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	FileID    uint      `gorm:"index:idx_call_visitor,unique;not null" json:"file_id"`
+	Format    string    `gorm:"size:32;index:idx_call_visitor,unique;not null;default:'original'" json:"format"`
+	Size      string    `gorm:"size:64;index:idx_call_visitor,unique;not null;default:'original'" json:"size"`
+	VisitorID string    `gorm:"size:64;index:idx_call_visitor,unique;not null" json:"visitor_id"`
+	IP        string    `gorm:"size:64;not null" json:"ip"`
+	CreatedAt time.Time `json:"created_at"`
 }

@@ -363,6 +363,7 @@ func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
 				&model.Setting{},
 				&model.PasswordResetToken{},
 				&model.ImageCallStat{},
+				&model.ImageCallVisitor{},
 			); err != nil {
 				slog.Error("Failed to migrate target DB during setup", "error", err)
 				c.JSON(http.StatusBadRequest, gin.H{"error": "数据库迁移初始化失败: " + common.SanitizeError(err)})

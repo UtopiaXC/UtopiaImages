@@ -23,37 +23,34 @@
             </template>
           </n-input>
 
-          <!-- Format Filter -->
-          <n-select
-            v-model:value="formatFilter"
-            :options="formatOptions"
+          <!-- Advanced Filter Button -->
+          <n-button
             size="small"
-            style="width: 120px;"
-            @update:value="handleFilterChange"
-          />
+            :type="activeFilterCount > 0 ? 'primary' : 'default'"
+            :secondary="activeFilterCount === 0"
+            @click="showFilterModal = true"
+          >
+            <template #icon>
+              <n-icon :component="FilterOutline" />
+            </template>
+            <span>{{ $t('filter.button') }}</span>
+            <n-badge
+              v-if="activeFilterCount > 0"
+              :value="activeFilterCount"
+              type="info"
+              style="margin-left: 6px;"
+            />
+          </n-button>
 
-          <!-- Storage Policy Filter -->
-          <n-select
-            v-model:value="policyFilter"
-            :options="policyOptions"
+          <!-- Clear Filters Button -->
+          <n-button
+            v-if="activeFilterCount > 0"
             size="small"
-            style="width: 130px;"
-            @update:value="handleFilterChange"
-          />
-
-          <!-- Time Range Filter -->
-          <n-select
-            v-model:value="timeRangeFilter"
-            :options="timeRangeOptions"
-            size="small"
-            style="width: 120px;"
-            @update:value="handleFilterChange"
-          />
-
-          <!-- Temp Link filter -->
-          <n-checkbox v-model:checked="tempLinkOnly" @update:checked="handleFilterChange">
-            {{ $t('adminFiles.filterTempLinks') }}
-          </n-checkbox>
+            quaternary
+            @click="clearAllFilters"
+          >
+            {{ $t('filter.clear') }}
+          </n-button>
         </div>
 
         <!-- Batch Delete Action -->
@@ -71,6 +68,24 @@
             </template>
             {{ $t('adminFiles.confirmBatchDelete', { count: selectedIds.length }) }}
           </n-popconfirm>
+        </div>
+
+        <!-- Active Filter Tags / Chips -->
+        <div v-if="activeFilterChips.length > 0" style="width: 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.05);">
+          <span style="font-size: 12px; color: #888;">{{ $t('filter.activeConditions') }}:</span>
+          <template v-for="chip in activeFilterChips" :key="chip.index">
+            <span v-if="chip.connector" style="font-size: 11px; font-weight: 700; color: #63e2b7; margin: 0 2px;">
+              {{ chip.connector }}
+            </span>
+            <n-tag
+              size="small"
+              closable
+              type="info"
+              @close="removeSingleFilter(chip.index)"
+            >
+              {{ chip.label }}
+            </n-tag>
+          </template>
         </div>
       </div>
     </n-card>
@@ -158,7 +173,7 @@
               </td>
               <td>
                 <n-tag size="tiny" type="info">
-                  {{ file.total_calls || 0 }} {{ $t('adminFiles.callsUnit') }}
+                  {{ file.total_calls || 0 }} PV · {{ file.total_uv || 0 }} UV
                 </n-tag>
               </td>
               <td>
@@ -261,9 +276,14 @@
         <div style="margin-bottom: 20px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
             <h4 style="margin: 0; font-size: 14px; font-weight: 600;">{{ $t('adminFiles.callStats') }}</h4>
-            <n-tag type="info" size="small">
-              {{ $t('adminFiles.totalCalls') }}: {{ detailsData.total_calls || 0 }}
-            </n-tag>
+            <div style="display: flex; gap: 8px;">
+              <n-tag type="info" size="small">
+                PV: {{ detailsData.total_calls || 0 }}
+              </n-tag>
+              <n-tag type="success" size="small">
+                UV: {{ detailsData.total_uv || 0 }}
+              </n-tag>
+            </div>
           </div>
           <div v-if="(detailsData.call_stats || []).length > 0" class="table-responsive">
             <table style="width: 100%; border-collapse: collapse; font-size: 13px; background: rgba(255,255,255,0.02); border-radius: 6px;">
@@ -271,7 +291,8 @@
                 <tr style="border-bottom: 1px solid rgba(255,255,255,0.08); color: #888; text-align: left;">
                   <th style="padding: 8px 12px;">{{ $t('adminFiles.statFormat') }}</th>
                   <th style="padding: 8px 12px;">{{ $t('adminFiles.statSize') }}</th>
-                  <th style="padding: 8px 12px; text-align: right;">{{ $t('adminFiles.statCalls') }}</th>
+                  <th style="padding: 8px 12px; text-align: right;">PV</th>
+                  <th style="padding: 8px 12px; text-align: right;">UV</th>
                 </tr>
               </thead>
               <tbody>
@@ -281,6 +302,7 @@
                   </td>
                   <td style="padding: 8px 12px; color: #ccc;">{{ cs.size }}</td>
                   <td style="padding: 8px 12px; text-align: right; font-weight: 600; color: #63e2b7;">{{ cs.count }}</td>
+                  <td style="padding: 8px 12px; text-align: right; font-weight: 600; color: #70c0e8;">{{ cs.uv || 0 }}</td>
                 </tr>
               </tbody>
             </table>
@@ -316,6 +338,16 @@
         </div>
       </div>
     </n-modal>
+
+    <!-- Advanced Filter Modal -->
+    <FileFilterModal
+      v-model:show="showFilterModal"
+      is-admin
+      :policies="policyOptions"
+      :initial-payload="filterPayload"
+      @apply="onApplyFilter"
+      @reset="onResetFilter"
+    />
   </div>
 </template>
 
@@ -323,9 +355,11 @@
 import { ref, computed, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { SearchOutline } from '@vicons/ionicons5'
+import { SearchOutline, FilterOutline } from '@vicons/ionicons5'
 import { api, getApiErrorMessage } from '../api/client'
 import FileLinksPanel from '../components/FileLinksPanel.vue'
+import FileFilterModal, { type AdvancedFilterPayload } from '../components/FileFilterModal.vue'
+import { formatFilterRuleLabel } from '../utils/filterLabel'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -339,16 +373,14 @@ const isBrowserOnline = () => {
 
 const resolveFileThumbUrl = (file: any) => {
   if (!file) return ''
-  if (file.thumbnail_url) return file.thumbnail_url
-  const cleanPath = (file.public_path || '').replace(/^\/+/, '')
-  return `/${cleanPath}?s=thumb`
+  const base = file.thumbnail_url || `/${(file.public_path || '').replace(/^\/+/, '')}?s=thumb`
+  return base.includes('?') ? `${base}&from=console` : `${base}?from=console`
 }
 
 const resolveFileUrl = (file: any) => {
   if (!file) return ''
-  if (file.url) return file.url
-  const cleanPath = (file.public_path || '').replace(/^\/+/, '')
-  return `/${cleanPath}`
+  const base = file.url || `/${(file.public_path || '').replace(/^\/+/, '')}`
+  return base.includes('?') ? `${base}&from=console` : `${base}?from=console`
 }
 
 const loading = ref(false)
@@ -360,10 +392,52 @@ const pageSize = ref(20)
 
 // Filters
 const search = ref('')
-const formatFilter = ref('all')
-const policyFilter = ref('all')
-const timeRangeFilter = ref('all')
-const tempLinkOnly = ref(false)
+const showFilterModal = ref(false)
+const filterPayload = ref<AdvancedFilterPayload>({ logic: 'and', rules: [] })
+
+const activeFilterCount = computed(() => {
+  return filterPayload.value.rules ? filterPayload.value.rules.length : 0
+})
+
+const activeFilterChips = computed(() => {
+  if (!filterPayload.value || !filterPayload.value.rules) return []
+  return filterPayload.value.rules.map((r, index) => {
+    const pre = r.prefix_parens ? `${r.prefix_parens} ` : ''
+    const suf = r.suffix_parens ? ` ${r.suffix_parens}` : ''
+    const core = formatFilterRuleLabel(r, policyOptions.value, t)
+    return {
+      index,
+      connector: index > 0 ? (filterPayload.value.rules[index - 1]?.connector || 'AND') : '',
+      label: `${pre}${core}${suf}`
+    }
+  })
+})
+
+const onApplyFilter = (payload: AdvancedFilterPayload) => {
+  filterPayload.value = payload
+  page.value = 1
+  loadFiles()
+}
+
+const onResetFilter = () => {
+  filterPayload.value = { logic: 'and', rules: [] }
+  page.value = 1
+  loadFiles()
+}
+
+const removeSingleFilter = (index: number) => {
+  if (filterPayload.value && filterPayload.value.rules) {
+    filterPayload.value.rules.splice(index, 1)
+    page.value = 1
+    loadFiles()
+  }
+}
+
+const clearAllFilters = () => {
+  filterPayload.value = { logic: 'and', rules: [] }
+  page.value = 1
+  loadFiles()
+}
 
 // Selections
 const selectedIds = ref<number[]>([])
@@ -376,26 +450,7 @@ const detailsLoading = ref(false)
 const detailsData = ref<any>(null)
 
 // Storage Policies
-const policyOptions = ref<{ label: string; value: string }[]>([
-  { label: t('adminFiles.filterPolicy') + ': ' + t('common.all'), value: 'all' }
-])
-
-const formatOptions = computed(() => [
-  { label: t('adminFiles.filterFormat') + ': ' + t('common.all'), value: 'all' },
-  { label: 'JPEG / JPG', value: 'jpeg' },
-  { label: 'PNG', value: 'png' },
-  { label: 'WebP', value: 'webp' },
-  { label: 'GIF', value: 'gif' },
-  { label: 'SVG', value: 'svg' },
-  { label: '其他文件', value: 'other' }
-])
-
-const timeRangeOptions = computed(() => [
-  { label: t('adminFiles.filterTime') + ': ' + t('common.all'), value: 'all' },
-  { label: t('files.timeToday'), value: 'today' },
-  { label: t('files.time7d'), value: '7d' },
-  { label: t('files.time30d'), value: '30d' }
-])
+const policyOptions = ref<{ label: string; value: string }[]>([])
 
 const isAllSelected = computed(() => {
   return files.value.length > 0 && files.value.every(f => selectedIds.value.includes(f.id))
@@ -433,17 +488,11 @@ const handleSearchChange = () => {
   }, 350)
 }
 
-const handleFilterChange = () => {
-  page.value = 1
-  loadFiles()
-}
-
 const loadPolicies = async () => {
   try {
     const res = await api.get('/admin/policies')
     const list = res.data || []
     policyOptions.value = [
-      { label: t('adminFiles.filterPolicy') + ': ' + t('common.all'), value: 'all' },
       ...list.map((p: any) => ({ label: p.name, value: String(p.id) }))
     ]
   } catch {}
@@ -457,10 +506,9 @@ const loadFiles = async () => {
       page_size: pageSize.value
     }
     if (search.value.trim()) params.search = search.value.trim()
-    if (formatFilter.value !== 'all') params.format = formatFilter.value
-    if (policyFilter.value !== 'all') params.policy_id = policyFilter.value
-    if (timeRangeFilter.value !== 'all') params.time_range = timeRangeFilter.value
-    if (tempLinkOnly.value) params.has_temp_links = 'true'
+    if (filterPayload.value.rules && filterPayload.value.rules.length > 0) {
+      params.filter_rules = JSON.stringify(filterPayload.value)
+    }
 
     const res = await api.get('/admin/files', { params })
     files.value = res.data.items || []

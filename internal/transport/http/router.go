@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
@@ -240,6 +241,19 @@ func (s *Server) setupRoutes(
 		adminCtrl.RegisterRoutes(api)
 		wmCtrl.RegisterRoutes(api)
 		setCtrl.RegisterRoutes(api)
+
+		api.GET("/images/raw/*filepath", func(c *gin.Context) {
+			if !IsDomainAllowed(c, s.getDB(), s.cfg.Server.BaseURL) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"code":    "UNAUTHORIZED_DOMAIN",
+					"error":   "Domain not allowed",
+					"message": "Access through this domain is not permitted by system domain restrictions",
+				})
+				return
+			}
+			rawParam := strings.TrimPrefix(c.Param("filepath"), "/")
+			s.dispatchService.ServeRawImage(c, rawParam)
+		})
 	}
 
 	// 1. Static assets from embedded Vue 3 SPA

@@ -116,15 +116,17 @@ func (ctrl *SettingsController) GetUserSettings(c *gin.Context) {
 	ctrl.db.Where("owner_id = ? OR owner_id IS NULL", userID).Find(&watermarks)
 
 	resp := gin.H{
-		"watermark_mode":          ctrl.getSettingVal("user_wm_mode_"+strconvUint(userID), "inherit"),
-		"watermark_template_id":   ctrl.getSettingVal("user_wm_tmpl_"+strconvUint(userID), ""),
-		"default_link_format":     ctrl.getSettingVal("user_link_fmt_"+strconvUint(userID), "markdown"),
-		"default_policy_id":       ctrl.getSettingVal("user_default_policy_"+strconvUint(userID), "1"),
-		"hotlink_enabled":         user.HotlinkEnabled,
-		"hotlink_allow_empty":     user.HotlinkAllowEmpty,
-		"hotlink_allowed_domains": user.HotlinkAllowedDomains,
-		"available_policies":      policies,
-		"available_watermarks":    watermarks,
+		"watermark_mode":           ctrl.getSettingVal("user_wm_mode_"+strconvUint(userID), "inherit"),
+		"watermark_template_id":    ctrl.getSettingVal("user_wm_tmpl_"+strconvUint(userID), ""),
+		"default_link_format":      ctrl.getSettingVal("user_link_fmt_"+strconvUint(userID), "markdown"),
+		"default_policy_id":        ctrl.getSettingVal("user_default_policy_"+strconvUint(userID), "1"),
+		"global_call_stat_enabled": ctrl.getSettingVal("global_call_stat", "false") == "true",
+		"call_stat_enabled":        ctrl.getSettingVal("user_call_stat_"+strconvUint(userID), "false") == "true",
+		"hotlink_enabled":          user.HotlinkEnabled,
+		"hotlink_allow_empty":      user.HotlinkAllowEmpty,
+		"hotlink_allowed_domains":  user.HotlinkAllowedDomains,
+		"available_policies":       policies,
+		"available_watermarks":     watermarks,
 	}
 
 	c.JSON(http.StatusOK, resp)
@@ -138,6 +140,7 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 		WatermarkTemplateID   string  `json:"watermark_template_id"`
 		DefaultLinkFormat     string  `json:"default_link_format"`
 		DefaultPolicyID       string  `json:"default_policy_id"`
+		CallStatEnabled       *bool   `json:"call_stat_enabled"`
 		HotlinkEnabled        *bool   `json:"hotlink_enabled"`
 		HotlinkAllowEmpty     *bool   `json:"hotlink_allow_empty"`
 		HotlinkAllowedDomains *string `json:"hotlink_allowed_domains"`
@@ -168,6 +171,13 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 	}
 	if req.DefaultPolicyID != "" {
 		ctrl.setSettingVal("user_default_policy_"+strconvUint(userID), req.DefaultPolicyID)
+	}
+	if req.CallStatEnabled != nil {
+		val := "false"
+		if *req.CallStatEnabled {
+			val = "true"
+		}
+		ctrl.setSettingVal("user_call_stat_"+strconvUint(userID), val)
 	}
 
 	// Update user hotlink settings on model.User
@@ -328,7 +338,7 @@ var allowedSystemSettings = map[string]bool{
 	"allow_registration":        true,
 	"default_register_role_id":  true,
 	"restrict_domains":          true,
-	"cdn_cache_control":         true,
+	"global_call_stat":          true,
 	"smtp_enabled":              true,
 	"smtp_host":                 true,
 	"smtp_port":                 true,
@@ -360,7 +370,7 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 		"hotlink_allowed_domains":   "",
 		"hotlink_action":            "forbidden",
 		"restrict_domains":          "false",
-		"cdn_cache_control":         "false",
+		"global_call_stat":          "false",
 		"log_level":                 appLogger.GetLevel(),
 		"log_permanent_level":       appLogger.GetPermanentLevel(),
 		"log_max_size_mb":           "20",

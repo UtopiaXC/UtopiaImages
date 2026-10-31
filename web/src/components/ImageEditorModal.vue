@@ -477,8 +477,8 @@ const initEditor = () => {
   const cleanPath = (props.file.public_path || props.file.url || '').replace(/^\/+/, '')
   const origin = window.location.origin
   const directUrl = cleanPath.startsWith('http')
-    ? cleanPath
-    : `${origin}/${encodeURI(cleanPath)}?t=${Date.now()}`
+    ? (cleanPath.includes('?') ? `${cleanPath}&from=console` : `${cleanPath}?from=console`)
+    : `${origin}/${encodeURI(cleanPath)}?from=console&t=${Date.now()}`
 
   const loadFromImageElement = (sourceUrl: string, isFallback = false) => {
     const img = new Image()

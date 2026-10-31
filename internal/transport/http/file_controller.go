@@ -436,60 +436,7 @@ func (ctrl *FileController) buildFileLinks(file *model.FileRecord, customBaseURL
 }
 
 func (ctrl *FileController) applyFileFilters(query *gorm.DB, c *gin.Context) *gorm.DB {
-	if search := c.Query("search"); search != "" {
-		query = query.Where("display_name LIKE ? OR public_path LIKE ?", "%"+search+"%", "%"+search+"%")
-	}
-	if isImage := c.Query("is_image"); isImage != "" {
-		query = query.Where("is_image = ?", isImage == "true" || isImage == "1")
-	}
-
-	if format := strings.ToLower(c.Query("format")); format != "" && format != "all" {
-		switch format {
-		case "jpeg", "jpg":
-			query = query.Where("mime_type IN ('image/jpeg', 'image/jpg') OR public_path LIKE '%.jpg' OR public_path LIKE '%.jpeg'")
-		case "png":
-			query = query.Where("mime_type = 'image/png' OR public_path LIKE '%.png'")
-		case "webp":
-			query = query.Where("mime_type = 'image/webp' OR public_path LIKE '%.webp'")
-		case "gif":
-			query = query.Where("mime_type = 'image/gif' OR public_path LIKE '%.gif'")
-		case "svg":
-			query = query.Where("mime_type = 'image/svg+xml' OR public_path LIKE '%.svg'")
-		case "heif", "heic":
-			query = query.Where("mime_type IN ('image/heif', 'image/heic') OR public_path LIKE '%.heif' OR public_path LIKE '%.heic'")
-		case "ico":
-			query = query.Where("mime_type IN ('image/x-icon', 'image/vnd.microsoft.icon') OR public_path LIKE '%.ico'")
-		case "other":
-			query = query.Where("is_image = 0")
-		}
-	}
-
-	if policyID := c.Query("policy_id"); policyID != "" && policyID != "all" {
-		query = query.Where("policy_id = ?", policyID)
-	}
-
-	if wm := c.Query("watermark_mode"); wm != "" && wm != "all" {
-		query = query.Where("watermark_mode = ?", wm)
-	}
-
-	if hl := c.Query("hotlink_mode"); hl != "" && hl != "all" {
-		query = query.Where("hotlink_mode = ?", hl)
-	}
-
-	if timeRange := c.Query("time_range"); timeRange != "" && timeRange != "all" {
-		now := time.Now()
-		switch timeRange {
-		case "today":
-			startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-			query = query.Where("created_at >= ?", startOfDay)
-		case "7d":
-			query = query.Where("created_at >= ?", now.Add(-7*24*time.Hour))
-		case "30d":
-			query = query.Where("created_at >= ?", now.Add(-30*24*time.Hour))
-		}
-	}
-
-	return query
+	return ApplyAdvancedFileFilters(query, ctrl.db, c, false)
 }
 
 func (ctrl *FileController) ListFiles(c *gin.Context) {
@@ -513,6 +460,47 @@ func (ctrl *FileController) ListFiles(c *gin.Context) {
 
 	var files []model.FileRecord
 	query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
+
+	if len(files) > 0 {
+		fileIDs := make([]uint, len(files))
+		for i, f := range files {
+			fileIDs[i] = f.ID
+		}
+		type callResult struct {
+			FileID uint  `gorm:"column:file_id"`
+			Cnt    int64 `gorm:"column:cnt"`
+		}
+		var calls []callResult
+		ctrl.db.Model(&model.ImageCallStat{}).
+			Select("file_id, sum(count) as cnt").
+			Where("file_id IN (?)", fileIDs).
+			Group("file_id").
+			Scan(&calls)
+		callMap := make(map[uint]int64)
+		for _, cr := range calls {
+			callMap[cr.FileID] = cr.Cnt
+		}
+
+		type uvResult struct {
+			FileID uint  `gorm:"column:file_id"`
+			UV     int64 `gorm:"column:uv"`
+		}
+		var uvs []uvResult
+		ctrl.db.Model(&model.ImageCallVisitor{}).
+			Select("file_id, count(distinct visitor_id) as uv").
+			Where("file_id IN (?)", fileIDs).
+			Group("file_id").
+			Scan(&uvs)
+		uvMap := make(map[uint]int64)
+		for _, ur := range uvs {
+			uvMap[ur.FileID] = ur.UV
+		}
+
+		for i := range files {
+			files[i].TotalCalls = callMap[files[i].ID]
+			files[i].TotalUV = uvMap[files[i].ID]
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"total":     total,
@@ -559,12 +547,17 @@ func (ctrl *FileController) GetFile(c *gin.Context) {
 	for _, cs := range callStats {
 		totalCalls += cs.Count
 	}
+	var totalUV int64
+	ctrl.db.Model(&model.ImageCallVisitor{}).Where("file_id = ?", file.ID).Distinct("visitor_id").Count(&totalUV)
+	file.TotalCalls = totalCalls
+	file.TotalUV = totalUV
 
 	c.JSON(http.StatusOK, gin.H{
 		"file":        file,
 		"links":       links,
 		"call_stats":  callStats,
 		"total_calls": totalCalls,
+		"total_uv":    totalUV,
 	})
 }
 

@@ -2,7 +2,7 @@
   <div>
     <!-- Top toolbar & Filters -->
     <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px;">
-      <!-- Row 1: Search, Filter Selects, and View Mode -->
+      <!-- Row 1: Search, Filter Button, and View Mode -->
       <div class="files-toolbar-row" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;">
         <div class="files-filter-group" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; flex: 1;">
           <n-input
@@ -11,52 +11,40 @@
             style="width: 200px;"
             clearable
             @update:value="onFilterChange"
-          />
+          >
+            <template #prefix>
+              <n-icon :component="SearchOutline" />
+            </template>
+          </n-input>
 
-          <!-- Format Filter -->
-          <n-select
-            v-model:value="formatFilter"
-            :options="formatOptions"
+          <!-- Advanced Filter Button -->
+          <n-button
             size="small"
-            style="width: 140px;"
-            @update:value="onFilterChange"
-          />
+            :type="activeFilterCount > 0 ? 'primary' : 'default'"
+            :secondary="activeFilterCount === 0"
+            @click="showFilterModal = true"
+          >
+            <template #icon>
+              <n-icon :component="FilterOutline" />
+            </template>
+            <span>{{ $t('filter.button') }}</span>
+            <n-badge
+              v-if="activeFilterCount > 0"
+              :value="activeFilterCount"
+              type="info"
+              style="margin-left: 6px;"
+            />
+          </n-button>
 
-          <!-- Time Range Filter -->
-          <n-select
-            v-model:value="timeRangeFilter"
-            :options="timeRangeOptions"
+          <!-- Clear Filters Button -->
+          <n-button
+            v-if="activeFilterCount > 0"
             size="small"
-            style="width: 120px;"
-            @update:value="onFilterChange"
-          />
-
-          <!-- Watermark Filter -->
-          <n-select
-            v-model:value="watermarkFilter"
-            :options="watermarkFilterOptions"
-            size="small"
-            style="width: 130px;"
-            @update:value="onFilterChange"
-          />
-
-          <!-- Hotlink Filter -->
-          <n-select
-            v-model:value="hotlinkFilter"
-            :options="hotlinkFilterOptions"
-            size="small"
-            style="width: 130px;"
-            @update:value="onFilterChange"
-          />
-
-          <!-- Policy Filter -->
-          <n-select
-            v-model:value="policyFilter"
-            :options="policyFilterOptions"
-            size="small"
-            style="width: 140px;"
-            @update:value="onFilterChange"
-          />
+            quaternary
+            @click="clearAllFilters"
+          >
+            {{ $t('filter.clear') }}
+          </n-button>
         </div>
 
         <!-- View Mode Selector -->
@@ -69,6 +57,24 @@
             style="width: 120px;"
           />
         </div>
+      </div>
+
+      <!-- Active Filter Tags / Chips -->
+      <div v-if="activeFilterChips.length > 0" style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; background: rgba(255, 255, 255, 0.02); padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.05);">
+        <span style="font-size: 12px; color: #888;">{{ $t('filter.activeConditions') }}:</span>
+        <template v-for="chip in activeFilterChips" :key="chip.index">
+          <span v-if="chip.connector" style="font-size: 11px; font-weight: 700; color: #63e2b7; margin: 0 2px;">
+            {{ chip.connector }}
+          </span>
+          <n-tag
+            size="small"
+            closable
+            type="info"
+            @close="removeSingleFilter(chip.index)"
+          >
+            {{ chip.label }}
+          </n-tag>
+        </template>
       </div>
 
       <!-- Row 2: Select All Actions & Batch Operations -->
@@ -277,6 +283,7 @@
               <th>{{ $t('files.dimensions') }}</th>
               <th>{{ $t('files.mimeType') }}</th>
               <th>{{ $t('files.watermarkSetting') }}</th>
+              <th>{{ $t('files.callStats') }}</th>
               <th>{{ $t('common.createdAt') }}</th>
               <th style="text-align: right;">{{ $t('common.actions') }}</th>
             </tr>
@@ -308,6 +315,11 @@
                 <n-tag v-if="file.watermark_mode === 'on'" type="warning" size="tiny">{{ $t('files.watermarked') }}</n-tag>
                 <n-tag v-else-if="file.watermark_mode === 'off'" size="tiny">{{ $t('common.no') }}</n-tag>
                 <n-tag v-else size="tiny" type="info">{{ $t('upload.watermarkInherit') }}</n-tag>
+              </td>
+              <td>
+                <n-tag size="tiny" type="info">
+                  {{ file.total_calls || 0 }} PV · {{ file.total_uv || 0 }} UV
+                </n-tag>
               </td>
               <td>{{ formatDate(file.created_at) }}</td>
               <td style="text-align: right;">
@@ -401,6 +413,48 @@
     >
       <div v-if="linksTarget" style="margin-top: 6px;">
         <FileLinksPanel :file="linksTarget" :initial-url="baseURL + '/' + linksTarget.public_path" />
+
+        <!-- Call Statistics Section -->
+        <div style="margin-top: 24px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <h4 style="margin: 0; font-size: 14px; font-weight: 600;">{{ $t('files.callStats') }}</h4>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <n-tag type="info" size="small">
+                PV: {{ linksTarget.total_calls || 0 }}
+              </n-tag>
+              <n-tag type="success" size="small">
+                UV: {{ linksTarget.total_uv || 0 }}
+              </n-tag>
+            </div>
+          </div>
+          <div v-if="(linksTarget.call_stats || []).length > 0" class="table-responsive">
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px; background: rgba(255,255,255,0.02); border-radius: 6px;">
+              <thead>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.08); color: #888; text-align: left;">
+                  <th style="padding: 8px 12px;">{{ $t('files.statFormat') }}</th>
+                  <th style="padding: 8px 12px;">{{ $t('files.statSize') }}</th>
+                  <th style="padding: 8px 12px; text-align: right;">PV</th>
+                  <th style="padding: 8px 12px; text-align: right;">UV</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="cs in linksTarget.call_stats" :key="cs.id" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+                  <td style="padding: 8px 12px; font-family: monospace;">
+                    <n-tag size="tiny" type="success">{{ cs.format }}</n-tag>
+                  </td>
+                  <td style="padding: 8px 12px; color: #ccc;">{{ cs.size }}</td>
+                  <td style="padding: 8px 12px; text-align: right; font-weight: 600; color: #63e2b7;">{{ cs.count }}</td>
+                  <td style="padding: 8px 12px; text-align: right; font-weight: 600; color: #70c0e8;">{{ cs.uv || 0 }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else style="color: #777; font-size: 13px; padding: 12px 0; text-align: center;">
+            {{ $t('files.noCallStats') }}
+          </div>
+        </div>
       </div>
     </n-modal>
 
@@ -482,6 +536,15 @@
       :file="imageEditorTarget"
       @saved="handleImageSaved"
     />
+
+    <!-- Advanced Filter Modal -->
+    <FileFilterModal
+      v-model:show="showFilterModal"
+      :policies="policyOptions"
+      :initial-payload="filterPayload"
+      @apply="onApplyFilter"
+      @reset="onResetFilter"
+    />
   </div>
 </template>
 
@@ -489,9 +552,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
+import { SearchOutline, FilterOutline } from '@vicons/ionicons5'
 import { api } from '../api/client'
 import FileLinksPanel from '../components/FileLinksPanel.vue'
 import ImageEditorModal from '../components/ImageEditorModal.vue'
+import FileFilterModal, { type AdvancedFilterPayload } from '../components/FileFilterModal.vue'
+import { formatFilterRuleLabel } from '../utils/filterLabel'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -499,11 +565,8 @@ const { t } = useI18n()
 const files = ref<any[]>([])
 const baseURL = ref(window.location.origin)
 const search = ref('')
-const formatFilter = ref('all')
-const timeRangeFilter = ref('all')
-const watermarkFilter = ref('all')
-const hotlinkFilter = ref('all')
-const policyFilter = ref('all')
+const showFilterModal = ref(false)
+const filterPayload = ref<AdvancedFilterPayload>({ logic: 'and', rules: [] })
 const policies = ref<any[]>([])
 
 const page = ref(1)
@@ -519,44 +582,56 @@ const viewModeOptions = computed(() => [
   { label: t('files.viewList'), value: 'list' }
 ])
 
-// Filter options
-const formatOptions = computed(() => [
-  { label: t('files.allFormats'), value: 'all' },
-  { label: 'JPEG / JPG', value: 'jpeg' },
-  { label: 'PNG', value: 'png' },
-  { label: 'WebP', value: 'webp' },
-  { label: 'GIF', value: 'gif' },
-  { label: 'SVG', value: 'svg' },
-  { label: 'ICO', value: 'ico' },
-  { label: 'HEIF / HEIC', value: 'heif' },
-  { label: t('files.formatOther'), value: 'other' }
-])
+const policyOptions = computed(() =>
+  policies.value.map((p: any) => ({
+    label: `${p.name} (${p.driver})`,
+    value: String(p.id)
+  }))
+)
 
-const policyFilterOptions = computed(() => [
-  { label: t('files.allPolicy'), value: 'all' },
-  ...policies.value.map((p: any) => ({ label: p.name, value: String(p.id) }))
-])
+const activeFilterCount = computed(() => {
+  return filterPayload.value.rules ? filterPayload.value.rules.length : 0
+})
 
-const timeRangeOptions = computed(() => [
-  { label: t('files.allTime'), value: 'all' },
-  { label: t('files.timeToday'), value: 'today' },
-  { label: t('files.time7Days'), value: '7d' },
-  { label: t('files.time30Days'), value: '30d' }
-])
+const activeFilterChips = computed(() => {
+  if (!filterPayload.value || !filterPayload.value.rules) return []
+  return filterPayload.value.rules.map((r, index) => {
+    const pre = r.prefix_parens ? `${r.prefix_parens} ` : ''
+    const suf = r.suffix_parens ? ` ${r.suffix_parens}` : ''
+    const core = formatFilterRuleLabel(r, policyOptions.value, t)
+    return {
+      index,
+      connector: index > 0 ? (filterPayload.value.rules[index - 1]?.connector || 'AND') : '',
+      label: `${pre}${core}${suf}`
+    }
+  })
+})
 
-const watermarkFilterOptions = computed(() => [
-  { label: t('files.allWatermark'), value: 'all' },
-  { label: t('upload.watermarkOn'), value: 'on' },
-  { label: t('upload.watermarkOff'), value: 'off' },
-  { label: t('upload.watermarkInherit'), value: 'inherit' }
-])
+const onApplyFilter = (payload: AdvancedFilterPayload) => {
+  filterPayload.value = payload
+  page.value = 1
+  loadFiles()
+}
 
-const hotlinkFilterOptions = computed(() => [
-  { label: t('files.allHotlink'), value: 'all' },
-  { label: t('files.hotlinkOn'), value: 'on' },
-  { label: t('files.hotlinkOff'), value: 'off' },
-  { label: t('files.hotlinkInherit'), value: 'inherit' }
-])
+const onResetFilter = () => {
+  filterPayload.value = { logic: 'and', rules: [] }
+  page.value = 1
+  loadFiles()
+}
+
+const removeSingleFilter = (index: number) => {
+  if (filterPayload.value && filterPayload.value.rules) {
+    filterPayload.value.rules.splice(index, 1)
+    page.value = 1
+    loadFiles()
+  }
+}
+
+const clearAllFilters = () => {
+  filterPayload.value = { logic: 'and', rules: [] }
+  page.value = 1
+  loadFiles()
+}
 
 const batchWatermarkMenuOptions = computed(() => [
   { label: t('upload.watermarkOn'), key: 'on' },
@@ -627,7 +702,7 @@ const getFileUrl = (file: any, size?: string) => {
   if (!file) return ''
   const cleanPath = (file.public_path || '').replace(/^\/+/, '')
   let url = `/${cleanPath}`
-  const params: string[] = []
+  const params: string[] = ['from=console']
   if (size) params.push(`size=${size}`)
   const v = file.sign_version || (file.updated_at ? new Date(file.updated_at).getTime() : '')
   if (v) params.push(`v=${v}`)
@@ -650,9 +725,20 @@ const handleImageSaved = (savedFile?: any) => {
   loadFiles()
 }
 
-const openLinksModal = (file: any) => {
-  linksTarget.value = file
+const openLinksModal = async (file: any) => {
+  linksTarget.value = { ...file }
   showLinksModal.value = true
+  try {
+    const res = await api.get(`/files/${file.id}`)
+    if (res.data.file) {
+      linksTarget.value = {
+        ...res.data.file,
+        call_stats: res.data.call_stats || [],
+        total_calls: res.data.total_calls || 0,
+        total_uv: res.data.total_uv || 0
+      }
+    }
+  } catch {}
 }
 
 const openEditPropertiesModal = async (file: any) => {
@@ -710,11 +796,9 @@ const handleSelectFiltered = async () => {
   try {
     const params: any = {}
     if (search.value) params.search = search.value
-    if (formatFilter.value !== 'all') params.format = formatFilter.value
-    if (timeRangeFilter.value !== 'all') params.time_range = timeRangeFilter.value
-    if (watermarkFilter.value !== 'all') params.watermark_mode = watermarkFilter.value
-    if (hotlinkFilter.value !== 'all') params.hotlink_mode = hotlinkFilter.value
-    if (policyFilter.value !== 'all') params.policy_id = policyFilter.value
+    if (filterPayload.value && filterPayload.value.rules && filterPayload.value.rules.length > 0) {
+      params.filter_rules = JSON.stringify(filterPayload.value)
+    }
 
     const res = await api.get('/files/ids', { params })
     selectedIds.value = res.data.ids || []
@@ -773,11 +857,9 @@ const loadFiles = async () => {
       page_size: pageSize.value
     }
     if (search.value) params.search = search.value
-    if (formatFilter.value !== 'all') params.format = formatFilter.value
-    if (timeRangeFilter.value !== 'all') params.time_range = timeRangeFilter.value
-    if (watermarkFilter.value !== 'all') params.watermark_mode = watermarkFilter.value
-    if (hotlinkFilter.value !== 'all') params.hotlink_mode = hotlinkFilter.value
-    if (policyFilter.value !== 'all') params.policy_id = policyFilter.value
+    if (filterPayload.value && filterPayload.value.rules && filterPayload.value.rules.length > 0) {
+      params.filter_rules = JSON.stringify(filterPayload.value)
+    }
 
     const res = await api.get('/files', { params })
     files.value = res.data.items || []

@@ -46,7 +46,7 @@
                   v-model:value="form.site.base_url"
                   type="textarea"
                   :autosize="{ minRows: 2, maxRows: 4 }"
-                  placeholder="https://imgs.utopiaxc.com&#10;https://imgs.utopiaxc.cn"
+                  placeholder=""
                 />
                 <span style="font-size: 12px; color: #888;">
                   {{ $t('setup.baseUrlTip') }}
