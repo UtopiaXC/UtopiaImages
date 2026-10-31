@@ -224,3 +224,14 @@ type PasswordResetToken struct {
 	Used      bool      `gorm:"default:false" json:"used"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// ImageCallStat tracks image access frequency by format and size
+type ImageCallStat struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	FileID    uint      `gorm:"index:idx_file_fmt_size,unique;not null" json:"file_id"`
+	Format    string    `gorm:"size:32;index:idx_file_fmt_size,unique;not null;default:'original'" json:"format"`
+	Size      string    `gorm:"size:64;index:idx_file_fmt_size,unique;not null;default:'original'" json:"size"`
+	Count     int64     `gorm:"default:0" json:"count"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

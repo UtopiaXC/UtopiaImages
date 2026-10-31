@@ -19,12 +19,33 @@ export function getApiErrorMessage(error: any): string {
   return error?.response?.data?.message || error?.response?.data?.error || error?.message || 'Operation failed'
 }
 
+let routerInstance: any = null
+
+export function setRouter(router: any) {
+  routerInstance = router
+}
+
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response && error.response.status === 401) {
-      if (window.location.pathname !== '/login' && window.location.pathname !== '/setup') {
-        window.location.href = '/login'
+      const url = error.config?.url || ''
+      // Never intercept auth endpoints, login attempts, setup calls, or probe endpoints
+      const isAuthOrSetupEndpoint =
+        url.includes('/me') ||
+        url.includes('/auth/') ||
+        url.includes('/setup') ||
+        url.includes('/site')
+
+      const currentPath = routerInstance?.currentRoute?.value?.path || window.location.pathname
+      const isPublicView = currentPath === '/login' || currentPath === '/setup'
+
+      if (!isAuthOrSetupEndpoint && !isPublicView) {
+        if (routerInstance) {
+          routerInstance.push('/login')
+        } else {
+          window.location.href = '/login'
+        }
       }
     }
     return Promise.reject(error)

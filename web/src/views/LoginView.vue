@@ -429,9 +429,11 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useMessage } from 'naive-ui'
-import { FingerPrintOutline, CheckmarkCircleOutline, MailOutline, PersonOutline, LockClosedOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
+import { FingerPrintOutline, CheckmarkCircleOutline, MailOutline, PersonOutline, LockClosedOutline } from '@vicons/ionicons5'
 import { api, getApiErrorMessage } from '../api/client'
+import { siteInfo } from '../utils/site'
+import { fetchCurrentUser } from '../utils/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -453,8 +455,14 @@ const cardTitle = computed(() => {
   if (mode.value === 'forgot-2fa') return t('login.lost2FATitle')
   if (mode.value === 'reset-2fa') return t('login.reset2FATitle')
   if (mode.value === 'setup-2fa') return t('login.setup2FATitle')
-  return 'Utopia Images'
+  return siteInfo.value.site_name || 'Utopia Images'
 })
+
+const navigateAfterLogin = async () => {
+  await fetchCurrentUser(true)
+  const target = (route.query.redirect as string) || '/console/upload'
+  router.push(target)
+}
 
 const form = ref({
   username: '',
@@ -568,7 +576,7 @@ const handleLogin = async () => {
       initSetupTOTP()
     } else {
       message.success(t('login.success'))
-      router.push('/console/upload')
+      navigateAfterLogin()
     }
   } catch (err: any) {
     const resData = err.response?.data
@@ -808,7 +816,7 @@ const handleVerifyMFA = async () => {
       remember_me: form.value.remember_me
     })
     message.success(t('login.success'))
-    router.push('/console/upload')
+    navigateAfterLogin()
   } catch (err: any) {
     message.error(getApiErrorMessage(err))
   } finally {
@@ -879,7 +887,7 @@ const handlePasskeyLogin = async () => {
 
     await api.post(`/auth/passkey/login-finish?session_key=${session_key}`, payload)
     message.success(t('login.success'))
-    router.push('/console/upload')
+    navigateAfterLogin()
   } catch (err: any) {
     message.error(getApiErrorMessage(err))
   } finally {

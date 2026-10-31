@@ -192,6 +192,54 @@ func (s *DispatchService) isFormatConversionEnabled() bool {
 	return true
 }
 
+func (s *DispatchService) isCDNCacheControlEnabled() bool {
+	var setting model.Setting
+	if err := s.db.Where("key = 'cdn_cache_control'").First(&setting).Error; err == nil {
+		return setting.Value == "true"
+	}
+	return false
+}
+
+func (s *DispatchService) applyCacheControl(c *gin.Context) {
+	if s.isCDNCacheControlEnabled() {
+		c.Header("Cache-Control", "no-cache")
+	} else {
+		c.Header("Cache-Control", "public, no-cache, must-revalidate")
+	}
+}
+
+func (s *DispatchService) recordCallStat(fileID uint, format, size string) {
+	if fileID == 0 {
+		return
+	}
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		format = "original"
+	}
+	size = strings.ToLower(strings.TrimSpace(size))
+	if size == "" {
+		size = "original"
+	}
+
+	go func() {
+		defer func() {
+			_ = recover()
+		}()
+		res := s.db.Model(&model.ImageCallStat{}).
+			Where("file_id = ? AND format = ? AND size = ?", fileID, format, size).
+			Update("count", gorm.Expr("count + 1"))
+		if res.Error == nil && res.RowsAffected == 0 {
+			stat := model.ImageCallStat{
+				FileID: fileID,
+				Format: format,
+				Size:   size,
+				Count:  1,
+			}
+			_ = s.db.Create(&stat).Error
+		}
+	}()
+}
+
 func shortHash(h string) string {
 	if len(h) >= 16 {
 		return h[:16]
@@ -207,12 +255,9 @@ func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord) {
 	} else if origExt == "svg" && (mimeType == "" || mimeType == "application/octet-stream") {
 		mimeType = "image/svg+xml"
 	}
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
-
+	s.recordCallStat(file.ID, origExt, "original")
 	c.Header("Content-Type", mimeType)
-	c.Header("Cache-Control", "public, no-cache, must-revalidate")
+	s.applyCacheControl(c)
 	etag := fmt.Sprintf("\"%s-%d\"", shortHash(file.Sha256), file.SignVersion)
 	c.Header("ETag", etag)
 	c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
@@ -304,6 +349,22 @@ func (s *DispatchService) serveProcessed(
 
 	needsTransform := (targetW > 0 || targetH > 0) || (targetFormat != origExt)
 
+	targetSizeLabel := "original"
+	if style != "" {
+		targetSizeLabel = style
+	} else if sizeParam := c.Query("size"); sizeParam != "" {
+		targetSizeLabel = strings.ToLower(sizeParam)
+	} else if reqW > 0 || reqH > 0 {
+		if targetW > 0 && targetH > 0 {
+			targetSizeLabel = fmt.Sprintf("%dx%d", targetW, targetH)
+		} else if targetW > 0 {
+			targetSizeLabel = fmt.Sprintf("%dw", targetW)
+		} else if targetH > 0 {
+			targetSizeLabel = fmt.Sprintf("%dh", targetH)
+		}
+	}
+	s.recordCallStat(file.ID, targetFormat, targetSizeLabel)
+
 	// Step 1: Resolve Base Image (with dynamic format conversion / resize cached)
 	var baseBytes []byte
 	var baseMime string
@@ -363,7 +424,7 @@ func (s *DispatchService) serveProcessed(
 	// If no watermark needed: serve base image directly
 	if !watermark {
 		etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-nowm\"", shortHash(file.Sha256), file.SignVersion, targetFormat, targetW, targetH, targetQuality)
-		c.Header("Cache-Control", "public, no-cache, must-revalidate")
+		s.applyCacheControl(c)
 		c.Header("ETag", etag)
 		c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
 		if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
@@ -458,7 +519,7 @@ func (s *DispatchService) serveProcessed(
 	wmCacheExt := "." + targetFormat
 
 	etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-wm\"", shortHash(file.Sha256), file.SignVersion, targetFormat, targetW, targetH, targetQuality)
-	c.Header("Cache-Control", "public, no-cache, must-revalidate")
+	s.applyCacheControl(c)
 	c.Header("ETag", etag)
 	c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
 

@@ -10,8 +10,8 @@
       style="background: #18181c;"
       class="sidebar-layout"
     >
-      <div style="padding: 20px 16px; font-weight: bold; font-size: 18px; color: #63e2b7; text-align: center; letter-spacing: 0.5px;">
-        Utopia Images
+      <div style="padding: 20px 16px; font-weight: bold; font-size: 18px; color: #63e2b7; text-align: center; letter-spacing: 0.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+        {{ siteInfo.site_name || 'Utopia Images' }}
       </div>
       <div style="flex: 1; overflow-y: auto;">
         <n-menu
@@ -52,8 +52,8 @@
       style="background: #18181c;"
     >
       <n-drawer-content :body-content-style="{ padding: '0', display: 'flex', flexDirection: 'column', height: '100%', background: '#18181c' }">
-        <div style="padding: 18px 16px; font-weight: bold; font-size: 18px; color: #63e2b7; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.06);">
-          Utopia Images
+        <div style="padding: 18px 16px; font-weight: bold; font-size: 18px; color: #63e2b7; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.06); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          {{ siteInfo.site_name || 'Utopia Images' }}
         </div>
         <div style="flex: 1; overflow-y: auto;">
           <n-menu
@@ -190,6 +190,8 @@ import {
   FolderOpenOutline
 } from '@vicons/ionicons5'
 import { api } from '../api/client'
+import { siteInfo } from '../utils/site'
+import { clearCurrentUser, currentUser } from '../utils/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -231,7 +233,7 @@ const currentTitle = computed(() => {
   if (route.path.includes('/admin/policies')) return t('nav.adminPolicies')
   if (route.path.includes('/admin/settings')) return t('nav.adminSettings')
   if (route.path.includes('/admin/stats')) return t('nav.adminStats')
-  return 'Utopia Images'
+  return siteInfo.value.site_name || 'Utopia Images'
 })
 
 const isAdmin = computed(() => {
@@ -284,6 +286,7 @@ const handleLogout = async () => {
   try {
     await api.post('/auth/logout')
   } finally {
+    clearCurrentUser()
     router.push('/login')
   }
 }

@@ -273,6 +273,7 @@ import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
+import { markSetupComplete } from '../utils/setup'
 
 const router = useRouter()
 const message = useMessage()
@@ -444,6 +445,7 @@ const handleFinishSetup = async () => {
   loading.value = true
   try {
     await api.post('/setup', form.value)
+    markSetupComplete()
     message.success(t('setup.success'))
     router.push('/login')
   } catch (err: any) {

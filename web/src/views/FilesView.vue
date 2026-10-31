@@ -782,6 +782,9 @@ const loadFiles = async () => {
     const res = await api.get('/files', { params })
     files.value = res.data.items || []
     total.value = res.data.total || 0
+    if (res.data.base_url) {
+      baseURL.value = res.data.base_url
+    }
   } catch {}
 }
 

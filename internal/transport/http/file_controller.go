@@ -553,9 +553,18 @@ func (ctrl *FileController) GetFile(c *gin.Context) {
 	}
 
 	links := ctrl.buildFileLinks(&file)
+	var callStats []model.ImageCallStat
+	ctrl.db.Where("file_id = ?", file.ID).Order("count DESC").Find(&callStats)
+	var totalCalls int64
+	for _, cs := range callStats {
+		totalCalls += cs.Count
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"file":  file,
-		"links": links,
+		"file":        file,
+		"links":       links,
+		"call_stats":  callStats,
+		"total_calls": totalCalls,
 	})
 }
 

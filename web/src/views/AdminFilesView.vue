@@ -94,6 +94,7 @@
               <th>{{ $t('files.fileSize') }}</th>
               <th>{{ $t('files.dimensions') }}</th>
               <th>{{ $t('files.mimeType') }}</th>
+              <th>{{ $t('adminFiles.callStats') }}</th>
               <th>{{ $t('adminFiles.tempLinks') }}</th>
               <th>{{ $t('common.createdAt') }}</th>
               <th style="text-align: right;">{{ $t('common.actions') }}</th>
@@ -101,12 +102,12 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="10" style="text-align: center; padding: 36px 0; color: #888;">
+              <td colspan="11" style="text-align: center; padding: 36px 0; color: #888;">
                 <n-spin size="small" />
               </td>
             </tr>
             <tr v-else-if="files.length === 0">
-              <td colspan="10" style="text-align: center; padding: 40px 0; color: #777;">
+              <td colspan="11" style="text-align: center; padding: 40px 0; color: #777;">
                 {{ $t('files.noFiles') }}
               </td>
             </tr>
@@ -153,6 +154,11 @@
               <td>
                 <n-tag size="tiny" :type="file.is_image ? 'success' : 'default'">
                   {{ file.mime_type }}
+                </n-tag>
+              </td>
+              <td>
+                <n-tag size="tiny" type="info">
+                  {{ file.total_calls || 0 }} {{ $t('adminFiles.callsUnit') }}
                 </n-tag>
               </td>
               <td>
@@ -251,6 +257,39 @@
           />
         </div>
 
+        <!-- Call Statistics Section -->
+        <div style="margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h4 style="margin: 0; font-size: 14px; font-weight: 600;">{{ $t('adminFiles.callStats') }}</h4>
+            <n-tag type="info" size="small">
+              {{ $t('adminFiles.totalCalls') }}: {{ detailsData.total_calls || 0 }}
+            </n-tag>
+          </div>
+          <div v-if="(detailsData.call_stats || []).length > 0" class="table-responsive">
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px; background: rgba(255,255,255,0.02); border-radius: 6px;">
+              <thead>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.08); color: #888; text-align: left;">
+                  <th style="padding: 8px 12px;">{{ $t('adminFiles.statFormat') }}</th>
+                  <th style="padding: 8px 12px;">{{ $t('adminFiles.statSize') }}</th>
+                  <th style="padding: 8px 12px; text-align: right;">{{ $t('adminFiles.statCalls') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="cs in detailsData.call_stats" :key="cs.id" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+                  <td style="padding: 8px 12px; font-family: monospace;">
+                    <n-tag size="tiny" type="success">{{ cs.format }}</n-tag>
+                  </td>
+                  <td style="padding: 8px 12px; color: #ccc;">{{ cs.size }}</td>
+                  <td style="padding: 8px 12px; text-align: right; font-weight: 600; color: #63e2b7;">{{ cs.count }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else style="color: #777; font-size: 13px; padding: 8px 0;">
+            {{ $t('adminFiles.noCallStats') }}
+          </div>
+        </div>
+
         <!-- Temporary Links List -->
         <div>
           <h4 style="margin: 0 0 10px; font-size: 14px; font-weight: 600;">
@@ -300,22 +339,16 @@ const isBrowserOnline = () => {
 
 const resolveFileThumbUrl = (file: any) => {
   if (!file) return ''
+  if (file.thumbnail_url) return file.thumbnail_url
   const cleanPath = (file.public_path || '').replace(/^\/+/, '')
-  const hasLocalhost = file.thumbnail_url && (file.thumbnail_url.includes('localhost') || file.thumbnail_url.includes('127.0.0.1'))
-  if (!file.thumbnail_url || (hasLocalhost && isBrowserOnline())) {
-    return `/${cleanPath}?s=thumb`
-  }
-  return file.thumbnail_url
+  return `/${cleanPath}?s=thumb`
 }
 
 const resolveFileUrl = (file: any) => {
   if (!file) return ''
+  if (file.url) return file.url
   const cleanPath = (file.public_path || '').replace(/^\/+/, '')
-  const hasLocalhost = file.url && (file.url.includes('localhost') || file.url.includes('127.0.0.1'))
-  if (!file.url || (hasLocalhost && isBrowserOnline())) {
-    return `/${cleanPath}`
-  }
-  return file.url
+  return `/${cleanPath}`
 }
 
 const loading = ref(false)

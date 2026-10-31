@@ -40,6 +40,19 @@
             </span>
           </div>
         </n-form-item>
+        <n-form-item :label="$t('adminSettings.restrictDomains')">
+          <div style="display: flex; flex-direction: column; gap: 6px; max-width: 500px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <n-switch v-model:value="restrictDomains" />
+              <span style="font-size: 13px; color: #ccc;">
+                {{ $t('adminSettings.restrictDomainsDesc') }}
+              </span>
+            </div>
+            <span style="font-size: 12px; color: #888;">
+              {{ $t('adminSettings.restrictDomainsTip') }}
+            </span>
+          </div>
+        </n-form-item>
         <n-form-item :label="$t('adminSettings.faviconTitle')">
           <div style="display: flex; align-items: center; gap: 16px;">
             <div
@@ -460,6 +473,28 @@
             </span>
           </div>
         </n-form-item>
+
+        <n-form-item :label="$t('adminSettings.cdnCacheControl')">
+          <div style="display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 600px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <n-switch v-model:value="cdnCacheControl" @update:value="handleCDNCacheToggle" />
+              <span style="font-size: 13px; color: #ccc;">
+                {{ $t('adminSettings.cdnCacheControlDesc') }}
+              </span>
+            </div>
+            <n-alert
+              v-if="cdnCacheControl"
+              type="warning"
+              :title="$t('adminSettings.cdnNoticeTitle')"
+              style="margin-top: 4px;"
+            >
+              {{ $t('adminSettings.cdnNoticeContent') }}
+            </n-alert>
+            <span v-else style="font-size: 12px; color: #888;">
+              {{ $t('adminSettings.cdnCacheControlTip') }}
+            </span>
+          </div>
+        </n-form-item>
       </n-form>
 
       <div style="display: flex; gap: 12px; margin-top: 8px;">
@@ -481,12 +516,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api, getApiErrorMessage } from '../api/client'
+import { setSiteInfo, updateDocumentTitle } from '../utils/site'
 
 const message = useMessage()
+const dialog = useDialog()
 const { t } = useI18n()
 const saving = ref(false)
 const clearingCache = ref(false)
@@ -512,6 +549,8 @@ const settings = ref<any>({
   derived_cache_ttl_days: '0',
   allow_registration: 'false',
   default_register_role_id: '2',
+  restrict_domains: 'false',
+  cdn_cache_control: 'false',
   smtp_enabled: 'false',
   smtp_host: '',
   smtp_port: '587',
@@ -651,6 +690,26 @@ const smtpEnabled = computed({
   set: (v) => { settings.value.smtp_enabled = v ? 'true' : 'false' }
 })
 
+const restrictDomains = computed({
+  get: () => settings.value.restrict_domains === 'true',
+  set: (v) => { settings.value.restrict_domains = v ? 'true' : 'false' }
+})
+
+const cdnCacheControl = computed({
+  get: () => settings.value.cdn_cache_control === 'true',
+  set: (v) => { settings.value.cdn_cache_control = v ? 'true' : 'false' }
+})
+
+const handleCDNCacheToggle = (val: boolean) => {
+  if (val) {
+    dialog.warning({
+      title: t('adminSettings.cdnNoticeTitle'),
+      content: t('adminSettings.cdnNoticeContent'),
+      positiveText: t('common.confirm'),
+    })
+  }
+}
+
 const smtpPort = computed({
   get: () => parseInt(settings.value.smtp_port) || 587,
   set: (v) => { settings.value.smtp_port = String(v) }
@@ -735,6 +794,10 @@ const autoSave = (immediate = false) => {
     saving.value = true
     try {
       await api.post('/admin/settings', settings.value)
+      if (settings.value.site_name) {
+        setSiteInfo({ site_name: settings.value.site_name })
+        updateDocumentTitle(t('nav.adminSettings'))
+      }
     } catch (err: any) {
       message.error(getApiErrorMessage(err))
       if (err.response?.data?.code === 'REGISTRATION_SMTP_REQUIRED') {

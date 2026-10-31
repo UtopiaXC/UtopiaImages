@@ -244,32 +244,42 @@ const selectedDomain = ref<string>(window.location.origin)
 const loadSiteDomains = async () => {
   try {
     const res = await api.get('/site')
+    let domains: string[] = []
     if (res.data.base_urls && Array.isArray(res.data.base_urls) && res.data.base_urls.length > 0) {
-      configuredDomains.value = res.data.base_urls
+      domains = res.data.base_urls
     } else if (res.data.base_url) {
-      configuredDomains.value = [res.data.base_url]
+      domains = [res.data.base_url]
+    }
+    configuredDomains.value = domains
+
+    const curOrigin = (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin.toLowerCase() : ''
+    const match = domains.find(d => {
+      const clean = d.toLowerCase().replace(/\/+$/, '')
+      return clean === curOrigin || clean.replace(/^https?:\/\//, '') === curOrigin.replace(/^https?:\/\//, '')
+    })
+    if (match) {
+      selectedDomain.value = match.replace(/\/+$/, '')
+    } else {
+      selectedDomain.value = window.location.origin
     }
   } catch {}
 }
 
 const domainOptions = computed(() => {
   const set = new Set<string>()
-  const isOnline = window.location.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')
-  if (window.location.origin) {
-    set.add(window.location.origin)
-  }
   const addDomain = (d: string) => {
     if (!d) return
     const clean = d.replace(/\/+$/, '')
-    if (isOnline && (clean.includes('localhost') || clean.includes('127.0.0.1'))) {
-      return // skip localhost on online environments
-    }
     set.add(clean)
   }
+  // Prioritize configured system domains first
+  configuredDomains.value.forEach(addDomain)
   if (props.file?.base_urls && Array.isArray(props.file.base_urls)) {
     props.file.base_urls.forEach(addDomain)
   }
-  configuredDomains.value.forEach(addDomain)
+  if (window.location.origin) {
+    set.add(window.location.origin)
+  }
   return Array.from(set).map((d) => ({
     label: d,
     value: d
@@ -478,4 +488,8 @@ const revokeAllLinks = async () => {
     message.error(err.response?.data?.error || t('common.failed'))
   }
 }
+
+onMounted(() => {
+  loadSiteDomains()
+})
 </script>

@@ -932,6 +932,7 @@ type AdminFileItem struct {
 	URL           string    `json:"url"`
 	ThumbnailURL  string    `json:"thumbnail_url"`
 	TempLinkCount int64     `json:"temp_link_count"`
+	TotalCalls    int64     `json:"total_calls"`
 	User          struct {
 		ID       uint   `json:"id"`
 		Username string `json:"username"`
@@ -1060,6 +1061,23 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 		}
 	}
 
+	callCountMap := make(map[uint]int64)
+	if len(fileIDs) > 0 {
+		type callResult struct {
+			FileID uint  `gorm:"column:file_id"`
+			Cnt    int64 `gorm:"column:cnt"`
+		}
+		var calls []callResult
+		ctrl.db.Model(&model.ImageCallStat{}).
+			Select("file_id, sum(count) as cnt").
+			Where("file_id IN (?)", fileIDs).
+			Group("file_id").
+			Scan(&calls)
+		for _, cr := range calls {
+			callCountMap[cr.FileID] = cr.Cnt
+		}
+	}
+
 	currentBaseURL := ctrl.resolveBaseURL(c)
 	items := make([]AdminFileItem, 0, len(files))
 	for _, f := range files {
@@ -1096,6 +1114,7 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 			URL:           fileURL,
 			ThumbnailURL:  thumbURL,
 			TempLinkCount: linkCountMap[f.ID],
+			TotalCalls:    callCountMap[f.ID],
 		}
 		if u, ok := usersMap[f.UserID]; ok {
 			item.User.ID = u.ID
@@ -1178,6 +1197,19 @@ func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
 		"policy":     policy,
 		"links":      links,
 		"temp_links": tempLinks,
+		"call_stats": func() []model.ImageCallStat {
+			var stats []model.ImageCallStat
+			ctrl.db.Where("file_id = ?", file.ID).Order("count DESC").Find(&stats)
+			return stats
+		}(),
+		"total_calls": func() int64 {
+			var sum *int64
+			ctrl.db.Model(&model.ImageCallStat{}).Where("file_id = ?", file.ID).Select("sum(count)").Scan(&sum)
+			if sum != nil {
+				return *sum
+			}
+			return 0
+		}(),
 	})
 }
 

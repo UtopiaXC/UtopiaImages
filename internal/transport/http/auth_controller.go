@@ -362,6 +362,7 @@ func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
 				&model.RecoveryCode{},
 				&model.Setting{},
 				&model.PasswordResetToken{},
+				&model.ImageCallStat{},
 			); err != nil {
 				slog.Error("Failed to migrate target DB during setup", "error", err)
 				c.JSON(http.StatusBadRequest, gin.H{"error": "数据库迁移初始化失败: " + common.SanitizeError(err)})
@@ -777,22 +778,45 @@ func (ctrl *AuthController) Reset2FA(c *gin.Context) {
 	})
 }
 
+func (ctrl *AuthController) getSiteName() string {
+	var s model.Setting
+	if err := ctrl.db.Where("key = 'site_name'").First(&s).Error; err == nil && s.Value != "" {
+		return s.Value
+	}
+	if ctrl.cfg != nil && ctrl.cfg.Site.Name != "" {
+		return ctrl.cfg.Site.Name
+	}
+	return "Utopia Images"
+}
+
 func (ctrl *AuthController) send2FAResetEmail(toEmail, username, resetLink, token string) error {
-	subject := "[Utopia Images] 两步验证重置请求"
-	body := fmt.Sprintf("您好 %s：\r\n\r\n我们收到了您的两步验证 (2FA) 重置请求。请在 15 分钟内点击以下链接重置 2FA，或在页面输入重置令牌：\r\n重置链接：%s\r\n重置令牌：%s\r\n\r\n重置后两步验证将被解除，您可以使用账号密码直接登录系统。\r\n若您未发起此重置请求，请忽略本邮件。\r\n", username, resetLink, token)
-	return mailer.SendMail(ctrl.cfg.SMTP, toEmail, subject, body)
+	siteName := ctrl.getSiteName()
+	subject, htmlBody, textBody := mailer.Render2FAResetEmail(siteName, username, resetLink, token)
+	smtpCfg := ctrl.cfg.SMTP
+	if smtpCfg.FromName == "" || smtpCfg.FromName == "Utopia Images" {
+		smtpCfg.FromName = siteName
+	}
+	return mailer.SendHTMLEmail(smtpCfg, toEmail, subject, htmlBody, textBody)
 }
 
 func (ctrl *AuthController) sendActivationEmail(toEmail, username, activationLink string) error {
-	subject := "[Utopia Images] 账号激活确认"
-	body := fmt.Sprintf("您好 %s：\r\n\r\n欢迎注册 Utopia Images！\r\n您的账号已成功创建，目前处于冻结状态。请在 24 小时内点击下方链接完成邮箱激活：\r\n%s\r\n\r\n激活完成后，您即可正常登录并使用 Utopia Images 平台。若您未注册过此账号，请忽略此邮件。\r\n", username, activationLink)
-	return mailer.SendMail(ctrl.cfg.SMTP, toEmail, subject, body)
+	siteName := ctrl.getSiteName()
+	subject, htmlBody, textBody := mailer.RenderActivationEmail(siteName, username, activationLink)
+	smtpCfg := ctrl.cfg.SMTP
+	if smtpCfg.FromName == "" || smtpCfg.FromName == "Utopia Images" {
+		smtpCfg.FromName = siteName
+	}
+	return mailer.SendHTMLEmail(smtpCfg, toEmail, subject, htmlBody, textBody)
 }
 
 func (ctrl *AuthController) sendPasswordResetEmail(toEmail, username, resetLink string) error {
-	subject := "[Utopia Images] 密码重置请求"
-	body := fmt.Sprintf("您好 %s：\r\n\r\n我们收到了您的密码重置请求。请在 15 分钟内点击以下链接重置密码：\r\n%s\r\n\r\n若您未发起此重置请求，请忽略本邮件，原账号密码依然安全有效。\r\n", username, resetLink)
-	return mailer.SendMail(ctrl.cfg.SMTP, toEmail, subject, body)
+	siteName := ctrl.getSiteName()
+	subject, htmlBody, textBody := mailer.RenderPasswordResetEmail(siteName, username, resetLink)
+	smtpCfg := ctrl.cfg.SMTP
+	if smtpCfg.FromName == "" || smtpCfg.FromName == "Utopia Images" {
+		smtpCfg.FromName = siteName
+	}
+	return mailer.SendHTMLEmail(smtpCfg, toEmail, subject, htmlBody, textBody)
 }
 
 func (ctrl *AuthController) VerifyMFA(c *gin.Context) {

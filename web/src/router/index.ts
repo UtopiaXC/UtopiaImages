@@ -13,7 +13,11 @@ import AdminFilesView from '../views/AdminFilesView.vue'
 import WatermarksView from '../views/WatermarksView.vue'
 import UserSettingsView from '../views/UserSettingsView.vue'
 import AdminSettingsView from '../views/AdminSettingsView.vue'
-import { api } from '../api/client'
+import { api, setRouter } from '../api/client'
+import { fetchCurrentUser, currentUser } from '../utils/auth'
+import { fetchSiteInfo, updateDocumentTitle } from '../utils/site'
+import { checkSetupStatus, isSetupRequired } from '../utils/setup'
+import { i18n } from '../i18n'
 
 const routes = [
   { path: '/setup', component: SetupView },
@@ -45,31 +49,76 @@ export const router = createRouter({
   routes,
 })
 
-// Navigation guard
+setRouter(router)
+
+let siteInfoFetched = false
+
+// Navigation guard: Authenticate first before deciding which view to render
 router.beforeEach(async (to, from, next) => {
+  // Always fetch site info initially so title and branding are available
+  if (!siteInfoFetched) {
+    siteInfoFetched = true
+    fetchSiteInfo().catch(() => {})
+  }
+
+  // 1. If explicitly navigating to /setup, allow directly
   if (to.path === '/setup') {
     return next()
   }
 
-  try {
-    const res = await api.get('/setup/status')
-    if (res.data.setup_required) {
-      return next('/setup')
-    }
-  } catch {}
+  // 2. Check if setup is required
+  const needsSetup = await checkSetupStatus()
+  if (needsSetup) {
+    return next('/setup')
+  }
 
+  // 3. If navigating to /login
+  if (to.path === '/login') {
+    // If already logged in, redirect to console
+    if (currentUser.value) {
+      return next('/console/upload')
+    }
+    // Otherwise allow viewing login page without triggering /me probe
+    return next()
+  }
+
+  // 4. For protected console routes (or / redirect)
+  const user = currentUser.value || await fetchCurrentUser()
+  if (!user) {
+    return next({
+      path: '/login',
+      query: to.path !== '/console/upload' && to.path !== '/' ? { redirect: to.fullPath } : undefined,
+    })
+  }
+
+  // 5. Check admin role for admin console pages
   if (to.path.startsWith('/console/admin')) {
-    try {
-      const meRes = await api.get('/me')
-      const user = meRes.data
-      const isAdmin = user.role_id === 1 || user.role?.name === 'admin'
-      if (!isAdmin) {
-        return next('/console/upload')
-      }
-    } catch {
-      return next('/login')
+    const isAdmin = user.role_id === 1 || user.role === 'admin' || (user.role && user.role.name === 'admin')
+    if (!isAdmin) {
+      return next('/console/upload')
     }
   }
 
   next()
+})
+
+router.afterEach((to) => {
+  let title = ''
+  // @ts-ignore
+  const t = i18n.global.t
+  if (to.path.includes('/upload')) title = t('nav.upload')
+  else if (to.path.includes('/files')) title = t('nav.files')
+  else if (to.path.includes('/watermarks')) title = t('nav.watermarks')
+  else if (to.path.includes('/tokens')) title = t('nav.tokens')
+  else if (to.path.includes('/settings')) title = t('nav.settings')
+  else if (to.path.includes('/admin/files')) title = t('nav.adminFiles')
+  else if (to.path.includes('/admin/users')) title = t('nav.adminUsers')
+  else if (to.path.includes('/admin/roles')) title = t('nav.adminRoles')
+  else if (to.path.includes('/admin/policies')) title = t('nav.adminPolicies')
+  else if (to.path.includes('/admin/settings')) title = t('nav.adminSettings')
+  else if (to.path.includes('/admin/stats')) title = t('nav.adminStats')
+  else if (to.path === '/login') title = t('login.login')
+  else if (to.path === '/setup') title = t('setup.title')
+
+  updateDocumentTitle(title)
 })

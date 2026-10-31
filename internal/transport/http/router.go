@@ -2,7 +2,9 @@ package http
 
 import (
 	"fmt"
+	"html"
 	"net/http"
+	"regexp"
 	"strconv"
 	"sync"
 
@@ -179,12 +181,23 @@ func (s *Server) setupRoutes(
 	{
 		api.GET("/site", func(c *gin.Context) {
 			db := s.getDB()
-			siteName := s.cfg.Site.Name
-			if siteName == "" {
+			siteName := ""
+			var nameSetting model.Setting
+			if err := db.Where("key = 'site_name'").First(&nameSetting).Error; err == nil && nameSetting.Value != "" {
+				siteName = nameSetting.Value
+			} else if s.cfg != nil && s.cfg.Site.Name != "" {
+				siteName = s.cfg.Site.Name
+			} else {
 				siteName = "Utopia Images"
 			}
-			siteDesc := s.cfg.Site.Description
-			if siteDesc == "" {
+
+			siteDesc := ""
+			var descSetting model.Setting
+			if err := db.Where("key = 'site_description'").First(&descSetting).Error; err == nil && descSetting.Value != "" {
+				siteDesc = descSetting.Value
+			} else if s.cfg != nil && s.cfg.Site.Description != "" {
+				siteDesc = s.cfg.Site.Description
+			} else {
 				siteDesc = "又一个Utopia Images自部署图床"
 			}
 
@@ -234,12 +247,28 @@ func (s *Server) setupRoutes(
 
 	// 2. SPA routes
 	serveIndex := func(c *gin.Context) {
-		html, err := web.ReadIndexHTML()
+		htmlBytes, err := web.ReadIndexHTML()
 		if err != nil {
 			c.String(http.StatusInternalServerError, "Frontend build artifact not found")
 			return
 		}
-		c.Data(http.StatusOK, "text/html; charset=utf-8", html)
+		db := s.getDB()
+		siteName := "Utopia Images"
+		if db != nil {
+			var nameSetting model.Setting
+			if err := db.Where("key = 'site_name'").First(&nameSetting).Error; err == nil && nameSetting.Value != "" {
+				siteName = nameSetting.Value
+			} else if s.cfg != nil && s.cfg.Site.Name != "" {
+				siteName = s.cfg.Site.Name
+			}
+		} else if s.cfg != nil && s.cfg.Site.Name != "" {
+			siteName = s.cfg.Site.Name
+		}
+		htmlStr := string(htmlBytes)
+		re := regexp.MustCompile(`<title>.*?</title>`)
+		htmlStr = re.ReplaceAllString(htmlStr, "<title>"+html.EscapeString(siteName)+"</title>")
+
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(htmlStr))
 	}
 
 	s.engine.GET("/", serveIndex)
@@ -271,7 +300,17 @@ func (s *Server) setupRoutes(
 	// 3. NoRoute handler:
 	// Matches any URL that doesn't start with /api or SPA pages,
 	// checking against the public_path namespace (e.g. /upload/2026/05/23/a.jpg or /alice/upload/2026/05/23/a.jpg)
-	s.engine.NoRoute(s.dispatchService.ServeFile)
+	s.engine.NoRoute(func(c *gin.Context) {
+		if !IsDomainAllowed(c, s.getDB(), s.cfg.Server.BaseURL) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code":    "UNAUTHORIZED_DOMAIN",
+				"error":   "Domain not allowed",
+				"message": "Access through this domain is not permitted by system domain restrictions",
+			})
+			return
+		}
+		s.dispatchService.ServeFile(c)
+	})
 }
 
 func (s *Server) Engine() *gin.Engine {
