@@ -4,18 +4,7 @@
 
 Utopia Images是一个自托管图床系统，集成了图片编辑、水印、多存储策略、多语言、批量导入与路径映射等特性，并且除了图片外，也支持上传其他类型的文件比如CSS与JS。使用相对高效快速的Go语言开发。  
 
-Demo图请见最底部。  
-
----
-
-## 演示 DEMO
-
-> 注：该功能不太好用，暂不推荐使用。我正在尝试用更方便的办法来实现。  
-> 另外本演示使用的源码为最新源码，可能与docker发行版不一致。  
-
-如果希望在线尝试，可以点击下方徽章打开GitHub Codespaces免费尝试（GitHub每个月为每名用户提供120核时免费），需要登录GitHub账号，默认端口2983。  
-
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/UtopiaXC/UtopiaImages)
+在线演示与Demo图请见最底部。
 
 ---
 
@@ -181,7 +170,26 @@ go build -ldflags="-s -w" -o utopia_images ./cmd/utopia_images/main.go
 ## 捐助
 
 请不要在任何渠道以任何方式为本项目付出金钱。  
-如果您想捐助本项目，您可以向慈善组织或开放源代码促进会（开源组织，OSI）捐款，我们会感激不尽。
+如果您想捐助本项目，您可以向慈善组织或开放源代码促进会（开源组织，OSI）捐款，我们会感激不尽。  
+
+---
+
+## 在线演示
+
+> 注：该功能不太好用，暂不推荐使用。我正在尝试用更方便的办法来实现。  
+> 另外本演示使用的源码为最新源码，可能与docker发行版不一致。
+
+如果希望在线尝试，可以点击下方徽章打开GitHub Codespaces免费尝试（GitHub每个月为每名用户提供120核时免费），需要登录GitHub账号，默认端口2983。
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/UtopiaXC/UtopiaImages)
+
+创建了新的Codespace后，将会自动执行拉取代码并编译启动，在编译过程中不需要任何操作。等待终端中出现
+```log
+time=xxx level=INFO msg="Utopia Images server listening" addr=0.0.0.0:2983 mode=release
+```
+类似这样的字样后，点击端口，查看转发地址，点击地球icon，跳转到对应端口，即可访问在线演示Demo。  
+
+---
 
 ## Demo
 ### 面板
