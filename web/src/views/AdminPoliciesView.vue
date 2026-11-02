@@ -182,12 +182,17 @@
         </n-form-item>
 
         <n-form-item :label="$t('adminPolicies.permittedRoles')">
-          <n-select
-            v-model:value="policyForm.role_ids"
-            multiple
-            :options="roleOptions"
-            :placeholder="$t('adminPolicies.rolesPlaceholder')"
-          />
+          <div style="width: 100%;">
+            <n-select
+              v-model:value="policyForm.role_ids"
+              multiple
+              :options="roleOptions"
+              :placeholder="$t('adminPolicies.rolesPlaceholder')"
+            />
+            <div style="font-size: 12px; color: #888; margin-top: 4px;">
+              {{ $t('adminPolicies.guestSinglePolicyTip') }}
+            </div>
+          </div>
         </n-form-item>
 
         <n-form-item :label="$t('adminPolicies.isDefault')">

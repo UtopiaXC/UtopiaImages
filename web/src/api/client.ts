@@ -38,13 +38,14 @@ api.interceptors.response.use(
         url.includes('/site')
 
       const currentPath = routerInstance?.currentRoute?.value?.path || window.location.pathname
-      const isPublicView = currentPath === '/login' || currentPath === '/setup'
+      const publicPaths = ['/usr/login', '/stp', '/usr/upload', '/usr/square', '/usr/gallery', '/', '/login', '/setup', '/upload', '/square', '/gallery']
+      const isPublicView = publicPaths.includes(currentPath)
 
       if (!isAuthOrSetupEndpoint && !isPublicView) {
         if (routerInstance) {
-          routerInstance.push('/login')
+          routerInstance.push('/usr/login')
         } else {
-          window.location.href = '/login'
+          window.location.href = '/usr/login'
         }
       }
     }

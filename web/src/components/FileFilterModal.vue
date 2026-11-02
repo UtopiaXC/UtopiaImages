@@ -142,6 +142,17 @@
               />
             </template>
 
+            
+            <!-- 3.5 Public Mode Select -->
+            <template v-else-if="rule.field === 'public_mode'">
+              <n-select
+                v-model:value="rule.value"
+                :options="publicModeValueOptions"
+                size="small"
+                style="width: 100%;"
+              />
+            </template>
+
             <!-- 4. Policy Select -->
             <template v-else-if="rule.field === 'policy_id'">
               <n-select
@@ -507,6 +518,7 @@ const fieldOptions = computed(() => {
     { label: t('filter.fieldName'), value: 'display_name' },
     { label: t('filter.fieldPath'), value: 'public_path' },
     { label: t('filter.fieldSha256'), value: 'sha256' },
+    { label: t('filter.fieldPublicMode'), value: 'public_mode' },
   ]
   if (props.isAdmin) {
     list.push({ label: t('filter.fieldUploader'), value: 'uploader' })
@@ -529,6 +541,13 @@ const watermarkValueOptions = computed(() => [
   { label: t('upload.watermarkInherit'), value: 'inherit' },
   { label: t('upload.watermarkOn'), value: 'on' },
   { label: t('upload.watermarkOff'), value: 'off' }
+])
+
+
+const publicModeValueOptions = computed(() => [
+  { label: t('filter.publicModeInherit'), value: 'inherit' },
+  { label: t('filter.publicModePublic'), value: 'public' },
+  { label: t('filter.publicModePrivate'), value: 'private' }
 ])
 
 const hotlinkValueOptions = computed(() => [
@@ -726,7 +745,18 @@ const removeRule = (idx: number) => {
   form.value.rules.splice(idx, 1)
 }
 
-const presetButtons = computed(() => [
+const presetButtons = computed(() => {
+  const list = []
+  if (props.isAdmin) {
+    list.push({
+      key: 'guest',
+      label: t('filter.presetGuest'),
+      tip: t('filter.presetGuestTip'),
+      rule: { field: 'uploader', op: 'eq', value: 'guest' }
+    })
+  }
+  return [
+    ...list,
   { key: 'today', label: t('filter.presetToday'), tip: t('filter.presetToday'), rule: { field: 'created_at', op: 'today' } },
   { key: 'large', label: t('filter.presetLarge'), tip: t('filter.presetLargeTip'), rule: { field: 'size', op: 'gt', value: 10, unit: 'MB' } },
   { key: 'wm', label: t('filter.presetWatermarked'), tip: t('filter.presetWatermarked'), rule: { field: 'watermark_mode', op: 'eq', value: 'on' } },
@@ -737,7 +767,8 @@ const presetButtons = computed(() => [
   { key: 'non_images', label: t('filter.presetNonImages'), tip: t('filter.fieldTypeTip'), rule: { field: 'is_image', op: 'non_image' } },
   { key: 'portrait', label: t('filter.presetPortrait'), tip: t('filter.presetPortraitTip'), rule: { field: 'dimensions', op: 'portrait', sub_type: 'aspect_ratio' } },
   { key: 'landscape', label: t('filter.presetLandscape'), tip: t('filter.presetLandscapeTip'), rule: { field: 'dimensions', op: 'landscape', sub_type: 'aspect_ratio' } },
-])
+  ]
+})
 
 const applyPreset = (presetRule: any) => {
   if (form.value.rules.length > 0) {

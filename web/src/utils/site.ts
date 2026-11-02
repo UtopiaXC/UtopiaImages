@@ -10,6 +10,9 @@ export interface SiteInfo {
   allow_registration?: boolean
   captcha_provider?: string
   favicon?: string
+  enable_guest_upload?: boolean
+  enable_square?: boolean
+  default_open_page?: string
 }
 
 export const siteInfo = ref<SiteInfo>({

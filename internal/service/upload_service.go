@@ -55,6 +55,7 @@ type UploadOptions struct {
 	DisplayName         string
 	WatermarkMode       string // inherit / on / off
 	WatermarkTemplateID *uint
+	PublicMode          string // inherit / public / private
 }
 
 func (s *UploadService) getMaxSingleFileSize() int64 {
@@ -232,6 +233,9 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	if displayName == "" {
 		displayName = originalFilename
 	}
+	if opts.PublicMode == "" {
+		opts.PublicMode = "inherit"
+	}
 
 	// 7. Create Database File Record
 	fileRecord := &model.FileRecord{
@@ -250,6 +254,7 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		SourceSize:          0,
 		WatermarkMode:       opts.WatermarkMode,
 		WatermarkTemplateID: opts.WatermarkTemplateID,
+		PublicMode:          opts.PublicMode,
 		CreatedAt:           time.Now(),
 		UpdatedAt:           time.Now(),
 	}

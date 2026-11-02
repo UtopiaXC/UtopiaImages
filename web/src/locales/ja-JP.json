@@ -23,10 +23,14 @@
     "details": "詳細",
     "unlimited": "無制限",
     "failed": "失敗",
-    "days": "日"
+    "days": "日",
+    "none": "なし",
+    "noData": "データがありません",
+    "loadFailed": "読み込みに失敗しました",
+    "updatedAt": "更新日時"
   },
   "nav": {
-    "upload": "画像アップロード",
+    "upload": "ファイルアップロード",
     "files": "画像管理",
     "watermarks": "透かし管理",
     "tokens": "APIトークン",
@@ -36,7 +40,8 @@
     "adminSettings": "システム設定",
     "adminStats": "ダッシュボード",
     "adminRoles": "ロール管理",
-    "adminFiles": "全画像管理"
+    "adminFiles": "全画像管理",
+    "adminWatermarks": "透かし管理"
   },
   "setup": {
     "title": "初期設定",
@@ -53,7 +58,7 @@
     "success": "管理者アカウントを作成しました。ログインしてください",
     "failed": "初期設定に失敗しました",
     "validation": "管理者の認証情報をすべて入力してください",
-    "stepSite": "サイト基本情報",
+    "stepSite": "サイト情報",
     "stepDb": "データベース設定",
     "stepSmtp": "メール通知サービス",
     "stepAdmin": "管理者アカウント",
@@ -185,7 +190,8 @@
     "manualSecret": "またはシークレットキーを手動入力：",
     "verifyAndComplete": "認証してログイン完了",
     "bindPasskeyDesc": "現在の端末の生体認証（Windows Hello / Touch ID / セキュリティキー）を登録します。",
-    "bindPasskeyBtn": "端末の Passkey を登録してログイン"
+    "bindPasskeyBtn": "端末の Passkey を登録してログイン",
+    "login": "ログイン"
   },
   "upload": {
     "title": "ファイルアップロード",
@@ -244,7 +250,9 @@
     "archiveUploading": "アーカイブをアップロード中...",
     "archiveProcessing": "アップロード完了。サーバーが展開・メタデータ生成処理を行っています...",
     "cancelImportAndClear": "キャンセルしてキャッシュをクリア",
-    "chunkModeNotice": "元のファイルが大きすぎるため、分割アップロードを使用して転送されます。"
+    "chunkModeNotice": "元のファイルが大きすぎるため、分割アップロードを使用して転送されます。",
+    "success": "アップロード成功",
+    "failed": "アップロード失敗"
   },
   "files": {
     "title": "画像ギャラリー",
@@ -326,7 +334,17 @@
     "statusExpired": "期限切れ",
     "statusRevoked": "失効済み",
     "revokeLink": "失効",
-    "confirmRevokeOne": "この一時リンクを失効させますか？失効後は即座にアクセスできなくなります。"
+    "confirmRevokeOne": "この一時リンクを失効させますか？失効後は即座にアクセスできなくなります。",
+    "publicMode": "公開状態",
+    "publicInherit": "デフォルトに従う",
+    "publicOn": "公開",
+    "publicOff": "非公開",
+    "publicTip": "公開画像はスクエアの写真ウォールに表示されます",
+    "totalFiles": "すべてのファイル",
+    "searchPlaceholder": "ファイル名を検索...",
+    "detailsTitle": "画像詳細・外部リンク",
+    "updatedAt": "更新日時",
+    "countText": "合計 {count} 件のファイル"
   },
   "watermarks": {
     "title": "透かしテンプレート管理",
@@ -412,7 +430,14 @@
     "edit": "編集",
     "confirmDelete": "この透かしテンプレートを削除してもよろしいですか？",
     "adaptiveColor": "文字色の自動調整",
-    "adaptiveColorTip": "背景の明暗に応じてコントラスト色を動的に計算し、画像の視認性を保ちます"
+    "adaptiveColorTip": "背景の明暗に応じてコントラスト色を動的に計算し、画像の視認性を保ちます",
+    "systemWatermarks": "システム透かし",
+    "systemTemplates": "システム透かし",
+    "cloneToMine": "マイトランプレートにコピー",
+    "cloneSuccess": "システム透かしをマイトランプレートにコピーしました",
+    "systemWatermarksDesc": "管理者によって作成されたシステム透かし。コピーしてカスタマイズできます。",
+    "previewPlaceholder": "プレビューなし",
+    "emptySystemTemplates": "システムプリセットの透かしはありません。ご自身で作成してください。"
   },
   "tokens": {
     "title": "APIアクセストークン",
@@ -500,12 +525,30 @@
     "allowEmpty": "空の Referer を許可",
     "allowedDomains": "許可ドメインのホワイトリスト",
     "allowedDomainsPlaceholder": "1行に1ドメインを入力してください。例：\nexample.com\n*.mysite.com",
-    "hotlinkSaved": "直リンク防止設定を保存しました"
+    "hotlinkSaved": "直リンク防止設定を保存しました",
+    "userDefaultPublic": "デフォルトで画像を公開",
+    "userDefaultPublicTip": "新しくアップロードした画像をデフォルトでスクエアに公開します",
+    "createPasskeyModalTitle": "パスキーの新規作成",
+    "createPasskeyModalDesc": "管理しやすいようにパスキーに名前を付けてください。",
+    "passkeyNameLabel": "パスキー名",
+    "passkeyNamePlaceholder": "例：MacBook Pro / iPhone / YubiKey",
+    "editPasskeyModalTitle": "パスキーの名前変更",
+    "passkeyNameRequired": "パスキー名は必須です",
+    "passkeyUpdatedSuccess": "パスキー名を変更しました",
+    "guestSinglePolicyTip": "ゲストロールはストレージポリシーを1つだけ設定できます",
+    "passkeyCancelled": "パスキー操作がキャンセルされました",
+    "tabDefaultView": "デフォルト画面",
+    "defaultLandingTitle": "サイトのデフォルト画面設定",
+    "defaultLandingLabel": "サイトを開いた時",
+    "defaultLandingTip": "サイトのトップページに直接アクセスした際に表示する画面。ビジター画面はサイト設定に従い、コンソール画面はファイルアップロードを直接開きます。",
+    "landingVisitor": "ビジター画面",
+    "landingConsole": "コンソール画面",
+    "landingSaved": "デフォルト画面設定を保存しました"
   },
   "adminSettings": {
     "title": "システム設定",
-    "subtitle": "サイト基本情報、技術制限、セキュリティポリシー、キャッシュを管理します。",
-    "siteInfo": "サイト基本情報",
+    "subtitle": "サイト情報、技術上限、セキュリティポリシー、キャッシュを管理します。",
+    "siteInfo": "サイト情報",
     "siteName": "サイト名",
     "siteDesc": "サイト説明",
     "defaultDescription": "自建画像・静的アセットホスティングプラットフォーム",
@@ -527,7 +570,7 @@
     "daysUnit": "日",
     "force2fa": "2段階認証を全ユーザーに強制",
     "force2faTip": "有効にすると、すべてのユーザーは2段階認証を設定するまで利用できません",
-    "cacheTitle": "派生画像キャッシュ",
+    "cacheTitle": "キャッシュ",
     "cacheDesc": "サムネイル、透かし画像、WebP変換画像はディスクにキャッシュされ、配信が高速化されます。",
     "cacheUsage": "現在のキャッシュ消費量",
     "cacheUsageUnlimited": "無制限",
@@ -559,7 +602,7 @@
     "backupUnits": "世代",
     "logMaxAge": "ログ保持期間",
     "logMaxAgeTip": "この日数を経過した過去のログファイルは自動で削除されます",
-    "registrationTitle": "ユーザー登録と権限",
+    "registrationTitle": "ユーザーアクセス",
     "allowRegistration": "ユーザー自主登録を許可",
     "allowRegistrationTip": "有効にするとログイン画面から新規アカウント登録が可能になります",
     "defaultRegisterRole": "新規登録ユーザーのデフォルトロール",
@@ -583,14 +626,37 @@
     "defaultFormat": "推奨デフォルトフォーマット",
     "convertQuality": "画像変換品質",
     "hotlinkTitle": "直リンク防止セキュリティ設定",
-    "enableHotlink": "直リンク保護を有効化",
+    "enableHotlink": "全体直リンク防止を有効化",
     "enableHotlinkTip": "ホワイトリストに登録されたウェブサイトからの参照のみ許可します",
     "allowEmptyReferer": "空の Referer アクセスを許可",
     "allowEmptyRefererTip": "アドレスバーでの直接オープンや参照元のないリクエストを許可します",
     "allowedDomains": "許可ドメインホワイトリスト",
     "allowedDomainsPlaceholder": "*.example.com などのワイルドカードに対応。改行またはカンマ区切り",
     "hotlinkAction": "未認証アクセスの処理",
-    "actionForbidden": "アクセスを拒否して 403 を返却"
+    "actionForbidden": "アクセスを拒否して 403 を返却",
+    "tabSystem": "システム",
+    "tabFile": "ファイル",
+    "tabSecurity": "セキュリティ",
+    "tabUser": "ユーザー",
+    "systemSecurityTitle": "システムセキュリティ",
+    "formatConversionTitle": "フォーマット変換",
+    "enableGuestUpload": "ゲストアップロード",
+    "enableGuestUploadTip": "未ログインの訪問者が直接画像をアップロードできるようにします",
+    "guestModalTitle": "ゲストアップロードの無効化",
+    "guestModalContent": "ゲストがアップロードした画像とファイルを保持しますか？",
+    "guestKeepData": "保持する",
+    "guestCleanData": "すべて削除",
+    "enableSquare": "スクエア",
+    "enableSquareTip": "公開画像を閲覧できる広場機能を有効化します",
+    "defaultOpenPage": "デフォルト表示ページ",
+    "defaultOpenPageTip": "未ログインの訪問者がアクセスした際に表示するページ",
+    "pageGuestUpload": "ゲストアップロード",
+    "pageSquare": "スクエア",
+    "pageGuestGallery": "ゲストギャラリー",
+    "pageLogin": "ログイン",
+    "guestWatermark": "ゲスト透かし",
+    "guestWatermarkTip": "ゲストがアップロードした画像に自動適用するシステム透かし。",
+    "noWatermark": "透かしなし"
   },
   "adminUsers": {
     "title": "ユーザー管理",
@@ -626,7 +692,8 @@
     "confirmBan": "このユーザーのアカウントを停止しますか？停止されたユーザーは即座にログアウトされ、ログインできなくなります。",
     "confirmUnfreeze": "このユーザーの停止/凍結状態を解除しますか？解除後、正常にログインできるようになります。",
     "banSuccess": "アカウントを停止しました",
-    "unfreezeSuccess": "アカウントの停止を解除しました"
+    "unfreezeSuccess": "アカウントの停止を解除しました",
+    "guestUserLocked": "ゲストアカウントは編集・削除できません"
   },
   "adminPolicies": {
     "title": "ストレージポリシー",
@@ -667,7 +734,8 @@
     "tokenTimestamp": "タイムスタンプ",
     "tokenSha256": "SHA256ハッシュ",
     "userSelectPlaceholder": "空欄の場合はサイト共通のパブリックポリシー",
-    "rootTip": "サイトのトップレベルルートパスに直接マッピングし、ポリシープレフィックスを付与しません"
+    "rootTip": "サイトのトップレベルルートパスに直接マッピングし、ポリシープレフィックスを付与しません",
+    "guestSinglePolicyTip": "ゲストロールはストレージポリシーを1つだけ設定できます"
   },
   "adminStats": {
     "title": "システムダッシュボードと監視",
@@ -740,7 +808,8 @@
     "CANNOT_DELETE_SELF": "現在ログイン中のアカウントは削除できません",
     "ERR_AUTH_USER_INACTIVE": "アカウントが無効または凍結されています。認証メールを確認するか管理者に連絡してください。",
     "ERR_REGISTRATION_SMTP_REQUIRED": "SMTPメールサービスが設定されていないため、新規登録は利用できません。",
-    "ERR_ACTIVATION_TOKEN_INVALID": "認証リンクが無効か有効期限が切れています。"
+    "ERR_ACTIVATION_TOKEN_INVALID": "認証リンクが無効か有効期限が切れています。",
+    "AUTH_USERNAME_INVALID": "無効なユーザー名形式または予約語です。長さは3文字より大きい必要があります（4〜32文字）"
   },
   "editor": {
     "title": "画像編集",
@@ -819,7 +888,17 @@
     "systemRole": "システムロール",
     "saveSuccess": "ロールを保存しました",
     "deleteSuccess": "ロールを削除しました",
-    "confirmDelete": "このロールを削除してもよろしいですか？"
+    "confirmDelete": "このロールを削除してもよろしいですか？",
+    "allowedFormats": "許可ファイル形式",
+    "allowedFormatsPlaceholder": "例: jpg,png,gif (空白で無制限)",
+    "allowedFormatsTip": "拡張子は半角カンマで区切ります。空白の場合は無制限です",
+    "maxSingleFileSize": "単一ファイル上限",
+    "maxSingleFileSizeTip": "単一ファイルの上限MB、0でシステム設定に従う",
+    "guestRoleLocked": "ゲストロールは削除できません",
+    "guestSinglePolicyTip": "ゲストロールはストレージポリシーを1つだけ設定できます",
+    "createSuccess": "ロールを作成しました",
+    "updateSuccess": "ロールを更新しました",
+    "quotaTip": "0 は無制限"
   },
   "adminFiles": {
     "title": "全画像ファイル管理",
@@ -941,6 +1020,47 @@
     "time7Days": "過去 7 日間",
     "time30Days": "過去 30 日間",
     "timeThisMonth": "今月",
-    "all": "すべて"
+    "all": "すべて",
+    "presetGuest": "ゲスト",
+    "presetGuestTip": "ゲストがアップロードしたファイルを絞り込み",
+    "fieldPublicMode": "公開状態",
+    "publicModeInherit": "デフォルトに従う",
+    "publicModePublic": "公開",
+    "publicModePrivate": "非公開"
+  },
+  "square": {
+    "title": "スクエア",
+    "empty": "公開画像がありません",
+    "photoWall": "写真ウォール",
+    "copySuccess": "コピーしました",
+    "wallCount": "合計 {count} 件のファイル"
+  },
+  "guest": {
+    "uploadTitle": "ゲストアップロード",
+    "galleryTitle": "ゲストギャラリー",
+    "empty": "ゲストがアップロードした画像はありません",
+    "loginBtn": "ログイン",
+    "consoleBtn": "ダッシュボード",
+    "onlyImagesTip": "ゲストは画像ファイルのみアップロード可能、1ファイル最大5MB",
+    "galleryCount": "合計 {count} 件のファイル"
+  },
+  "adminWatermarks": {
+    "title": "透かし管理",
+    "subtitle": "全ユーザーおよびシステムの透かしテンプレートを管理します。",
+    "createSystem": "新規システム透かし",
+    "type": "タイプ",
+    "systemType": "システム",
+    "userType": "ユーザー",
+    "owner": "所有者",
+    "setAsSystem": "システム透かしに設定",
+    "unsetSystem": "システム透かしを解除",
+    "setAsSystemSuccess": "システム透かしに設定しました",
+    "unsetSystemSuccess": "システム透かしを解除しました",
+    "deleteConfirm": "この透かしテンプレートを削除してもよろしいですか？",
+    "searchPlaceholder": "透かし名、所有者、またはテキストを検索...",
+    "totalCount": "合計 {count} 件の透かし"
+  },
+  "auth": {
+    "usernameMinLength": "ユーザー名は3文字以上である必要があります"
   }
 }

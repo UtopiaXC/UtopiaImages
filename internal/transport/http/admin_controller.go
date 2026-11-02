@@ -90,6 +90,12 @@ func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
 		admin.POST("/presets", ctrl.CreatePreset)
 		admin.DELETE("/presets/:id", ctrl.DeletePreset)
 
+		// All-site Watermarks management
+		admin.GET("/watermarks", ctrl.ListAllWatermarks)
+		admin.POST("/watermarks", ctrl.CreateAdminWatermark)
+		admin.PATCH("/watermarks/:id", ctrl.UpdateAdminWatermark)
+		admin.DELETE("/watermarks/:id", ctrl.DeleteAdminWatermark)
+
 		// Database status
 		admin.GET("/database/status", ctrl.GetDatabaseStatus)
 	}
@@ -290,7 +296,7 @@ func (ctrl *AdminController) CreateUser(c *gin.Context) {
 
 	req.Username = strings.ToLower(strings.TrimSpace(req.Username))
 	if !pathclean.IsValidUsername(req.Username) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名格式不合法或属于系统保留字，仅允许 3~32 位字母、数字、下划线及连字符"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名格式不合法或属于系统保留字，长度必须大于3位（4~32位），仅允许字母、数字、下划线及连字符"})
 		return
 	}
 
@@ -303,6 +309,13 @@ func (ctrl *AdminController) CreateUser(c *gin.Context) {
 
 	if req.RoleID == 0 {
 		req.RoleID = 2 // Default regular user role
+	}
+	var targetRole model.Role
+	if err := ctrl.db.First(&targetRole, req.RoleID).Error; err == nil {
+		if targetRole.Name == "guest" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将用户角色设置为游客组"})
+			return
+		}
 	}
 
 	hash, err := auth.HashPassword(req.Password)
@@ -342,6 +355,11 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 	var user model.User
 	if err := ctrl.db.Preload("Role").Where("id = ?", userID).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	if user.Username == "guest" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客账户不可被编辑"})
 		return
 	}
 
@@ -390,6 +408,13 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 		updates["email"] = &em
 	}
 	if req.RoleID > 0 {
+		var targetRole model.Role
+		if err := ctrl.db.First(&targetRole, req.RoleID).Error; err == nil {
+			if targetRole.Name == "guest" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将用户角色设置为游客组"})
+				return
+			}
+		}
 		updates["role_id"] = req.RoleID
 	}
 	if req.Status != "" {
@@ -436,6 +461,10 @@ func (ctrl *AdminController) DeleteUser(c *gin.Context) {
 
 	var targetUser model.User
 	if err := ctrl.db.Preload("Role").First(&targetUser, id).Error; err == nil {
+		if targetUser.Username == "guest" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "游客账户不可被删除"})
+			return
+		}
 		if targetUser.RoleID == 1 || (targetUser.Role != nil && targetUser.Role.Name == "admin") {
 			common.RespondError(c, http.StatusBadRequest, "CANNOT_DELETE_ADMIN")
 			return
@@ -494,6 +523,10 @@ func (ctrl *AdminController) BanUser(c *gin.Context) {
 		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
 		return
 	}
+	if user.Username == "guest" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客账户不可被封禁"})
+		return
+	}
 	if user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin") {
 		common.RespondError(c, http.StatusBadRequest, "CANNOT_BAN_ADMIN")
 		return
@@ -539,15 +572,17 @@ func (ctrl *AdminController) UnfreezeUser(c *gin.Context) {
 // -------------------------------------------------------------
 
 type RoleDTO struct {
-	ID          uint      `json:"id"`
-	Name        string    `json:"name"`
-	DisplayName string    `json:"display_name"`
-	QuotaBytes  int64     `json:"quota_bytes"`
-	IsSystem    bool      `json:"is_system"`
-	UserCount   int64     `json:"user_count"`
-	PolicyIDs   []uint    `json:"policy_ids"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID                  uint      `json:"id"`
+	Name                string    `json:"name"`
+	DisplayName         string    `json:"display_name"`
+	QuotaBytes          int64     `json:"quota_bytes"`
+	AllowedFormats      string    `json:"allowed_formats"`
+	MaxSingleFileSizeMB int64     `json:"max_single_file_size_mb"`
+	IsSystem            bool      `json:"is_system"`
+	UserCount           int64     `json:"user_count"`
+	PolicyIDs           []uint    `json:"policy_ids"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 func (ctrl *AdminController) ListRoles(c *gin.Context) {
@@ -565,15 +600,17 @@ func (ctrl *AdminController) ListRoles(c *gin.Context) {
 		}
 
 		dtos = append(dtos, RoleDTO{
-			ID:          r.ID,
-			Name:        r.Name,
-			DisplayName: r.DisplayName,
-			QuotaBytes:  r.QuotaBytes,
-			IsSystem:    r.IsSystem,
-			UserCount:   uCount,
-			PolicyIDs:   policyIDs,
-			CreatedAt:   r.CreatedAt,
-			UpdatedAt:   r.UpdatedAt,
+			ID:                  r.ID,
+			Name:                r.Name,
+			DisplayName:         r.DisplayName,
+			QuotaBytes:          r.QuotaBytes,
+			AllowedFormats:      r.AllowedFormats,
+			MaxSingleFileSizeMB: r.MaxSingleFileSizeMB,
+			IsSystem:            r.IsSystem,
+			UserCount:           uCount,
+			PolicyIDs:           policyIDs,
+			CreatedAt:           r.CreatedAt,
+			UpdatedAt:           r.UpdatedAt,
 		})
 	}
 
@@ -582,23 +619,44 @@ func (ctrl *AdminController) ListRoles(c *gin.Context) {
 
 func (ctrl *AdminController) CreateRole(c *gin.Context) {
 	var req struct {
-		Name        string `json:"name" binding:"required"`
-		DisplayName string `json:"display_name" binding:"required"`
-		QuotaBytes  int64  `json:"quota_bytes"`
-		PolicyIDs   []uint `json:"policy_ids"`
+		Name                string `json:"name" binding:"required"`
+		DisplayName         string `json:"display_name" binding:"required"`
+		QuotaBytes          int64  `json:"quota_bytes"`
+		AllowedFormats      string `json:"allowed_formats"`
+		MaxSingleFileSizeMB int64  `json:"max_single_file_size_mb"`
+		PolicyIDs           []uint `json:"policy_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	var sysSetting model.Setting
+	sysLimitMB := int64(50)
+	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
+		if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
+			sysLimitMB = v
+		}
+	}
+	if req.MaxSingleFileSizeMB > sysLimitMB {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限 (%d MB)", sysLimitMB)})
+		return
+	}
+
+	if req.Name == "guest" && len(req.PolicyIDs) != 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客角色组必须且只能绑定一个存储策略"})
+		return
+	}
+
 	role := model.Role{
-		Name:        req.Name,
-		DisplayName: req.DisplayName,
-		QuotaBytes:  req.QuotaBytes,
-		IsSystem:    false,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		Name:                req.Name,
+		DisplayName:         req.DisplayName,
+		QuotaBytes:          req.QuotaBytes,
+		AllowedFormats:      strings.TrimSpace(req.AllowedFormats),
+		MaxSingleFileSizeMB: req.MaxSingleFileSizeMB,
+		IsSystem:            false,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
 	}
 
 	if err := ctrl.db.Create(&role).Error; err != nil {
@@ -622,9 +680,11 @@ func (ctrl *AdminController) UpdateRole(c *gin.Context) {
 	}
 
 	var req struct {
-		DisplayName string `json:"display_name"`
-		QuotaBytes  *int64 `json:"quota_bytes"`
-		PolicyIDs   []uint `json:"policy_ids"`
+		DisplayName         string  `json:"display_name"`
+		QuotaBytes          *int64  `json:"quota_bytes"`
+		AllowedFormats      *string `json:"allowed_formats"`
+		MaxSingleFileSizeMB *int64  `json:"max_single_file_size_mb"`
+		PolicyIDs           []uint  `json:"policy_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -637,6 +697,32 @@ func (ctrl *AdminController) UpdateRole(c *gin.Context) {
 	}
 	if req.QuotaBytes != nil {
 		updates["quota_bytes"] = *req.QuotaBytes
+	}
+	if req.AllowedFormats != nil {
+		updates["allowed_formats"] = strings.TrimSpace(*req.AllowedFormats)
+	}
+	if req.MaxSingleFileSizeMB != nil {
+		if *req.MaxSingleFileSizeMB > 0 {
+			var sysSetting model.Setting
+			sysLimitMB := int64(50)
+			if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
+				if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
+					sysLimitMB = v
+				}
+			}
+			if *req.MaxSingleFileSizeMB > sysLimitMB {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限 (%d MB)", sysLimitMB)})
+				return
+			}
+		}
+		updates["max_single_file_size_mb"] = *req.MaxSingleFileSizeMB
+	}
+
+	if role.Name == "guest" && req.PolicyIDs != nil {
+		if len(req.PolicyIDs) != 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "游客角色组必须且只能绑定一个存储策略"})
+			return
+		}
 	}
 
 	ctrl.db.Model(&role).Updates(updates)
@@ -661,7 +747,7 @@ func (ctrl *AdminController) DeleteRole(c *gin.Context) {
 		return
 	}
 
-	if role.IsSystem || role.Name == "admin" {
+	if role.IsSystem || role.Name == "admin" || role.Name == "guest" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "System administrator role cannot be deleted"})
 		return
 	}
@@ -772,6 +858,10 @@ func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
 	}
 
 	for _, rid := range req.RoleIDs {
+		var guestRole model.Role
+		if ctrl.db.Where("name = 'guest'").First(&guestRole).Error == nil && rid == guestRole.ID {
+			ctrl.db.Where("role_id = ?", guestRole.ID).Delete(&model.RolePolicy{})
+		}
 		ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
 	}
 
@@ -824,6 +914,29 @@ func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
 
 	// Update role policy associations
 	if req.RoleIDs != nil {
+		var guestRole model.Role
+		hasGuestRole := ctrl.db.Where("name = 'guest'").First(&guestRole).Error == nil
+		guestInReq := false
+		for _, rid := range req.RoleIDs {
+			if hasGuestRole && rid == guestRole.ID {
+				guestInReq = true
+				break
+			}
+		}
+		if guestInReq {
+			ctrl.db.Where("role_id = ? AND policy_id != ?", guestRole.ID, policy.ID).Delete(&model.RolePolicy{})
+		} else if hasGuestRole {
+			var currentOnThisPolicy int64
+			ctrl.db.Model(&model.RolePolicy{}).Where("role_id = ? AND policy_id = ?", guestRole.ID, policy.ID).Count(&currentOnThisPolicy)
+			if currentOnThisPolicy > 0 {
+				var otherPolicyCount int64
+				ctrl.db.Model(&model.RolePolicy{}).Where("role_id = ? AND policy_id != ?", guestRole.ID, policy.ID).Count(&otherPolicyCount)
+				if otherPolicyCount == 0 {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "游客角色组必须且只能绑定一个存储策略，不能直接解除其仅有的策略"})
+					return
+				}
+			}
+		}
 		ctrl.db.Where("policy_id = ?", policy.ID).Delete(&model.RolePolicy{})
 		for _, rid := range req.RoleIDs {
 			ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
@@ -1216,4 +1329,168 @@ func (ctrl *AdminController) BatchDeleteSiteFiles(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"deleted": deletedCount})
+}
+
+type AdminWatermarkDTO struct {
+	ID        uint      `json:"id"`
+	OwnerID   *uint     `json:"owner_id"`
+	OwnerName string    `json:"owner_name"`
+	IsSystem  bool      `json:"is_system"`
+	Name      string    `json:"name"`
+	Layers    string    `json:"layers"`
+	Version   int64     `json:"version"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (ctrl *AdminController) ListAllWatermarks(c *gin.Context) {
+	var templates []model.WatermarkTemplate
+	ctrl.db.Order("id DESC").Find(&templates)
+
+	userIDs := make([]uint, 0)
+	for _, t := range templates {
+		if t.OwnerID != nil {
+			userIDs = append(userIDs, *t.OwnerID)
+		}
+	}
+	userMap := make(map[uint]string)
+	if len(userIDs) > 0 {
+		var users []model.User
+		ctrl.db.Where("id IN ?", userIDs).Find(&users)
+		for _, u := range users {
+			displayName := u.Nickname
+			if displayName == "" {
+				displayName = u.Username
+			}
+			userMap[u.ID] = displayName
+		}
+	}
+
+	dtos := make([]AdminWatermarkDTO, 0, len(templates))
+	for _, t := range templates {
+		ownerName := "系统"
+		if t.OwnerID != nil {
+			if name, ok := userMap[*t.OwnerID]; ok {
+				ownerName = name
+			} else {
+				ownerName = fmt.Sprintf("User #%d", *t.OwnerID)
+			}
+		}
+		isSys := t.IsSystem || t.OwnerID == nil
+		dtos = append(dtos, AdminWatermarkDTO{
+			ID:        t.ID,
+			OwnerID:   t.OwnerID,
+			OwnerName: ownerName,
+			IsSystem:  isSys,
+			Name:      t.Name,
+			Layers:    t.Layers,
+			Version:   t.Version,
+			CreatedAt: t.CreatedAt,
+			UpdatedAt: t.UpdatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, dtos)
+}
+
+func (ctrl *AdminController) CreateAdminWatermark(c *gin.Context) {
+	var req struct {
+		Name   string `json:"name" binding:"required"`
+		Layers string `json:"layers" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "水印名称不能为空"})
+		return
+	}
+
+	var count int64
+	ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND owner_id IS NULL", req.Name).Count(&count)
+	if count > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "系统水印名称已存在"})
+		return
+	}
+
+	tmpl := model.WatermarkTemplate{
+		Name:      req.Name,
+		Layers:    req.Layers,
+		OwnerID:   nil,
+		IsSystem:  true,
+		Version:   1,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := ctrl.db.Create(&tmpl).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, tmpl)
+}
+
+func (ctrl *AdminController) UpdateAdminWatermark(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var tmpl model.WatermarkTemplate
+	if err := ctrl.db.Where("id = ?", id).First(&tmpl).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark not found"})
+		return
+	}
+
+	if tmpl.OwnerID != nil || !tmpl.IsSystem {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "仅允许编辑系统水印，用户私有水印不可在此编辑"})
+		return
+	}
+
+	var req struct {
+		Name   string `json:"name"`
+		Layers string `json:"layers"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]any{
+		"updated_at": time.Now(),
+		"version":    gorm.Expr("version + 1"),
+	}
+	if req.Name != "" {
+		trimmed := strings.TrimSpace(req.Name)
+		var count int64
+		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ? AND owner_id IS NULL", trimmed, id).Count(&count)
+		if count > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "系统水印名称已存在"})
+			return
+		}
+		updates["name"] = trimmed
+	}
+	if req.Layers != "" {
+		updates["layers"] = req.Layers
+	}
+
+	ctrl.db.Model(&tmpl).Updates(updates)
+	ctrl.db.Where("id = ?", id).First(&tmpl)
+
+	// Invalidate client keys for affected files
+	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ?", tmpl.ID).Update("sign_version", gorm.Expr("sign_version + 1"))
+
+	c.JSON(http.StatusOK, tmpl)
+}
+
+func (ctrl *AdminController) DeleteAdminWatermark(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	res := ctrl.db.Where("id = ?", id).Delete(&model.WatermarkTemplate{})
+	if res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark not found"})
+		return
+	}
+	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ?", id).Updates(map[string]any{
+		"watermark_template_id": nil,
+		"sign_version":          gorm.Expr("sign_version + 1"),
+	})
+	c.JSON(http.StatusOK, gin.H{"message": "Watermark template deleted"})
 }

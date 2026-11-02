@@ -33,6 +33,10 @@ type Server struct {
 	dispatchService *service.DispatchService
 }
 
+func (s *Server) GetDB() *gorm.DB {
+	return s.getDB()
+}
+
 func (s *Server) getDB() *gorm.DB {
 	s.dbMu.RLock()
 	defer s.dbMu.RUnlock()
@@ -115,6 +119,7 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 	adminController := NewAdminController(db, uploadService, cfg.Server.BaseURL, derivedCache)
 	watermarkController := NewWatermarkController(db, processor, derivedCache)
 	settingsController := NewSettingsController(db, derivedCache, cfg, configPath, passkeyManager)
+	settingsController.SetUploadService(uploadService)
 
 	r := gin.New()
 	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
@@ -221,18 +226,39 @@ func (s *Server) setupRoutes(
 				fav = defaultFaviconSVG
 			}
 
+			var guestUploadSetting, squareSetting, defaultPageSetting model.Setting
+			db.Where("key = ?", "enable_guest_upload").First(&guestUploadSetting)
+			db.Where("key = ?", "enable_square").First(&squareSetting)
+			db.Where("key = ?", "default_open_page").First(&defaultPageSetting)
+
+			enableGuestUpload := guestUploadSetting.Value == "true" || guestUploadSetting.Value == "1"
+			enableSquare := squareSetting.Value == "true" || squareSetting.Value == "1"
+			defaultOpenPage := defaultPageSetting.Value
+			if defaultOpenPage == "" {
+				if enableGuestUpload {
+					defaultOpenPage = "guest_upload"
+				} else if enableSquare {
+					defaultOpenPage = "square"
+				} else {
+					defaultOpenPage = "login"
+				}
+			}
+
 			baseUrls := GetConfiguredBaseURLs(c, db, s.cfg.Server.BaseURL)
 			detectedBaseURL := ResolveBaseURL(c, db, s.cfg.Server.BaseURL)
 
 			c.JSON(http.StatusOK, gin.H{
-				"site_name":          siteName,
-				"description":        siteDesc,
-				"version":            config.Version,
-				"base_url":           detectedBaseURL,
-				"base_urls":          baseUrls,
-				"allow_registration": allowReg,
-				"captcha_provider":   provider,
-				"favicon":            fav,
+				"site_name":           siteName,
+				"description":         siteDesc,
+				"version":             config.Version,
+				"base_url":            detectedBaseURL,
+				"base_urls":           baseUrls,
+				"allow_registration":  allowReg,
+				"captcha_provider":    provider,
+				"favicon":             fav,
+				"enable_guest_upload": enableGuestUpload,
+				"enable_square":       enableSquare,
+				"default_open_page":   defaultOpenPage,
 			})
 		})
 
@@ -257,7 +283,9 @@ func (s *Server) setupRoutes(
 	}
 
 	// 1. Static assets from embedded Vue 3 SPA
+	s.engine.StaticFS("/ast", web.AstFS())
 	s.engine.StaticFS("/assets", web.AssetsFS())
+	s.engine.StaticFS("/asset", web.AssetsFS())
 
 	// 2. SPA routes
 	serveIndex := func(c *gin.Context) {
@@ -286,8 +314,14 @@ func (s *Server) setupRoutes(
 	}
 
 	s.engine.GET("/", serveIndex)
+	s.engine.GET("/stp", serveIndex)
+	s.engine.GET("/usr/*filepath", serveIndex)
+	s.engine.GET("/dsh/*filepath", serveIndex)
 	s.engine.GET("/setup", serveIndex)
 	s.engine.GET("/login", serveIndex)
+	s.engine.GET("/upload", serveIndex)
+	s.engine.GET("/square", serveIndex)
+	s.engine.GET("/gallery", serveIndex)
 	s.engine.GET("/console/*filepath", serveIndex)
 	serveFavicon := func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")

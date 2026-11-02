@@ -1,32 +1,50 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import SetupView from '../views/SetupView.vue'
-import LoginView from '../views/LoginView.vue'
-import DashboardLayout from '../views/DashboardLayout.vue'
-import UploadView from '../views/UploadView.vue'
-import FilesView from '../views/FilesView.vue'
-import TokensView from '../views/TokensView.vue'
-import AdminUsersView from '../views/AdminUsersView.vue'
-import AdminRolesView from '../views/AdminRolesView.vue'
-import AdminPoliciesView from '../views/AdminPoliciesView.vue'
-import AdminStatsView from '../views/AdminStatsView.vue'
-import AdminFilesView from '../views/AdminFilesView.vue'
-import WatermarksView from '../views/WatermarksView.vue'
-import UserSettingsView from '../views/UserSettingsView.vue'
-import AdminSettingsView from '../views/AdminSettingsView.vue'
+const SetupView = () => import('../views/SetupView.vue')
+const LoginView = () => import('../views/LoginView.vue')
+const DashboardLayout = () => import('../views/DashboardLayout.vue')
+const UploadView = () => import('../views/UploadView.vue')
+const FilesView = () => import('../views/FilesView.vue')
+const TokensView = () => import('../views/TokensView.vue')
+const AdminUsersView = () => import('../views/AdminUsersView.vue')
+const AdminRolesView = () => import('../views/AdminRolesView.vue')
+const AdminPoliciesView = () => import('../views/AdminPoliciesView.vue')
+const AdminStatsView = () => import('../views/AdminStatsView.vue')
+const AdminFilesView = () => import('../views/AdminFilesView.vue')
+const WatermarksView = () => import('../views/WatermarksView.vue')
+const AdminWatermarksView = () => import('../views/AdminWatermarksView.vue')
+const UserSettingsView = () => import('../views/UserSettingsView.vue')
+const AdminSettingsView = () => import('../views/AdminSettingsView.vue')
+const GuestUploadView = () => import('../views/GuestUploadView.vue')
+const SquareView = () => import('../views/SquareView.vue')
+const GuestGalleryView = () => import('../views/GuestGalleryView.vue')
+
 import { api, setRouter } from '../api/client'
-import { fetchCurrentUser, currentUser } from '../utils/auth'
-import { fetchSiteInfo, updateDocumentTitle } from '../utils/site'
+import { fetchCurrentUser, currentUser, fetchUserPreferences } from '../utils/auth'
+import { fetchSiteInfo, updateDocumentTitle, siteInfo } from '../utils/site'
 import { checkSetupStatus, isSetupRequired } from '../utils/setup'
 import { i18n } from '../i18n'
 
 const routes = [
-  { path: '/setup', component: SetupView },
-  { path: '/login', component: LoginView },
+  { path: '/stp', component: SetupView },
+  { path: '/setup', redirect: '/stp' },
+
+  { path: '/usr/login', component: LoginView },
+  { path: '/login', redirect: '/usr/login' },
+
+  { path: '/usr/upload', component: GuestUploadView },
+  { path: '/upload', redirect: '/usr/upload' },
+
+  { path: '/usr/square', component: SquareView },
+  { path: '/square', redirect: '/usr/square' },
+
+  { path: '/usr/gallery', component: GuestGalleryView },
+  { path: '/gallery', redirect: '/usr/gallery' },
+
   {
-    path: '/console',
+    path: '/dsh',
     component: DashboardLayout,
     children: [
-      { path: '', redirect: '/console/upload' },
+      { path: '', redirect: '/dsh/upload' },
       { path: 'upload', component: UploadView },
       { path: 'files', component: FilesView },
       { path: 'watermarks', component: WatermarksView },
@@ -37,11 +55,21 @@ const routes = [
       { path: 'admin/roles', component: AdminRolesView },
       { path: 'admin/policies', component: AdminPoliciesView },
       { path: 'admin/settings', component: AdminSettingsView },
+      { path: 'admin/watermarks', component: AdminWatermarksView },
       { path: 'admin/stats', component: AdminStatsView },
     ],
   },
-  { path: '/', redirect: '/console/upload' },
-  { path: '/:pathMatch(.*)*', redirect: '/console/upload' },
+  {
+    path: '/console/:pathMatch(.*)*',
+    redirect: (to: any) => `/dsh/${to.params.pathMatch || 'upload'}`,
+  },
+  { path: '/console', redirect: '/dsh/upload' },
+
+  {
+    path: '/',
+    component: { render: () => null },
+  },
+  { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
 export const router = createRouter({
@@ -51,51 +79,103 @@ export const router = createRouter({
 
 setRouter(router)
 
-let siteInfoFetched = false
-
-// Navigation guard: Authenticate first before deciding which view to render
+// Navigation guard
 router.beforeEach(async (to, from, next) => {
-  // Always fetch site info initially so title and branding are available
-  if (!siteInfoFetched) {
-    siteInfoFetched = true
-    fetchSiteInfo().catch(() => {})
-  }
+  const site = await fetchSiteInfo().catch(() => siteInfo.value)
 
-  // 1. If explicitly navigating to /setup, allow directly
-  if (to.path === '/setup') {
+  // 1. Setup check
+  if (to.path === '/stp' || to.path === '/setup') {
     return next()
   }
-
-  // 2. Check if setup is required
   const needsSetup = await checkSetupStatus()
   if (needsSetup) {
-    return next('/setup')
+    return next('/stp')
   }
 
-  // 3. If navigating to /login
-  if (to.path === '/login') {
-    // If already logged in, redirect to console
-    if (currentUser.value) {
-      return next('/console/upload')
+  // 2. Public views check
+  const publicPaths = ['/usr/upload', '/usr/square', '/usr/gallery', '/upload', '/square', '/gallery']
+  if (publicPaths.includes(to.path)) {
+    if ((to.path === '/usr/upload' || to.path === '/upload') && !site.enable_guest_upload && !currentUser.value) {
+      return next('/usr/login')
     }
-    // Otherwise allow viewing login page without triggering /me probe
+    if ((to.path === '/usr/gallery' || to.path === '/gallery') && !site.enable_guest_upload && !currentUser.value) {
+      return next('/usr/login')
+    }
+    if ((to.path === '/usr/square' || to.path === '/square') && !site.enable_square && !currentUser.value) {
+      return next('/usr/login')
+    }
     return next()
   }
 
-  // 4. For protected console routes (or / redirect)
+  // 3. Login view check
+  if (to.path === '/usr/login' || to.path === '/login') {
+    if (currentUser.value) {
+      return next('/dsh/upload')
+    }
+    return next()
+  }
+
+  // 4. Root / path redirection
+  if (to.path === '/') {
+    // If guest upload or square is enabled
+    if (site.enable_guest_upload || site.enable_square) {
+      // Check user preference if user is logged in
+      const user = currentUser.value || await fetchCurrentUser().catch(() => null)
+      if (user) {
+        const prefs = await fetchUserPreferences().catch(() => null)
+        const userLanding = prefs?.default_landing_view || 'visitor'
+        if (userLanding === 'console') {
+          return next('/dsh/upload')
+        }
+      }
+      // Follow system default_open_page
+      const defPage = site.default_open_page
+      if (defPage === 'guest_upload' && site.enable_guest_upload) {
+        return next('/usr/upload')
+      }
+      if (defPage === 'guest_gallery' && site.enable_guest_upload) {
+        return next('/usr/gallery')
+      }
+      if (defPage === 'square' && site.enable_square) {
+        return next('/usr/square')
+      }
+      if (defPage === 'login') {
+        return next('/usr/login')
+      }
+      // Fallback
+      if (site.enable_square) {
+        return next('/usr/square')
+      }
+      if (site.enable_guest_upload) {
+        return next('/usr/upload')
+      }
+      return next('/usr/login')
+    }
+
+    if (currentUser.value) {
+      return next('/dsh/upload')
+    }
+    const user = await fetchCurrentUser().catch(() => null)
+    if (user) {
+      return next('/dsh/upload')
+    }
+    return next('/usr/login')
+  }
+
+  // 5. Protected console routes
   const user = currentUser.value || await fetchCurrentUser()
   if (!user) {
     return next({
-      path: '/login',
-      query: to.path !== '/console/upload' && to.path !== '/' ? { redirect: to.fullPath } : undefined,
+      path: '/usr/login',
+      query: to.path !== '/dsh/upload' && to.path !== '/' ? { redirect: to.fullPath } : undefined,
     })
   }
 
-  // 5. Check admin role for admin console pages
-  if (to.path.startsWith('/console/admin')) {
+  // 6. Admin routes check
+  if (to.path.startsWith('/dsh/admin') || to.path.startsWith('/console/admin')) {
     const isAdmin = user.role_id === 1 || user.role === 'admin' || (user.role && user.role.name === 'admin')
     if (!isAdmin) {
-      return next('/console/upload')
+      return next('/dsh/upload')
     }
   }
 
@@ -106,7 +186,8 @@ router.afterEach((to) => {
   let title = ''
   // @ts-ignore
   const t = i18n.global.t
-  if (to.path.includes('/upload')) title = t('nav.upload')
+  if (to.path.includes('/admin/watermarks')) title = t('adminWatermarks.title')
+  else if (to.path.includes('/upload')) title = t('nav.upload')
   else if (to.path.includes('/files')) title = t('nav.files')
   else if (to.path.includes('/watermarks')) title = t('nav.watermarks')
   else if (to.path.includes('/tokens')) title = t('nav.tokens')
@@ -117,8 +198,10 @@ router.afterEach((to) => {
   else if (to.path.includes('/admin/policies')) title = t('nav.adminPolicies')
   else if (to.path.includes('/admin/settings')) title = t('nav.adminSettings')
   else if (to.path.includes('/admin/stats')) title = t('nav.adminStats')
-  else if (to.path === '/login') title = t('login.login')
-  else if (to.path === '/setup') title = t('setup.title')
+  else if (to.path.includes('/login')) title = t('login.login')
+  else if (to.path.includes('/setup') || to.path.includes('/stp')) title = t('setup.title')
+  else if (to.path.includes('/square')) title = t('square.title')
+  else if (to.path.includes('/gallery')) title = t('guest.galleryTitle')
 
   updateDocumentTitle(title)
 })

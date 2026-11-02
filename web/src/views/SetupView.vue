@@ -447,7 +447,7 @@ const handleFinishSetup = async () => {
     await api.post('/setup', form.value)
     markSetupComplete()
     message.success(t('setup.success'))
-    router.push('/login')
+    router.push('/usr/login')
   } catch (err: any) {
     message.error(err.response?.data?.error || t('setup.failed'))
   } finally {

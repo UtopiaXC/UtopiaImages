@@ -460,7 +460,7 @@ const cardTitle = computed(() => {
 
 const navigateAfterLogin = async () => {
   await fetchCurrentUser(true)
-  const target = (route.query.redirect as string) || '/console/upload'
+  const target = (route.query.redirect as string) || '/dsh/upload'
   router.push(target)
 }
 
@@ -930,7 +930,7 @@ const handlePasskeyMFA = async () => {
     }
     await api.post(`/auth/mfa/passkey-finish?session_key=${session_key}&mfa_token=${mfaToken.value}&remember_me=${form.value.remember_me}`, payload)
     message.success(t('login.success'))
-    router.push('/console/upload')
+    router.push('/dsh/upload')
   } catch (err: any) {
     if (err.name === 'NotAllowedError' || err.message?.includes('not allowed')) {
       message.warning(t('settings.passkeyCancelled'))
@@ -971,7 +971,7 @@ const handleConfirmSetupTOTP = async () => {
       remember_me: form.value.remember_me
     })
     message.success(t('login.success'))
-    router.push('/console/upload')
+    router.push('/dsh/upload')
   } catch (err: any) {
     message.error(getApiErrorMessage(err))
   } finally {
@@ -1014,7 +1014,7 @@ const handleSetupPasskey = async () => {
     }
     await api.post(`/auth/setup-2fa/passkey-finish?session_key=${session_key}&setup_token=${setupToken.value}&remember_me=${form.value.remember_me}`, payload)
     message.success(t('login.success'))
-    router.push('/console/upload')
+    router.push('/dsh/upload')
   } catch (err: any) {
     if (err.name === 'NotAllowedError' || err.message?.includes('not allowed')) {
       message.warning(t('settings.passkeyCancelled'))

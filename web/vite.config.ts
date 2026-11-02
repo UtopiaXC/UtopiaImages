@@ -24,6 +24,23 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    assetsDir: 'ast',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'naive-ui': ['naive-ui'],
+          'icons': ['@vicons/ionicons5'],
+        },
+        chunkFileNames: (chunkInfo) => {
+          let name = chunkInfo.name || 'chunk'
+          if (name.startsWith('_')) {
+            name = name.replace(/^_+/, '')
+          }
+          return `ast/${name}-[hash].js`
+        },
+      },
+    },
   },
 })

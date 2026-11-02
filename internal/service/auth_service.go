@@ -117,7 +117,7 @@ func (s *AuthService) SetupInitialAdmin(username, password, nickname, email stri
 
 	username = strings.ToLower(strings.TrimSpace(username))
 	if !pathclean.IsValidUsername(username) {
-		return nil, fmt.Errorf("用户名 '%s' 格式不合法或属于系统保留字，仅允许 3~32 位字母、数字、下划线及连字符", username)
+		return nil, fmt.Errorf("用户名 '%s' 格式不合法或属于系统保留字，长度必须大于3位（4~32位），仅允许字母、数字、下划线及连字符", username)
 	}
 
 	hash, err := auth.HashPassword(password)
@@ -409,6 +409,10 @@ func (s *AuthService) Register(username, email, password, nickname string) (*mod
 		if r, err := strconv.ParseUint(defaultRoleSetting.Value, 10, 32); err == nil && r > 0 {
 			roleID = uint(r)
 		}
+	}
+	var assignedRole model.Role
+	if err := s.db.First(&assignedRole, roleID).Error; err != nil || assignedRole.Name == "guest" {
+		roleID = 2
 	}
 
 	hash, _ := auth.HashPassword(password)
@@ -824,7 +828,7 @@ func (s *AuthService) VerifyCaptcha(payloadOrToken string, clientIP ...string) b
 func (s *AuthService) ChangeUsername(userID uint, newUsername string) error {
 	newUsername = strings.ToLower(strings.TrimSpace(newUsername))
 	if !pathclean.IsValidUsername(newUsername) {
-		return errors.New("invalid username format or reserved system path")
+		return errors.New("用户名不合法或属于系统保留字，长度必须大于3位（4~32位）")
 	}
 
 	var user model.User

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"context"
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
 	"github.com/UtopiaXC/UtopiaImages/internal/cache"
 	"github.com/UtopiaXC/UtopiaImages/internal/common"
@@ -16,6 +17,7 @@ import (
 	appLogger "github.com/UtopiaXC/UtopiaImages/internal/logger"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/UtopiaXC/UtopiaImages/internal/pkg/mailer"
+	"github.com/UtopiaXC/UtopiaImages/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -26,6 +28,7 @@ type SettingsController struct {
 	cfg            *config.Config
 	configPath     string
 	passkeyManager *auth.PasskeyManager
+	uploadService  *service.UploadService
 }
 
 func NewSettingsController(db *gorm.DB, dc *cache.DerivedCache, cfg *config.Config, configPath string, pm *auth.PasskeyManager) *SettingsController {
@@ -44,6 +47,10 @@ func (ctrl *SettingsController) SetDB(db *gorm.DB) {
 
 func (ctrl *SettingsController) SetPasskeyManager(pm *auth.PasskeyManager) {
 	ctrl.passkeyManager = pm
+}
+
+func (ctrl *SettingsController) SetUploadService(us *service.UploadService) {
+	ctrl.uploadService = us
 }
 
 func (ctrl *SettingsController) RegisterRoutes(rg *gin.RouterGroup) {
@@ -118,13 +125,15 @@ func (ctrl *SettingsController) GetUserSettings(c *gin.Context) {
 	resp := gin.H{
 		"watermark_mode":           ctrl.getSettingVal("user_wm_mode_"+strconvUint(userID), "inherit"),
 		"watermark_template_id":    ctrl.getSettingVal("user_wm_tmpl_"+strconvUint(userID), ""),
-		"default_link_format":      ctrl.getSettingVal("user_link_fmt_"+strconvUint(userID), "markdown"),
+		"default_link_format":      ctrl.getSettingVal("user_link_fmt_"+strconvUint(userID), "url"),
 		"default_policy_id":        ctrl.getSettingVal("user_default_policy_"+strconvUint(userID), "1"),
+		"default_landing_view":     ctrl.getSettingVal("user_landing_view_"+strconvUint(userID), "visitor"),
 		"global_call_stat_enabled": ctrl.getSettingVal("global_call_stat", "false") == "true",
 		"call_stat_enabled":        ctrl.getSettingVal("user_call_stat_"+strconvUint(userID), "false") == "true",
 		"hotlink_enabled":          user.HotlinkEnabled,
 		"hotlink_allow_empty":      user.HotlinkAllowEmpty,
 		"hotlink_allowed_domains":  user.HotlinkAllowedDomains,
+		"default_public":           user.DefaultPublic,
 		"available_policies":       policies,
 		"available_watermarks":     watermarks,
 	}
@@ -140,10 +149,12 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 		WatermarkTemplateID   string  `json:"watermark_template_id"`
 		DefaultLinkFormat     string  `json:"default_link_format"`
 		DefaultPolicyID       string  `json:"default_policy_id"`
+		DefaultLandingView    string  `json:"default_landing_view"`
 		CallStatEnabled       *bool   `json:"call_stat_enabled"`
 		HotlinkEnabled        *bool   `json:"hotlink_enabled"`
 		HotlinkAllowEmpty     *bool   `json:"hotlink_allow_empty"`
 		HotlinkAllowedDomains *string `json:"hotlink_allowed_domains"`
+		DefaultPublic         *bool   `json:"default_public"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -171,6 +182,9 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 	}
 	if req.DefaultPolicyID != "" {
 		ctrl.setSettingVal("user_default_policy_"+strconvUint(userID), req.DefaultPolicyID)
+	}
+	if req.DefaultLandingView != "" {
+		ctrl.setSettingVal("user_landing_view_"+strconvUint(userID), req.DefaultLandingView)
 	}
 	if req.CallStatEnabled != nil {
 		val := "false"
@@ -347,6 +361,10 @@ var allowedSystemSettings = map[string]bool{
 	"smtp_from_name":            true,
 	"smtp_user":                 true,
 	"smtp_password":             true,
+	"enable_guest_upload":       true,
+	"enable_square":             true,
+	"default_open_page":         true,
+	"guest_watermark_id":        true,
 }
 
 func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
@@ -388,6 +406,10 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 		"smtp_from_name":            "Utopia Images",
 		"smtp_user":                 "",
 		"smtp_password":             "",
+		"enable_guest_upload":       "false",
+		"enable_square":             "false",
+		"default_open_page":         "login",
+		"guest_watermark_id":        "",
 	}
 
 	for _, s := range settings {
@@ -451,6 +473,48 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 		}
 	}
 
+	// Check default_register_role_id cannot be guest role
+	if defaultRoleStr, ok := req["default_register_role_id"]; ok && defaultRoleStr != "" {
+		if roleID, err := strconv.Atoi(defaultRoleStr); err == nil && roleID > 0 {
+			var role model.Role
+			if err := ctrl.db.First(&role, roleID).Error; err == nil {
+				if role.Name == "guest" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将新注册用户默认角色设置为游客组"})
+					return
+				}
+			}
+		}
+	}
+
+	// Auto-adjust default_open_page when guest_upload or square status changes
+	enableGuest := req["enable_guest_upload"] == "true" || req["enable_guest_upload"] == "1"
+	if _, exists := req["enable_guest_upload"]; !exists {
+		enableGuest = ctrl.getSettingVal("enable_guest_upload", "false") == "true"
+	}
+	enableSquare := req["enable_square"] == "true" || req["enable_square"] == "1"
+	if _, exists := req["enable_square"]; !exists {
+		enableSquare = ctrl.getSettingVal("enable_square", "false") == "true"
+	}
+	curDefault, existsDefault := req["default_open_page"]
+	if !existsDefault {
+		curDefault = ctrl.getSettingVal("default_open_page", "guest_upload")
+	}
+
+	if !enableGuest && !enableSquare {
+		req["default_open_page"] = "login"
+	} else if !enableGuest && (curDefault == "guest_upload" || curDefault == "guest_gallery") {
+		if enableSquare {
+			req["default_open_page"] = "square"
+		} else {
+			req["default_open_page"] = "login"
+		}
+	} else if !enableSquare && curDefault == "square" {
+		if enableGuest {
+			req["default_open_page"] = "guest_upload"
+		} else {
+			req["default_open_page"] = "login"
+		}
+	}
 	for k, v := range req {
 		if !allowedSystemSettings[k] || k == "site_favicon_binary" {
 			continue
@@ -459,6 +523,11 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 			continue
 		}
 		ctrl.setSettingVal(k, v)
+	}
+
+	if guestUploadVal, exists := req["enable_guest_upload"]; exists {
+		cleanGuest := req["clean_guest_data"] == "true" || req["clean_guest_data"] == "1"
+		_ = ctrl.handleGuestUploadChange(guestUploadVal, cleanGuest)
 	}
 
 	if lvl, ok := req["log_level"]; ok && lvl != "" {
@@ -748,4 +817,95 @@ func (ctrl *SettingsController) DeleteFavicon(c *gin.Context) {
 		"message": "Favicon restored to default",
 		"url":     fmt.Sprintf("/favicon.svg?v=%d", time.Now().UnixNano()),
 	})
+}
+
+func (ctrl *SettingsController) handleGuestUploadChange(enableVal string, cleanGuestData bool) error {
+	if enableVal == "true" || enableVal == "1" {
+		var guestRole model.Role
+		err := ctrl.db.Where("name = ?", "guest").First(&guestRole).Error
+		if err != nil {
+			guestRole = model.Role{
+				Name:                "guest",
+				DisplayName:         "游客",
+				QuotaBytes:          1073741824, // 1 GB
+				AllowedFormats:      "jpg,jpeg,png,gif,heif,webp",
+				MaxSingleFileSizeMB: 5,
+				IsSystem:            false,
+				CreatedAt:           time.Now(),
+				UpdatedAt:           time.Now(),
+			}
+			if err := ctrl.db.Create(&guestRole).Error; err != nil {
+				return err
+			}
+			var userRole model.Role
+			ctrl.db.Preload("Policies").Where("name = 'user' OR id = 2").First(&userRole)
+			var targetPolicyID uint = 0
+			if len(userRole.Policies) > 0 {
+				targetPolicyID = userRole.Policies[0].ID
+			} else {
+				var defaultPolicy model.StoragePolicy
+				if err := ctrl.db.Where("is_default = ?", true).First(&defaultPolicy).Error; err == nil {
+					targetPolicyID = defaultPolicy.ID
+				} else {
+					ctrl.db.Order("id ASC").First(&defaultPolicy)
+					targetPolicyID = defaultPolicy.ID
+				}
+			}
+			if targetPolicyID > 0 {
+				ctrl.db.Where("role_id = ?", guestRole.ID).Delete(&model.RolePolicy{})
+				ctrl.db.Create(&model.RolePolicy{RoleID: guestRole.ID, PolicyID: targetPolicyID})
+			}
+		} else {
+			updates := map[string]any{}
+			if guestRole.AllowedFormats == "" {
+				updates["allowed_formats"] = "jpg,jpeg,png,gif,heif,webp"
+			}
+			if guestRole.MaxSingleFileSizeMB == 0 {
+				updates["max_single_file_size_mb"] = 5
+			}
+			if len(updates) > 0 {
+				ctrl.db.Model(&guestRole).Updates(updates)
+			}
+		}
+
+		var guestUser model.User
+		err = ctrl.db.Where("username = ?", "guest").First(&guestUser).Error
+		if err != nil {
+			guestUser = model.User{
+				Username:     "guest",
+				Nickname:     "游客",
+				RoleID:       guestRole.ID,
+				PasswordHash: "$2a$10$LockedGuestAccountNoPasswordAllowed0000000000000000",
+				Status:       "active",
+				CreatedAt:    time.Now(),
+				UpdatedAt:    time.Now(),
+			}
+			if err := ctrl.db.Create(&guestUser).Error; err != nil {
+				return err
+			}
+		}
+	} else if (enableVal == "false" || enableVal == "0") && cleanGuestData {
+		var guestUser model.User
+		if err := ctrl.db.Where("username = ?", "guest").First(&guestUser).Error; err == nil {
+			var userFiles []model.FileRecord
+			ctrl.db.Where("user_id = ?", guestUser.ID).Find(&userFiles)
+			for _, f := range userFiles {
+				if ctrl.uploadService != nil {
+					_ = ctrl.uploadService.DeleteFile(context.Background(), f.ID, guestUser.ID, true)
+				} else {
+					ctrl.db.Unscoped().Delete(&f)
+				}
+			}
+			ctrl.db.Where("user_id = ?", guestUser.ID).Delete(&model.Session{})
+			ctrl.db.Where("user_id = ?", guestUser.ID).Delete(&model.ApiToken{})
+			ctrl.db.Unscoped().Where("id = ?", guestUser.ID).Delete(&model.User{})
+		}
+
+		var guestRole model.Role
+		if err := ctrl.db.Where("name = ?", "guest").First(&guestRole).Error; err == nil {
+			ctrl.db.Where("role_id = ?", guestRole.ID).Delete(&model.RolePolicy{})
+			ctrl.db.Unscoped().Where("id = ?", guestRole.ID).Delete(&model.Role{})
+		}
+	}
+	return nil
 }

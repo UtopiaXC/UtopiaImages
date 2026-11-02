@@ -502,6 +502,14 @@
           />
         </n-form-item>
 
+        
+        <n-form-item :label="$t('files.publicMode')">
+          <n-select
+            v-model:value="editPropertiesForm.public_mode"
+            :options="publicModeOptions"
+          />
+        </n-form-item>
+
         <n-divider style="margin: 12px 0;" />
 
         <n-descriptions :column="2" label-placement="left" size="small">
@@ -664,12 +672,19 @@ const propertiesTarget = ref<any>(null)
 const savingProperties = ref(false)
 const templateOptions = ref<any[]>([])
 
+const publicModeOptions = computed(() => [
+  { label: t('files.publicInherit'), value: 'inherit' },
+  { label: t('files.publicOn'), value: 'public' },
+  { label: t('files.publicOff'), value: 'private' }
+])
+
 const editPropertiesForm = ref({
   display_name: '',
   watermark_mode: 'inherit',
   watermark_template_id: null as number | null,
   hotlink_mode: 'inherit',
-  hotlink_allowed_domains: ''
+  hotlink_allowed_domains: '',
+  public_mode: 'inherit'
 })
 
 // Image Editor
@@ -748,7 +763,8 @@ const openEditPropertiesModal = async (file: any) => {
     watermark_mode: file.watermark_mode || 'inherit',
     watermark_template_id: file.watermark_template_id || null,
     hotlink_mode: file.hotlink_mode || 'inherit',
-    hotlink_allowed_domains: file.hotlink_allowed_domains || ''
+    hotlink_allowed_domains: file.hotlink_allowed_domains || '',
+    public_mode: file.public_mode || 'inherit'
   }
 
   try {
@@ -759,7 +775,8 @@ const openEditPropertiesModal = async (file: any) => {
       watermark_mode: res.data.file.watermark_mode || 'inherit',
       watermark_template_id: res.data.file.watermark_template_id || null,
       hotlink_mode: res.data.file.hotlink_mode || 'inherit',
-      hotlink_allowed_domains: res.data.file.hotlink_allowed_domains || ''
+      hotlink_allowed_domains: res.data.file.hotlink_allowed_domains || '',
+      public_mode: res.data.file.public_mode || 'inherit'
     }
   } catch {}
 

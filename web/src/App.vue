@@ -46,6 +46,17 @@ body {
   overflow-x: hidden;
 }
 
+/* Form Label Left Alignment */
+.n-form-item-label,
+.n-form-item-label__text,
+.n-form-item.n-form-item--left-labelled .n-form-item-label,
+.n-form-item.n-form-item--left-labelled .n-form-item-label__text,
+.n-form.n-form--left-placed .n-form-item-label,
+.n-form.n-form--left-placed .n-form-item-label__text {
+  justify-content: flex-start !important;
+  text-align: left !important;
+}
+
 /* Global Responsive Table Utilities */
 .table-responsive {
   width: 100%;

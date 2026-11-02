@@ -8,14 +8,16 @@ import (
 
 // Role defines user permissions, storage quota limit per user, and allowed storage policies
 type Role struct {
-	ID          uint             `gorm:"primaryKey" json:"id"`
-	Name        string           `gorm:"uniqueIndex;size:64;not null" json:"name"` // e.g. "admin", "user"
-	DisplayName string           `gorm:"size:64;not null" json:"display_name"`
-	QuotaBytes  int64            `gorm:"default:0" json:"quota_bytes"`   // 0 = unlimited
-	IsSystem    bool             `gorm:"default:false" json:"is_system"` // admin role cannot be deleted
-	Policies    []*StoragePolicy `gorm:"many2many:role_policies;joinForeignKey:role_id;joinReferences:policy_id;" json:"policies,omitempty"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	ID                  uint             `gorm:"primaryKey" json:"id"`
+	Name                string           `gorm:"uniqueIndex;size:64;not null" json:"name"` // e.g. "admin", "user"
+	DisplayName         string           `gorm:"size:64;not null" json:"display_name"`
+	QuotaBytes          int64            `gorm:"default:0" json:"quota_bytes"` // 0 = unlimited
+	AllowedFormats      string           `gorm:"size:255;default:''" json:"allowed_formats"`
+	MaxSingleFileSizeMB int64            `gorm:"default:0" json:"max_single_file_size_mb"`
+	IsSystem            bool             `gorm:"default:false" json:"is_system"` // admin role cannot be deleted
+	Policies            []*StoragePolicy `gorm:"many2many:role_policies;joinForeignKey:role_id;joinReferences:policy_id;" json:"policies,omitempty"`
+	CreatedAt           time.Time        `json:"created_at"`
+	UpdatedAt           time.Time        `json:"updated_at"`
 }
 
 // StoragePolicy defines physical storage location and naming rules
@@ -62,6 +64,7 @@ type User struct {
 	HotlinkEnabled        bool           `gorm:"default:false" json:"hotlink_enabled"`
 	HotlinkAllowEmpty     bool           `gorm:"default:true" json:"hotlink_allow_empty"`
 	HotlinkAllowedDomains string         `gorm:"type:text" json:"hotlink_allowed_domains"`
+	DefaultPublic         bool           `gorm:"default:false" json:"default_public"`
 	CreatedAt             time.Time      `json:"created_at"`
 	UpdatedAt             time.Time      `json:"updated_at"`
 	DeletedAt             gorm.DeletedAt `gorm:"index" json:"-"`
@@ -148,6 +151,7 @@ type FileRecord struct {
 	WatermarkTemplateID   *uint          `json:"watermark_template_id,omitempty"`
 	HotlinkMode           string         `gorm:"size:16;default:inherit" json:"hotlink_mode"` // inherit / on / off
 	HotlinkAllowedDomains string         `gorm:"type:text" json:"hotlink_allowed_domains"`
+	PublicMode            string         `gorm:"size:16;default:inherit" json:"public_mode"`
 	SignVersion           int64          `gorm:"default:1" json:"sign_version"`
 	TotalCalls            int64          `gorm:"-" json:"total_calls"`
 	TotalUV               int64          `gorm:"-" json:"total_uv"`
@@ -171,6 +175,7 @@ type TemporaryLink struct {
 type WatermarkTemplate struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	OwnerID   *uint     `gorm:"index" json:"owner_id"` // nil = site-wide global template
+	IsSystem  bool      `gorm:"default:false;index" json:"is_system"`
 	Name      string    `gorm:"index;size:64;not null" json:"name"`
 	Layers    string    `gorm:"type:text;not null" json:"layers"` // JSON definition of layers
 	Version   int64     `gorm:"default:1" json:"version"`

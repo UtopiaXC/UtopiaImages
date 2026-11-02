@@ -49,7 +49,17 @@
             </td>
             <td>{{ formatDate(u.created_at) }}</td>
             <td style="text-align: right;">
-              <div style="display: flex; gap: 8px; justify-content: flex-end;">
+              <div v-if="u.username === 'guest'" style="display: flex; gap: 8px; justify-content: flex-end;">
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-tag size="tiny" type="default" style="cursor: default;">
+                      {{ $t('adminUsers.guestUserLocked') }}
+                    </n-tag>
+                  </template>
+                  {{ $t('adminUsers.guestUserLocked') }}
+                </n-tooltip>
+              </div>
+              <div v-else style="display: flex; gap: 8px; justify-content: flex-end;">
                 <n-button size="tiny" quaternary type="primary" @click="openEditModal(u)">
                   {{ $t('common.edit') }}
                 </n-button>
@@ -77,7 +87,7 @@
                 </n-popconfirm>
                 <n-popconfirm @positive-click="handleDeleteUser(u.id)">
                   <template #trigger>
-                    <n-button size="tiny" quaternary type="error" :disabled="u.id === 1 || u.role?.name === 'admin'">
+                    <n-button size="tiny" quaternary type="error" :disabled="u.id === 1 || u.role?.name === 'admin' || u.username === 'guest'">
                       {{ $t('common.delete') }}
                     </n-button>
                   </template>
@@ -194,10 +204,12 @@ const editUserForm = ref({
 })
 
 const roleOptions = computed(() => {
-  return roles.value.map(r => ({
-    label: `${r.display_name} · ${r.name}`,
-    value: r.id
-  }))
+  return roles.value
+    .filter(r => !r.is_guest && r.name !== 'guest')
+    .map(r => ({
+      label: `${r.display_name} · ${r.name}`,
+      value: r.id
+    }))
 })
 
 const statusOptions = computed(() => [
@@ -231,6 +243,10 @@ const openCreateModal = () => {
 const handleCreateUser = async () => {
   if (!newUserForm.value.username || !newUserForm.value.password) {
     message.warning(t('setup.validation'))
+    return
+  }
+  if (newUserForm.value.username.trim().length <= 3) {
+    message.warning(t('auth.usernameMinLength'))
     return
   }
 

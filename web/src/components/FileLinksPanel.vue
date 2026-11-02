@@ -89,7 +89,7 @@
     </n-tabs>
 
     <!-- Temporary Link Management Section (Requirement 4) -->
-    <div v-if="isWatermarked" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+    <div v-if="!hideTempLinks && isWatermarked" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <n-tag size="small" type="warning" :bordered="false" style="width: 110px; justify-content: center;">
@@ -222,16 +222,30 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
+import { userPreferences, fetchUserPreferences } from '../utils/auth'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   file: any
   initialUrl?: string
-}>()
+  hideTempLinks?: boolean
+}>(), {
+  initialUrl: '',
+  hideTempLinks: false
+})
 
 const message = useMessage()
 const { t } = useI18n()
 
-const activeTab = ref('direct')
+const normalizeFormat = (fmt?: string) => {
+  if (!fmt) return 'direct'
+  if (fmt === 'url' || fmt === 'direct') return 'direct'
+  if (fmt === 'markdown') return 'markdown'
+  if (fmt === 'html') return 'html'
+  if (fmt === 'bbcode') return 'bbcode'
+  return 'direct'
+}
+
+const activeTab = ref(normalizeFormat(userPreferences.value?.default_link_format))
 const selectedSize = ref('original')
 const selectedDurationHours = ref(24)
 const generatingTemp = ref(false)
@@ -323,7 +337,7 @@ const activeLinksCount = computed(() => {
 })
 
 const loadTempLinks = async () => {
-  if (!props.file?.id) return
+  if (props.hideTempLinks || !props.file?.id) return
   try {
     const res = await api.get(`/files/${props.file.id}/temp-links`)
     tempLinks.value = res.data.links || []
@@ -333,12 +347,16 @@ const loadTempLinks = async () => {
 }
 
 onMounted(() => {
-  loadTempLinks()
+  if (!props.hideTempLinks) {
+    loadTempLinks()
+  }
   loadSiteDomains()
 })
 
 watch(() => props.file?.id, () => {
-  loadTempLinks()
+  if (!props.hideTempLinks) {
+    loadTempLinks()
+  }
 })
 
 const getRawUrl = () => {
@@ -489,7 +507,24 @@ const revokeAllLinks = async () => {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadSiteDomains()
+  if (!userPreferences.value) {
+    const pref = await fetchUserPreferences()
+    if (pref?.default_link_format) {
+      activeTab.value = normalizeFormat(pref.default_link_format)
+    }
+  } else if (userPreferences.value.default_link_format) {
+    activeTab.value = normalizeFormat(userPreferences.value.default_link_format)
+  }
 })
+
+watch(
+  () => userPreferences.value?.default_link_format,
+  (newFmt) => {
+    if (newFmt) {
+      activeTab.value = normalizeFormat(newFmt)
+    }
+  }
+)
 </script>

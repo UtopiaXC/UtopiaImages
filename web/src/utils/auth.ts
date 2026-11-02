@@ -3,6 +3,29 @@ import { api } from '../api/client'
 
 export const currentUser = ref<any>(null)
 export const authInitialized = ref(false)
+export const userPreferences = ref<any>(null)
+let pendingPrefPromise: Promise<any> | null = null
+
+export async function fetchUserPreferences(force = false): Promise<any> {
+  if (userPreferences.value && !force) {
+    return userPreferences.value
+  }
+  if (pendingPrefPromise && !force) {
+    return pendingPrefPromise
+  }
+  pendingPrefPromise = (async () => {
+    try {
+      const res = await api.get('/me/settings')
+      userPreferences.value = res.data
+      return userPreferences.value
+    } catch {
+      return null
+    } finally {
+      pendingPrefPromise = null
+    }
+  })()
+  return pendingPrefPromise
+}
 
 let pendingPromise: Promise<any> | null = null
 
@@ -25,6 +48,7 @@ export async function fetchCurrentUser(force = false): Promise<any> {
       return currentUser.value
     } catch {
       currentUser.value = null
+  userPreferences.value = null
       authInitialized.value = true
       return null
     } finally {

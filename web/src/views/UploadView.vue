@@ -8,25 +8,29 @@
       </template>
 
       <!-- Options Bar -->
-      <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; align-items: center;">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.storagePolicy') }}</span>
-          <span style="color: #666;">:</span>
-          <n-select
-            v-model:value="selectedPolicyId"
-            :options="policyOptions"
-            size="small"
-            :loading="loadingPolicies"
-            :placeholder="$t('upload.storagePolicy')"
-            style="width: 170px;"
-          />
-          <!-- Storage Policy Remaining Capacity Indicator (Requirement 6) -->
+      <div class="upload-options-container">
+        <!-- Row 1: Storage Policy & Capacity -->
+        <div class="upload-options-row">
+          <div class="upload-option-item">
+            <span class="upload-option-label">{{ $t('upload.storagePolicy') }}</span>
+            <span class="upload-option-colon">:</span>
+            <n-select
+              v-model:value="selectedPolicyId"
+              :options="policyOptions"
+              size="small"
+              :loading="loadingPolicies"
+              :placeholder="$t('upload.storagePolicy')"
+              class="upload-policy-select"
+            />
+          </div>
+
+          <!-- Storage Policy Remaining Capacity Indicator -->
           <div
             v-if="currentPolicy"
-            style="display: flex; align-items: center; background: rgba(255,255,255,0.03); padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);"
+            class="upload-policy-capacity"
           >
-            <div style="display: flex; flex-direction: column; min-width: 140px; width: auto;">
-              <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 11px; margin-bottom: 3px; white-space: nowrap;">
+            <div style="display: flex; flex-direction: column; width: 100%;">
+              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 3px; white-space: nowrap;">
                 <span style="color: #888;">{{ $t('upload.policyRemaining') }}</span>
                 <span style="color: #63e2b7; font-weight: 500;">
                   {{ currentPolicy.max_capacity_bytes === 0 ? $t('common.unlimited') : formatBytes(Math.max(0, currentPolicy.max_capacity_bytes - currentPolicy.used_bytes)) }}
@@ -42,35 +46,57 @@
           </div>
         </div>
 
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.watermark') }}</span>
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-icon size="16" style="color: #888; cursor: pointer; vertical-align: middle;">
-                <InformationCircleOutline />
-              </n-icon>
-            </template>
-            {{ $t('upload.watermarkTip') }}
-          </n-tooltip>
-          <span style="color: #666;">:</span>
-          <n-select
-            v-model:value="watermarkMode"
-            :options="watermarkModeOptions"
-            size="small"
-            style="width: 140px;"
-          />
-        </div>
+        <!-- Row 2: Watermark & Public Mode -->
+        <div class="upload-options-row">
+          <div class="upload-option-item">
+            <span class="upload-option-label">{{ $t('upload.watermark') }}</span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer; vertical-align: middle;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('upload.watermarkTip') }}
+            </n-tooltip>
+            <span class="upload-option-colon">:</span>
+            <n-select
+              v-model:value="watermarkMode"
+              :options="watermarkModeOptions"
+              size="small"
+              style="width: 140px;"
+            />
+          </div>
 
-        <div v-if="watermarkMode === 'on'" style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 13px; color: #aaa;">{{ $t('upload.template') }}</span>
-          <span style="color: #666;">:</span>
-          <n-select
-            v-model:value="selectedTemplateId"
-            :options="templateOptions"
-            size="small"
-            :placeholder="$t('upload.defaultTemplate')"
-            style="width: 180px;"
-          />
+          <div v-if="watermarkMode === 'on'" class="upload-option-item">
+            <span class="upload-option-label">{{ $t('upload.template') }}</span>
+            <span class="upload-option-colon">:</span>
+            <n-select
+              v-model:value="selectedTemplateId"
+              :options="templateOptions"
+              size="small"
+              :placeholder="$t('upload.defaultTemplate')"
+              style="width: 180px;"
+            />
+          </div>
+
+          <div class="upload-option-item">
+            <span class="upload-option-label">{{ $t('files.publicMode') }}</span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon size="16" style="color: #888; cursor: pointer; vertical-align: middle;">
+                  <InformationCircleOutline />
+                </n-icon>
+              </template>
+              {{ $t('files.publicTip') }}
+            </n-tooltip>
+            <span class="upload-option-colon">:</span>
+            <n-select
+              v-model:value="publicMode"
+              :options="publicModeOptions"
+              size="small"
+              style="width: 140px;"
+            />
+          </div>
         </div>
       </div>
 
@@ -232,6 +258,12 @@ const message = useMessage()
 const { t } = useI18n()
 
 const watermarkMode = ref('inherit')
+const publicMode = ref('inherit')
+const publicModeOptions = computed(() => [
+  { label: t('files.publicInherit'), value: 'inherit' },
+  { label: t('files.publicOn'), value: 'public' },
+  { label: t('files.publicOff'), value: 'private' }
+])
 const selectedTemplateId = ref<string | null>(null)
 const templateOptions = ref<any[]>([])
 const results = ref<any[]>([])
@@ -503,6 +535,7 @@ const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomReque
   const formData = new FormData()
   formData.append('file', rawFile)
   formData.append('watermark_mode', watermarkMode.value)
+    formData.append('public_mode', publicMode.value)
   if (selectedTemplateId.value) {
     formData.append('watermark_template_id', selectedTemplateId.value)
   }
@@ -583,6 +616,68 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.upload-options-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.upload-options-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.upload-option-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.upload-option-label {
+  font-size: 13px;
+  color: #aaa;
+  white-space: nowrap;
+}
+
+.upload-option-colon {
+  color: #666;
+}
+
+.upload-policy-select {
+  width: 200px;
+}
+
+.upload-policy-capacity {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  width: 200px;
+  height: 34px;
+  box-sizing: border-box;
+}
+
+@media (max-width: 640px) {
+  .upload-options-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .upload-option-item {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .upload-policy-select,
+  .upload-policy-capacity {
+    width: 100% !important;
+  }
+}
+
 @media (max-width: 640px) {
   .upload-result-item {
     flex-direction: column !important;

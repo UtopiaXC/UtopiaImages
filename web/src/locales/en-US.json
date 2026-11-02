@@ -23,10 +23,14 @@
     "unlimited": "Unlimited",
     "failed": "Failed",
     "days": "Days",
-    "error": "Operation failed"
+    "error": "Operation failed",
+    "none": "None",
+    "noData": "No data available",
+    "loadFailed": "Failed to load",
+    "updatedAt": "Updated At"
   },
   "nav": {
-    "upload": "Upload",
+    "upload": "File Upload",
     "files": "Files",
     "watermarks": "Watermarks",
     "tokens": "API Tokens",
@@ -36,11 +40,12 @@
     "adminSettings": "System Settings",
     "adminStats": "Dashboard",
     "adminRoles": "Role Management",
-    "adminFiles": "All Files"
+    "adminFiles": "All Files",
+    "adminWatermarks": "Watermarks"
   },
   "setup": {
     "title": "Initial Setup Wizard",
-    "stepSite": "Site Information",
+    "stepSite": "Site Info",
     "stepDb": "Database",
     "stepSmtp": "Email Service",
     "stepAdmin": "Administrator Account",
@@ -182,10 +187,11 @@
     "manualSecret": "Or enter secret key manually:",
     "verifyAndComplete": "Verify and Complete Sign In",
     "bindPasskeyDesc": "Use device biometric authentication (Windows Hello / Touch ID / security key) as credential.",
-    "bindPasskeyBtn": "Register Device Passkey and Sign In"
+    "bindPasskeyBtn": "Register Device Passkey and Sign In",
+    "login": "Log in"
   },
   "upload": {
-    "title": "Upload Files",
+    "title": "File Upload",
     "dragTip": "Click or drag files here, or paste from clipboard",
     "watermark": "Watermark",
     "watermarkInherit": "Follow Default",
@@ -239,7 +245,9 @@
     "archiveUploading": "Uploading archive package...",
     "archiveProcessing": "Upload completed. Server is extracting files and generating metadata...",
     "cancelImportAndClear": "Cancel & Clear Cache",
-    "chunkModeNotice": "Because the file is too large, chunked upload will be used."
+    "chunkModeNotice": "Because the file is too large, chunked upload will be used.",
+    "success": "Upload successful",
+    "failed": "Upload failed"
   },
   "files": {
     "title": "File Gallery",
@@ -321,7 +329,17 @@
     "noFiles": "No matching files found",
     "allWatermark": "All Watermark Modes",
     "allHotlink": "All Hotlink Modes",
-    "allPolicy": "All Policies"
+    "allPolicy": "All Policies",
+    "publicMode": "Public Status",
+    "publicInherit": "Inherit Default",
+    "publicOn": "Public",
+    "publicOff": "Private",
+    "publicTip": "Public images will be displayed on the Square photo wall",
+    "totalFiles": "All Files",
+    "searchPlaceholder": "Search files...",
+    "detailsTitle": "Image Details & Links",
+    "updatedAt": "Updated At",
+    "countText": "Total {count} files"
   },
   "watermarks": {
     "title": "Watermark Templates",
@@ -407,7 +425,14 @@
     "edit": "Edit",
     "confirmDelete": "Are you sure you want to delete this watermark template?",
     "adaptiveColor": "Adaptive Text Color",
-    "adaptiveColorTip": "Dynamically calculate high contrast color based on image luminance to prevent watermark interference"
+    "adaptiveColorTip": "Dynamically calculate high contrast color based on image luminance to prevent watermark interference",
+    "systemWatermarks": "System Watermarks",
+    "systemTemplates": "System Watermarks",
+    "cloneToMine": "Copy to My Templates",
+    "cloneSuccess": "Watermark copied to your templates successfully",
+    "systemWatermarksDesc": "Global system watermark templates preset by administrators. You can copy them to your account to customize.",
+    "previewPlaceholder": "No preview",
+    "emptySystemTemplates": "No preset system watermarks available. Please create your own."
   },
   "editor": {
     "title": "Image Editor",
@@ -551,12 +576,30 @@
     "callStatSwitch": "Enable Call Statistics",
     "callStatDesc": "When enabled, image requests are intercepted via temporary redirects to accurately track PV and UV without affecting CDN cache",
     "globalCallStatLocked": "Global call statistics are enforced by system administrator",
-    "imageSettingsSaved": "Image settings saved successfully"
+    "imageSettingsSaved": "Image settings saved successfully",
+    "userDefaultPublic": "Default Images Public",
+    "userDefaultPublicTip": "Newly uploaded images will be public by default",
+    "createPasskeyModalTitle": "New Passkey",
+    "createPasskeyModalDesc": "Give your new passkey a recognizable name to easily manage it.",
+    "passkeyNameLabel": "Passkey Name",
+    "passkeyNamePlaceholder": "e.g., MacBook Pro / iPhone / YubiKey",
+    "editPasskeyModalTitle": "Rename Passkey",
+    "passkeyNameRequired": "Passkey name cannot be empty",
+    "passkeyUpdatedSuccess": "Passkey renamed successfully",
+    "guestSinglePolicyTip": "Guest role must have exactly one storage policy",
+    "passkeyCancelled": "Passkey operation cancelled",
+    "tabDefaultView": "Default Landing View",
+    "defaultLandingTitle": "Site Default Landing Preferences",
+    "defaultLandingLabel": "When Visiting Root URL",
+    "defaultLandingTip": "The view shown when directly accessing the site root URL. Visitor view follows site settings (Square or Guest Upload), while Console view opens file upload directly.",
+    "landingVisitor": "Visitor View",
+    "landingConsole": "Console View",
+    "landingSaved": "Default landing view saved"
   },
   "adminSettings": {
     "title": "System Settings",
-    "subtitle": "Manage site information, technical limits, security policies, and cache.",
-    "siteInfo": "Site Information",
+    "subtitle": "Manage site information, technical limits, security policies and caches.",
+    "siteInfo": "Site Info",
     "siteName": "Site Name",
     "siteDesc": "Site Description",
     "defaultDescription": "Yet another self-hosted Utopia Images service",
@@ -584,7 +627,7 @@
     "force2fa": "Enforce Two-Factor Authentication",
     "force2faTip": "All users must configure two-factor authentication before using the system",
     "hotlinkTitle": "Hotlink Protection",
-    "enableHotlink": "Enable Hotlink Protection",
+    "enableHotlink": "Enable Global Hotlink Protection",
     "enableHotlinkTip": "Only allow whitelisted referrer domains to embed images",
     "allowEmptyReferer": "Allow Empty Referer",
     "allowEmptyRefererTip": "Allow direct address bar visits and requests without Referer",
@@ -592,7 +635,7 @@
     "allowedDomainsPlaceholder": "Support wildcard domains like *.example.com, one per line or comma separated",
     "hotlinkAction": "Action on Block",
     "actionForbidden": "Reject request with 403 Forbidden",
-    "cacheTitle": "Derived Image Cache",
+    "cacheTitle": "Cache",
     "cacheDesc": "Thumbnails, watermarked images, and WebP converted images are cached on disk for accelerated delivery.",
     "cacheUsage": "Current Cache Consumption",
     "cacheUsageUnlimited": "Unlimited",
@@ -624,7 +667,7 @@
     "backupUnits": "Files",
     "logMaxAge": "Log Retention Period",
     "logMaxAgeTip": "Archives older than this number of days will be deleted automatically",
-    "registrationTitle": "User Registration & Permissions",
+    "registrationTitle": "User Access",
     "allowRegistration": "Allow Public Registration",
     "allowRegistrationTip": "When enabled, visitors can register accounts from the login page",
     "defaultRegisterRole": "Default Role for New Users",
@@ -641,7 +684,30 @@
     "uploadFavicon": "Upload Icon",
     "restoreDefaultFavicon": "Restore Default",
     "faviconUpdated": "Site favicon updated successfully",
-    "faviconRestored": "Site favicon restored to default"
+    "faviconRestored": "Site favicon restored to default",
+    "tabSystem": "System",
+    "tabFile": "Files",
+    "tabSecurity": "Security",
+    "tabUser": "Users",
+    "systemSecurityTitle": "System Security",
+    "formatConversionTitle": "Format Conversion",
+    "enableGuestUpload": "Guest Upload",
+    "enableGuestUploadTip": "Allow unauthenticated visitors to upload images directly",
+    "guestModalTitle": "Disable Guest Upload",
+    "guestModalContent": "Do you want to keep images and files uploaded by guests?",
+    "guestKeepData": "Keep Data",
+    "guestCleanData": "Delete All",
+    "enableSquare": "Square",
+    "enableSquareTip": "Enable public photo wall for exploring public images",
+    "defaultOpenPage": "Default Landing Page",
+    "defaultOpenPageTip": "The default page shown to visitors when opening the site",
+    "pageGuestUpload": "Guest Upload Page",
+    "pageSquare": "Square Page",
+    "pageGuestGallery": "Guest Gallery Page",
+    "pageLogin": "Login Page",
+    "guestWatermark": "Guest Upload Watermark",
+    "guestWatermarkTip": "System watermark automatically applied to guest uploads. Defaults to none.",
+    "noWatermark": "No Watermark"
   },
   "adminUsers": {
     "title": "User Management",
@@ -677,7 +743,8 @@
     "confirmBan": "Are you sure you want to ban this user? They will be signed out and unable to log in.",
     "confirmUnfreeze": "Are you sure you want to unfreeze/activate this user? Their login permissions will be restored.",
     "banSuccess": "User has been banned",
-    "unfreezeSuccess": "User has been unlocked and activated"
+    "unfreezeSuccess": "User has been unlocked and activated",
+    "guestUserLocked": "Guest account cannot be edited or deleted"
   },
   "adminPolicies": {
     "title": "Storage Policies",
@@ -718,7 +785,8 @@
     "tokenFilename": "Original Filename",
     "tokenExt": "Extension",
     "tokenTimestamp": "Timestamp",
-    "tokenSha256": "SHA256 Hash"
+    "tokenSha256": "SHA256 Hash",
+    "guestSinglePolicyTip": "Guest role must have exactly one storage policy"
   },
   "adminStats": {
     "title": "System Dashboard & Monitoring",
@@ -774,7 +842,17 @@
     "systemRole": "System Role",
     "saveSuccess": "Role saved successfully",
     "deleteSuccess": "Role deleted successfully",
-    "confirmDelete": "Are you sure you want to delete this role?"
+    "confirmDelete": "Are you sure you want to delete this role?",
+    "allowedFormats": "Allowed Formats",
+    "allowedFormatsPlaceholder": "e.g. jpg,png,gif (empty for unlimited)",
+    "allowedFormatsTip": "Separate extensions with commas; leave empty for unlimited",
+    "maxSingleFileSize": "Max Single File Size",
+    "maxSingleFileSizeTip": "Max size in MB, 0 follows system limit, cannot exceed system limit",
+    "guestRoleLocked": "Guest role cannot be deleted",
+    "guestSinglePolicyTip": "Guest role must have exactly one storage policy",
+    "createSuccess": "Role created successfully",
+    "updateSuccess": "Role updated successfully",
+    "quotaTip": "0 means unlimited space"
   },
   "errors": {
     "AUTH_INVALID_CREDENTIALS": "Invalid username or password",
@@ -814,7 +892,8 @@
     "CANNOT_DELETE_SELF": "You cannot delete your currently logged-in account",
     "ERR_AUTH_USER_INACTIVE": "Account is inactive or suspended. Please check your activation email or contact administrator.",
     "ERR_REGISTRATION_SMTP_REQUIRED": "Registration is unavailable because SMTP mail service is not configured.",
-    "ERR_ACTIVATION_TOKEN_INVALID": "Activation token is invalid or expired."
+    "ERR_ACTIVATION_TOKEN_INVALID": "Activation token is invalid or expired.",
+    "AUTH_USERNAME_INVALID": "Invalid username format or reserved word, length must be greater than 3 (4-32 characters)"
   },
   "adminFiles": {
     "title": "Site-wide Files Management",
@@ -936,6 +1015,47 @@
     "time7Days": "Last 7 Days",
     "time30Days": "Last 30 Days",
     "timeThisMonth": "This Month",
-    "all": "All"
+    "all": "All",
+    "presetGuest": "Guest",
+    "presetGuestTip": "Filter files uploaded by guest",
+    "fieldPublicMode": "Public Status",
+    "publicModeInherit": "Inherit Default",
+    "publicModePublic": "Public",
+    "publicModePrivate": "Private"
+  },
+  "square": {
+    "title": "Square",
+    "empty": "No public images available",
+    "photoWall": "Photo Wall",
+    "copySuccess": "Link copied",
+    "wallCount": "Total {count} files"
+  },
+  "guest": {
+    "uploadTitle": "Guest Upload",
+    "galleryTitle": "Guest Gallery",
+    "empty": "No guest uploaded images yet",
+    "loginBtn": "Log In",
+    "consoleBtn": "Console",
+    "onlyImagesTip": "Guests can only upload images, max 5MB per file",
+    "galleryCount": "Total {count} files"
+  },
+  "adminWatermarks": {
+    "title": "Watermarks Management",
+    "subtitle": "Manage all user and system watermarks across the site and configure global system watermarks.",
+    "createSystem": "New System Watermark",
+    "type": "Type",
+    "systemType": "System",
+    "userType": "User",
+    "owner": "Owner",
+    "setAsSystem": "Set as System Watermark",
+    "unsetSystem": "Unset System Watermark",
+    "setAsSystemSuccess": "Marked as system watermark",
+    "unsetSystemSuccess": "Unset system watermark",
+    "deleteConfirm": "Are you sure you want to delete this watermark template?",
+    "searchPlaceholder": "Search watermark name, owner, or text...",
+    "totalCount": "Total {count} watermarks"
+  },
+  "auth": {
+    "usernameMinLength": "Username length must be greater than 3 characters"
   }
 }

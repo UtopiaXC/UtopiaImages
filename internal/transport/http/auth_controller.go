@@ -118,6 +118,7 @@ func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
 		me.POST("/passkeys/register-begin", auth.RequireSessionAuth(), ctrl.BeginPasskeyRegister)
 		me.POST("/passkeys/register-finish", auth.RequireSessionAuth(), ctrl.FinishPasskeyRegister)
 		me.DELETE("/passkeys/:id", auth.RequireSessionAuth(), ctrl.DeletePasskey)
+		me.PATCH("/passkeys/:id", auth.RequireSessionAuth(), ctrl.UpdatePasskey)
 	}
 }
 
@@ -562,7 +563,7 @@ func (ctrl *AuthController) Register(c *gin.Context) {
 
 	// Send email with activation link
 	baseURL := ctrl.resolveBaseURL(c)
-	activationLink := fmt.Sprintf("%s/login?action=activate&token=%s", baseURL, token)
+	activationLink := fmt.Sprintf("%s/usr/login?action=activate&token=%s", baseURL, token)
 	if err := ctrl.sendActivationEmail(*user.Email, user.Username, activationLink); err != nil {
 		slog.Error("Failed to send activation email", "error", err, "email", *user.Email)
 	}
@@ -641,7 +642,7 @@ func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
 
 	// Send email with reset token link
 	baseURL := ctrl.resolveBaseURL(c)
-	resetLink := fmt.Sprintf("%s/login?action=reset&token=%s", baseURL, token)
+	resetLink := fmt.Sprintf("%s/usr/login?action=reset&token=%s", baseURL, token)
 	err := ctrl.sendPasswordResetEmail(*user.Email, user.Username, resetLink)
 	if err != nil {
 		slog.Error("Failed to send password reset email", "error", err, "email", *user.Email)
@@ -744,7 +745,7 @@ func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 	}
 
 	baseURL := ctrl.resolveBaseURL(c)
-	resetLink := fmt.Sprintf("%s/login?action=reset-2fa&token=%s", baseURL, token)
+	resetLink := fmt.Sprintf("%s/usr/login?action=reset-2fa&token=%s", baseURL, token)
 	err := ctrl.send2FAResetEmail(*user.Email, user.Username, resetLink, token)
 	if err != nil {
 		slog.Error("Failed to send 2FA reset email", "error", err, "email", *user.Email)
@@ -1308,6 +1309,45 @@ func (ctrl *AuthController) DeletePasskey(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Passkey deleted"})
+}
+
+func (ctrl *AuthController) UpdatePasskey(c *gin.Context) {
+	if ctrl.authService.PasskeyManager() == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "Passkey is not supported"})
+		return
+	}
+	userID := c.GetUint(auth.CtxUserIDKey)
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid passkey ID"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Passkey name is required"})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Passkey name cannot be empty"})
+		return
+	}
+
+	res := ctrl.authService.DB().Model(&model.WebAuthnCredential{}).Where("id = ? AND user_id = ?", id, userID).Update("name", name)
+	if res.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": res.Error.Error()})
+		return
+	}
+	if res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Passkey not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Passkey updated successfully", "name": name})
 }
 
 func (ctrl *AuthController) Setup2FATOTPSecret(c *gin.Context) {

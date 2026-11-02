@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -87,6 +88,15 @@ func (ctrl *FileController) RegisterRoutes(rg *gin.RouterGroup) {
 		files.POST("/:id/edit", auth.RequirePermission("file.write"), ctrl.EditFile)
 	}
 
+	rg.POST("/guest/upload", ctrl.GuestUpload)
+	rg.GET("/guest/files", ctrl.ListGuestFiles)
+	rg.GET("/guest/gallery", ctrl.ListGuestFiles)
+	rg.GET("/guest/gallery/:id", ctrl.GetGuestFileDetails)
+	rg.GET("/guest/files/:id", ctrl.GetGuestFileDetails)
+	rg.GET("/square/files", ctrl.ListSquareFiles)
+	rg.GET("/square/files/:id", ctrl.GetSquareFileDetails)
+	rg.GET("/public/files/:id", ctrl.GetPublicFileDetails)
+
 	rg.POST("/upload", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.Upload)
 	rg.POST("/upload/chunk/init", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.InitChunkUpload)
 	rg.POST("/upload/chunk/part", auth.RequireAuth(), auth.RequirePermission("file.upload"), ctrl.UploadChunkPart)
@@ -119,6 +129,60 @@ func isValidMode(mode string) bool {
 	return mode == "inherit" || mode == "on" || mode == "off"
 }
 
+func (ctrl *FileController) checkRoleUploadLimits(user *model.User, filename string, size int64) error {
+	if user == nil {
+		return errors.New("用户未找到")
+	}
+	var role model.Role
+	if user.Role != nil {
+		role = *user.Role
+	} else if err := ctrl.db.Where("id = ?", user.RoleID).First(&role).Error; err != nil {
+		return nil
+	}
+
+	// 1. Format check
+	allowed := strings.TrimSpace(role.AllowedFormats)
+	if allowed != "" && allowed != "*" {
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
+		allowedList := strings.Split(allowed, ",")
+		matched := false
+		for _, a := range allowedList {
+			a = strings.ToLower(strings.TrimSpace(a))
+			if a == ext {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("当前角色不允许上传 .%s 格式的文件，仅支持: %s", ext, allowed)
+		}
+	}
+
+	// 2. Single file size check
+	sysMaxMB := int64(0)
+	var s model.Setting
+	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&s).Error; err == nil {
+		sysMaxMB, _ = strconv.ParseInt(strings.TrimSpace(s.Value), 10, 64)
+	}
+
+	effectiveMaxBytes := int64(0)
+	if sysMaxMB > 0 {
+		effectiveMaxBytes = sysMaxMB * 1024 * 1024
+	}
+	if role.MaxSingleFileSizeMB > 0 {
+		roleMaxBytes := role.MaxSingleFileSizeMB * 1024 * 1024
+		if effectiveMaxBytes == 0 || roleMaxBytes < effectiveMaxBytes {
+			effectiveMaxBytes = roleMaxBytes
+		}
+	}
+
+	if effectiveMaxBytes > 0 && size > effectiveMaxBytes {
+		return fmt.Errorf("文件大小超过限制（当前角色上限: %d MB）", effectiveMaxBytes/(1024*1024))
+	}
+
+	return nil
+}
+
 func (ctrl *FileController) Upload(c *gin.Context) {
 	maxSize := ctrl.getMaxUploadSize()
 	if maxSize > 0 {
@@ -142,12 +206,27 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 	}
 	defer src.Close()
 
+	if err := ctrl.checkRoleUploadLimits(user, fileHeader.Filename, fileHeader.Size); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	policyID := ParseUintSafe(c.PostForm("policy_id"), 0)
 	watermarkMode := c.DefaultPostForm("watermark_mode", "inherit")
 	if !isValidMode(watermarkMode) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark_mode, must be inherit, on, or off"})
 		return
 	}
+	publicMode := c.DefaultPostForm("public_mode", "inherit")
+	if publicMode == "on" {
+		publicMode = "public"
+	} else if publicMode == "off" {
+		publicMode = "private"
+	}
+	if publicMode != "inherit" && publicMode != "public" && publicMode != "private" {
+		publicMode = "inherit"
+	}
+
 	displayName := c.PostForm("display_name")
 	if displayName == "" {
 		displayName = fileHeader.Filename
@@ -586,6 +665,7 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 		WatermarkTemplateID   *uint   `json:"watermark_template_id"`
 		HotlinkMode           *string `json:"hotlink_mode"`
 		HotlinkAllowedDomains *string `json:"hotlink_allowed_domains"`
+		PublicMode            *string `json:"public_mode"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -595,6 +675,17 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 	updates := map[string]any{}
 	if req.DisplayName != nil && strings.TrimSpace(*req.DisplayName) != "" {
 		updates["display_name"] = strings.TrimSpace(*req.DisplayName)
+	}
+	if req.PublicMode != nil && *req.PublicMode != "" {
+		batchPm := *req.PublicMode
+		if batchPm == "on" {
+			batchPm = "public"
+		} else if batchPm == "off" {
+			batchPm = "private"
+		}
+		if batchPm == "inherit" || batchPm == "public" || batchPm == "private" {
+			updates["public_mode"] = batchPm
+		}
 	}
 	if req.WatermarkMode != nil && *req.WatermarkMode != "" {
 		if !isValidMode(*req.WatermarkMode) {
@@ -616,6 +707,17 @@ func (ctrl *FileController) UpdateFile(c *gin.Context) {
 			updates["watermark_template_id"] = req.WatermarkTemplateID
 		} else {
 			updates["watermark_template_id"] = nil
+		}
+	}
+	if req.PublicMode != nil && *req.PublicMode != "" {
+		pm := *req.PublicMode
+		if pm == "on" {
+			pm = "public"
+		} else if pm == "off" {
+			pm = "private"
+		}
+		if pm == "inherit" || pm == "public" || pm == "private" {
+			updates["public_mode"] = pm
 		}
 	}
 	if req.HotlinkMode != nil && *req.HotlinkMode != "" {
@@ -847,6 +949,15 @@ func (ctrl *FileController) CreateTempLink(c *gin.Context) {
 		return
 	}
 
+	// Guest files do not support temporary original links
+	var guestUser model.User
+	if err := ctrl.db.Where("username = ?", "guest").First(&guestUser).Error; err == nil && guestUser.ID > 0 {
+		if file.UserID == guestUser.ID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "游客图片不支持生成临时原图链接"})
+			return
+		}
+	}
+
 	var req struct {
 		ExpiresHours int `json:"expires_hours"` // e.g. 1, 24, 168
 	}
@@ -906,6 +1017,14 @@ func (ctrl *FileController) ListTempLinks(c *gin.Context) {
 	if err := query.First(&file).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 		return
+	}
+
+	var guestUser model.User
+	if err := ctrl.db.Where("username = ?", "guest").First(&guestUser).Error; err == nil && guestUser.ID > 0 {
+		if file.UserID == guestUser.ID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "游客图片不支持临时原图链接"})
+			return
+		}
 	}
 
 	var links []model.TemporaryLink
@@ -1058,5 +1177,316 @@ func (ctrl *FileController) EditFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"file":  savedFile,
 		"links": ctrl.buildFileLinks(savedFile),
+	})
+}
+
+func (ctrl *FileController) GuestUpload(c *gin.Context) {
+	var s model.Setting
+	ctrl.db.Where("key = 'enable_guest_upload'").First(&s)
+	if s.Value != "true" && s.Value != "1" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "游客上传功能未开启"})
+		return
+	}
+
+	var guestUser model.User
+	if err := ctrl.db.Preload("Role").Where("username = ?", "guest").First(&guestUser).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "游客账户不存在或尚未初始化"})
+		return
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请选择要上传的文件"})
+		return
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fileHeader.Filename), "."))
+	isImgExt := ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "gif" || ext == "webp" || ext == "heif" || ext == "heic" || ext == "bmp" || ext == "svg"
+	if !isImgExt {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客仅支持上传图片文件（jpg, png, gif, webp, heif 等）"})
+		return
+	}
+
+	if err := ctrl.checkRoleUploadLimits(&guestUser, fileHeader.Filename, fileHeader.Size); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	src, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法读取上传文件"})
+		return
+	}
+	defer src.Close()
+
+	var policyID uint
+	var rolePolicy model.RolePolicy
+	if err := ctrl.db.Where("role_id = ?", guestUser.RoleID).First(&rolePolicy).Error; err == nil {
+		policyID = rolePolicy.PolicyID
+	}
+
+	// Guest upload is always public
+	publicMode := "public"
+
+	wmMode := "off"
+	var wmTemplateID *uint
+	var guestWmSetting model.Setting
+	if err := ctrl.db.Where("key = 'guest_watermark_id'").First(&guestWmSetting).Error; err == nil && guestWmSetting.Value != "" {
+		if wID, err := strconv.ParseUint(guestWmSetting.Value, 10, 64); err == nil && wID > 0 {
+			uID := uint(wID)
+			wmMode = "on"
+			wmTemplateID = &uID
+		}
+	}
+
+	record, err := ctrl.uploadService.Upload(c.Request.Context(), &guestUser, src, fileHeader.Filename, fileHeader.Size, service.UploadOptions{
+		PolicyID:            policyID,
+		DisplayName:         fileHeader.Filename,
+		WatermarkMode:       wmMode,
+		WatermarkTemplateID: wmTemplateID,
+		PublicMode:          publicMode,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	links := ctrl.buildFileLinks(record, currentBaseURL)
+
+	c.JSON(http.StatusOK, gin.H{
+		"file":  record,
+		"links": links,
+	})
+}
+
+func (ctrl *FileController) ListGuestFiles(c *gin.Context) {
+	var s model.Setting
+	ctrl.db.Where("key = 'enable_guest_upload'").First(&s)
+	if s.Value != "true" && s.Value != "1" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "游客图库未开放"})
+		return
+	}
+
+	var guestUser model.User
+	if err := ctrl.db.Where("username = ?", "guest").First(&guestUser).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{"items": []any{}, "total": 0})
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "24"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 24
+	}
+
+	query := ctrl.db.Model(&model.FileRecord{}).Where("user_id = ?", guestUser.ID)
+	if q := strings.TrimSpace(c.Query("q")); q != "" {
+		like := "%" + q + "%"
+		query = query.Where("display_name LIKE ? OR public_path LIKE ?", like, like)
+	}
+
+	var total int64
+	query.Count(&total)
+
+	var files []model.FileRecord
+	query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
+
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	type GuestFileItem struct {
+		model.FileRecord
+		Links gin.H `json:"links"`
+	}
+	items := make([]GuestFileItem, 0, len(files))
+	for _, f := range files {
+		links := ctrl.buildFileLinks(&f, currentBaseURL)
+		items = append(items, GuestFileItem{
+			FileRecord: f,
+			Links:      links,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items":     items,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+func (ctrl *FileController) ListSquareFiles(c *gin.Context) {
+	var s model.Setting
+	ctrl.db.Where("key = 'enable_square'").First(&s)
+	if s.Value != "true" && s.Value != "1" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "广场功能未开启"})
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "30"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 30
+	}
+
+	query := ctrl.db.Model(&model.FileRecord{}).
+		Joins("LEFT JOIN users ON users.id = file_records.user_id").
+		Where("file_records.is_image = ? AND (file_records.public_mode = 'public' OR (file_records.public_mode = 'inherit' AND users.default_public = ?))", true, true)
+
+	if q := strings.TrimSpace(c.Query("q")); q != "" {
+		like := "%" + q + "%"
+		query = query.Where("file_records.display_name LIKE ?", like)
+	}
+
+	var total int64
+	query.Count(&total)
+
+	var files []model.FileRecord
+	query.Order("file_records.id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
+
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	type SquareFileItem struct {
+		model.FileRecord
+		Links gin.H `json:"links"`
+	}
+	items := make([]SquareFileItem, 0, len(files))
+	for _, f := range files {
+		links := ctrl.buildFileLinks(&f, currentBaseURL)
+		items = append(items, SquareFileItem{
+			FileRecord: f,
+			Links:      links,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items":     items,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+func (ctrl *FileController) GetGuestFileDetails(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file ID"})
+		return
+	}
+
+	var s model.Setting
+	ctrl.db.Where("key = 'enable_guest_upload'").First(&s)
+	if s.Value != "true" && s.Value != "1" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "游客图库未开放"})
+		return
+	}
+
+	var guestUser model.User
+	if err := ctrl.db.Where("username = ?", "guest").First(&guestUser).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	var file model.FileRecord
+	if err := ctrl.db.Where("id = ? AND user_id = ?", id, guestUser.ID).First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	links := ctrl.buildFileLinks(&file, currentBaseURL)
+	c.JSON(http.StatusOK, gin.H{
+		"file":  file,
+		"links": links,
+	})
+}
+
+func (ctrl *FileController) GetSquareFileDetails(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file ID"})
+		return
+	}
+
+	var s model.Setting
+	ctrl.db.Where("key = 'enable_square'").First(&s)
+	if s.Value != "true" && s.Value != "1" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "广场功能未开启"})
+		return
+	}
+
+	var file model.FileRecord
+	if err := ctrl.db.Where("id = ?", id).First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	isPublic := false
+	if file.IsImage {
+		if file.PublicMode == "public" {
+			isPublic = true
+		} else if file.PublicMode == "inherit" {
+			var u model.User
+			if err := ctrl.db.Where("id = ?", file.UserID).First(&u).Error; err == nil && u.DefaultPublic {
+				isPublic = true
+			}
+		}
+	}
+	if !isPublic {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	links := ctrl.buildFileLinks(&file, currentBaseURL)
+	c.JSON(http.StatusOK, gin.H{
+		"file":  file,
+		"links": links,
+	})
+}
+
+func (ctrl *FileController) GetPublicFileDetails(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file ID"})
+		return
+	}
+
+	var file model.FileRecord
+	if err := ctrl.db.Where("id = ?", id).First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	var guestUser model.User
+	ctrl.db.Where("username = ?", "guest").First(&guestUser)
+	isGuestFile := guestUser.ID > 0 && file.UserID == guestUser.ID
+
+	isPublicFile := false
+	if file.IsImage {
+		if file.PublicMode == "public" {
+			isPublicFile = true
+		} else if file.PublicMode == "inherit" {
+			var u model.User
+			if err := ctrl.db.Where("id = ?", file.UserID).First(&u).Error; err == nil && u.DefaultPublic {
+				isPublicFile = true
+			}
+		}
+	}
+
+	if !isGuestFile && !isPublicFile {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	links := ctrl.buildFileLinks(&file, currentBaseURL)
+	c.JSON(http.StatusOK, gin.H{
+		"file":  file,
+		"links": links,
 	})
 }

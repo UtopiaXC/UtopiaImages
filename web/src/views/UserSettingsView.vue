@@ -88,7 +88,7 @@
         <!-- Passkey Section -->
         <n-card :title="$t('settings.passkeyTitle')" style="border-radius: 8px;">
           <template #header-extra>
-            <n-button type="primary" size="small" :loading="registeringPasskey" @click="handleCreatePasskey">
+            <n-button type="primary" size="small" :loading="registeringPasskey" @click="openCreatePasskeyModal">
               {{ $t('settings.addPasskey') }}
             </n-button>
           </template>
@@ -113,12 +113,15 @@
                   <td>{{ formatDate(pk.created_at) }}</td>
                   <td>{{ pk.last_used_at ? formatDate(pk.last_used_at) : $t('tokens.never') }}</td>
                   <td>
-                    <n-popconfirm @positive-click="deletePasskey(pk.id)">
-                      <template #trigger>
-                        <n-button size="tiny" quaternary type="error">{{ $t('common.delete') }}</n-button>
-                      </template>
-                      {{ $t('settings.confirmDeletePasskey') }}
-                    </n-popconfirm>
+                    <div style="display: flex; gap: 8px;">
+                      <n-button size="tiny" quaternary type="primary" @click="openEditPasskey(pk)">{{ $t('common.edit') }}</n-button>
+                      <n-popconfirm @positive-click="deletePasskey(pk.id)">
+                        <template #trigger>
+                          <n-button size="tiny" quaternary type="error">{{ $t('common.delete') }}</n-button>
+                        </template>
+                        {{ $t('settings.confirmDeletePasskey') }}
+                      </n-popconfirm>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -182,6 +185,25 @@
 
             <n-divider style="margin: 16px 0;" />
 
+            <n-form-item :label="$t('settings.userDefaultPublic')">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <n-radio-group v-model:value="defaultPublic">
+                  <n-radio-button :value="true">{{ $t('files.publicOn') }}</n-radio-button>
+                  <n-radio-button :value="false">{{ $t('files.publicOff') }}</n-radio-button>
+                </n-radio-group>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon size="16" style="color: #888; cursor: pointer;">
+                      <InformationCircleOutline />
+                    </n-icon>
+                  </template>
+                  {{ $t('settings.userDefaultPublicTip') }}
+                </n-tooltip>
+              </div>
+            </n-form-item>
+
+            <n-divider style="margin: 16px 0;" />
+
             <h3 style="font-size: 15px; margin-bottom: 12px; font-weight: 500;">{{ $t('settings.hotlinkSectionTitle') }}</h3>
             <div style="font-size: 13px; color: #888; margin-bottom: 16px;">
               {{ $t('settings.hotlinkDesc') }}
@@ -235,6 +257,37 @@
           </n-form>
         </n-card>
       </n-tab-pane>
+
+      <!-- Tab 5: Default View (when guest upload or square enabled) -->
+      <n-tab-pane v-if="siteInfo.enable_guest_upload || siteInfo.enable_square" name="defaultView" :tab="$t('settings.tabDefaultView')">
+        <n-card style="border-radius: 8px; margin-top: 12px;">
+          <h3 style="font-size: 15px; margin-bottom: 16px; font-weight: 500;">{{ $t('settings.defaultLandingTitle') }}</h3>
+          <n-form label-placement="left" label-width="140">
+            <n-form-item :label="$t('settings.defaultLandingLabel')">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <n-radio-group v-model:value="preferences.default_landing_view">
+                  <n-radio-button value="visitor">{{ $t('settings.landingVisitor') }}</n-radio-button>
+                  <n-radio-button value="console">{{ $t('settings.landingConsole') }}</n-radio-button>
+                </n-radio-group>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon size="16" style="color: #888; cursor: pointer;">
+                      <InformationCircleOutline />
+                    </n-icon>
+                  </template>
+                  {{ $t('settings.defaultLandingTip') }}
+                </n-tooltip>
+              </div>
+            </n-form-item>
+
+            <div style="display: flex; justify-content: flex-end;">
+              <n-button type="primary" :loading="savingLandingView" @click="saveLandingView">
+                {{ $t('common.save') }}
+              </n-button>
+            </div>
+          </n-form>
+        </n-card>
+      </n-tab-pane>
     </n-tabs>
 
     <!-- Change Username Modal -->
@@ -252,6 +305,59 @@
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
           <n-button @click="showChangeUsernameModal = false">{{ $t('common.cancel') }}</n-button>
           <n-button type="warning" :loading="migratingUsername" @click="handleMigrateUsername">{{ $t('settings.confirmMigrate') }}</n-button>
+        </div>
+      </template>
+    </n-modal>
+
+    <!-- Create Passkey Modal -->
+    <n-modal
+      v-model:show="showCreatePasskeyModal"
+      preset="card"
+      :title="$t('settings.createPasskeyModalTitle')"
+      style="width: 440px; max-width: 95vw; border-radius: 12px;"
+    >
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <p style="font-size: 13px; color: #aaa; margin: 0;">{{ $t('settings.createPasskeyModalDesc') }}</p>
+        <n-form-item :label="$t('settings.passkeyNameLabel')">
+          <n-input
+            v-model:value="newPasskeyName"
+            :placeholder="$t('settings.passkeyNamePlaceholder')"
+            @keyup.enter="handleCreatePasskey"
+          />
+        </n-form-item>
+      </div>
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end; gap: 12px;">
+          <n-button @click="showCreatePasskeyModal = false">{{ $t('common.cancel') }}</n-button>
+          <n-button type="primary" :loading="registeringPasskey" @click="handleCreatePasskey">
+            {{ $t('common.confirm') }}
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
+
+    <!-- Edit Passkey Modal -->
+    <n-modal
+      v-model:show="showEditPasskeyModal"
+      preset="card"
+      :title="$t('settings.editPasskeyModalTitle')"
+      style="width: 440px; max-width: 95vw; border-radius: 12px;"
+    >
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <n-form-item :label="$t('settings.passkeyNameLabel')">
+          <n-input
+            v-model:value="editPasskeyName"
+            :placeholder="$t('settings.passkeyNamePlaceholder')"
+            @keyup.enter="handleUpdatePasskey"
+          />
+        </n-form-item>
+      </div>
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end; gap: 12px;">
+          <n-button @click="showEditPasskeyModal = false">{{ $t('common.cancel') }}</n-button>
+          <n-button type="primary" :loading="updatingPasskey" @click="handleUpdatePasskey">
+            {{ $t('common.save') }}
+          </n-button>
         </div>
       </template>
     </n-modal>
@@ -289,6 +395,8 @@ import { useMessage } from 'naive-ui'
 import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
+import { siteInfo } from '../utils/site'
+import { userPreferences } from '../utils/auth'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -309,7 +417,8 @@ const preferences = ref({
   default_policy_id: '1',
   watermark_mode: 'inherit',
   watermark_template_id: '',
-  default_link_format: 'markdown'
+  default_link_format: 'url',
+  default_landing_view: 'visitor'
 })
 
 const hotlinkSettings = ref({
@@ -319,16 +428,51 @@ const hotlinkSettings = ref({
 })
 
 const callStatEnabled = ref(false)
+const defaultPublic = ref(false)
 const globalCallStatEnabled = ref(false)
 
 const policyOptions = ref<any[]>([])
 const watermarkOptions = ref<any[]>([])
 const passkeys = ref<any[]>([])
 const registeringPasskey = ref(false)
+const showCreatePasskeyModal = ref(false)
+const newPasskeyName = ref('')
+const openCreatePasskeyModal = () => {
+  newPasskeyName.value = 'Passkey ' + new Date().toLocaleDateString()
+  showCreatePasskeyModal.value = true
+}
+const showEditPasskeyModal = ref(false)
+const editingPasskeyId = ref<number | null>(null)
+const editPasskeyName = ref('')
+const updatingPasskey = ref(false)
+const openEditPasskey = (pk: any) => {
+  editingPasskeyId.value = pk.id
+  editPasskeyName.value = pk.name || ''
+  showEditPasskeyModal.value = true
+}
+const handleUpdatePasskey = async () => {
+  if (!editingPasskeyId.value) return
+  const name = editPasskeyName.value.trim()
+  if (!name) {
+    message.error(t('settings.passkeyNameRequired'))
+    return
+  }
+  updatingPasskey.value = true
+  try {
+    await api.patch(`/me/passkeys/${editingPasskeyId.value}`, { name })
+    message.success(t('settings.passkeyUpdatedSuccess'))
+    showEditPasskeyModal.value = false
+    loadPasskeys()
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.save'))
+  } finally {
+    updatingPasskey.value = false
+  }
+}
 
 const linkFormatOptions = computed(() => [
-  { label: 'Markdown', value: 'markdown' },
   { label: t('upload.directLink'), value: 'url' },
+  { label: 'Markdown', value: 'markdown' },
   { label: t('upload.html'), value: 'html' },
   { label: t('upload.bbcode'), value: 'bbcode' }
 ])
@@ -360,13 +504,15 @@ const loadData = async () => {
     preferences.value.default_policy_id = prefRes.data.default_policy_id || '1'
     preferences.value.watermark_mode = prefRes.data.watermark_mode === 'on' ? 'on' : 'off'
     preferences.value.watermark_template_id = prefRes.data.watermark_template_id || ''
-    preferences.value.default_link_format = prefRes.data.default_link_format || 'markdown'
+    preferences.value.default_link_format = prefRes.data.default_link_format || 'url'
+    preferences.value.default_landing_view = prefRes.data.default_landing_view || 'visitor'
 
     hotlinkSettings.value.hotlink_enabled = !!prefRes.data.hotlink_enabled
     hotlinkSettings.value.hotlink_allow_empty = prefRes.data.hotlink_allow_empty !== false
     hotlinkSettings.value.hotlink_allowed_domains = prefRes.data.hotlink_allowed_domains || ''
 
     callStatEnabled.value = !!prefRes.data.call_stat_enabled
+    defaultPublic.value = !!prefRes.data.default_public
     globalCallStatEnabled.value = !!prefRes.data.global_call_stat_enabled
 
     policyOptions.value = (prefRes.data.available_policies || []).map((p: any) => ({
@@ -494,6 +640,7 @@ const savePreferences = async () => {
   savingPreferences.value = true
   try {
     await api.post('/me/settings', preferences.value)
+    userPreferences.value = { ...userPreferences.value, ...preferences.value }
     message.success(t('settings.preferencesSaved'))
   } catch (err: any) {
     message.error(t('common.save'))
@@ -514,7 +661,8 @@ const saveImageSettings = async () => {
       call_stat_enabled: callStatEnabled.value,
       hotlink_enabled: hotlinkSettings.value.hotlink_enabled,
       hotlink_allow_empty: hotlinkSettings.value.hotlink_allow_empty,
-      hotlink_allowed_domains: hotlinkSettings.value.hotlink_allowed_domains
+      hotlink_allowed_domains: hotlinkSettings.value.hotlink_allowed_domains,
+      default_public: defaultPublic.value
     })
     message.success(t('settings.imageSettingsSaved'))
   } catch (err: any) {
@@ -583,8 +731,9 @@ const handleCreatePasskey = async () => {
       }
     }
 
-    await api.post(`/me/passkeys/register-finish?session_key=${session_key}&name=Passkey`, payload)
+    await api.post(`/me/passkeys/register-finish?session_key=${session_key}&name=${encodeURIComponent(newPasskeyName.value.trim() || 'Passkey')}`, payload)
     message.success(t('settings.passkeyCreatedSuccess'))
+    showCreatePasskeyModal.value = false
     loadPasskeys()
   } catch (err: any) {
     message.error(err.response?.data?.error || err.message || t('settings.passkeyFailed'))
@@ -607,6 +756,23 @@ const formatDate = (isoStr: string) => {
   if (!isoStr) return '-'
   const d = new Date(isoStr)
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+
+const savingLandingView = ref(false)
+const saveLandingView = async () => {
+  savingLandingView.value = true
+  try {
+    await api.post('/me/settings', {
+      default_landing_view: preferences.value.default_landing_view
+    })
+    userPreferences.value = { ...userPreferences.value, default_landing_view: preferences.value.default_landing_view }
+    message.success(t('settings.landingSaved'))
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.save'))
+  } finally {
+    savingLandingView.value = false
+  }
 }
 
 onMounted(loadData)

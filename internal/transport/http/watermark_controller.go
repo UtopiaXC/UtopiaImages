@@ -48,10 +48,12 @@ func (ctrl *WatermarkController) RegisterRoutes(rg *gin.RouterGroup) {
 	wm.Use(auth.RequireAuth())
 	{
 		wm.GET("", ctrl.ListWatermarks)
+		wm.GET("/system", ctrl.ListSystemWatermarks)
 		wm.POST("", ctrl.CreateWatermark)
 		wm.GET("/:id", ctrl.GetWatermark)
 		wm.PATCH("/:id", ctrl.UpdateWatermark)
 		wm.DELETE("/:id", ctrl.DeleteWatermark)
+		wm.POST("/:id/clone", ctrl.CloneWatermark)
 		wm.POST("/preview", ctrl.PreviewWatermark)
 		wm.POST("/extract-blind", ctrl.ExtractBlindWatermark)
 	}
@@ -60,7 +62,7 @@ func (ctrl *WatermarkController) RegisterRoutes(rg *gin.RouterGroup) {
 func (ctrl *WatermarkController) ListWatermarks(c *gin.Context) {
 	userID := c.GetUint(auth.CtxUserIDKey)
 	var templates []model.WatermarkTemplate
-	ctrl.db.Where("owner_id = ? OR owner_id IS NULL", userID).Order("id DESC").Find(&templates)
+	ctrl.db.Where("owner_id = ?", userID).Order("id DESC").Find(&templates)
 	c.JSON(http.StatusOK, templates)
 }
 
@@ -69,9 +71,8 @@ func (ctrl *WatermarkController) CreateWatermark(c *gin.Context) {
 	user := uVal.(*model.User)
 
 	var req struct {
-		Name     string `json:"name" binding:"required"`
-		Layers   string `json:"layers" binding:"required"`
-		IsGlobal bool   `json:"is_global"`
+		Name   string `json:"name" binding:"required"`
+		Layers string `json:"layers" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -85,28 +86,20 @@ func (ctrl *WatermarkController) CreateWatermark(c *gin.Context) {
 	}
 
 	var count int64
-	if req.IsGlobal && isUserAdmin(user) {
-		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND owner_id IS NULL", req.Name).Count(&count)
-	} else {
-		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND (owner_id = ? OR owner_id IS NULL)", req.Name, user.ID).Count(&count)
-	}
+	ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND owner_id = ?", req.Name, user.ID).Count(&count)
 	if count > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name already exists"})
 		return
 	}
 
 	tmpl := model.WatermarkTemplate{
+		OwnerID:   &user.ID,
+		IsSystem:  false,
 		Name:      req.Name,
 		Layers:    req.Layers,
 		Version:   1,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-	}
-
-	if req.IsGlobal && isUserAdmin(user) {
-		tmpl.OwnerID = nil
-	} else {
-		tmpl.OwnerID = &user.ID
 	}
 
 	if err := ctrl.db.Create(&tmpl).Error; err != nil {
@@ -122,7 +115,7 @@ func (ctrl *WatermarkController) GetWatermark(c *gin.Context) {
 	id := c.Param("id")
 
 	var tmpl model.WatermarkTemplate
-	if err := ctrl.db.Where("id = ? AND (owner_id = ? OR owner_id IS NULL)", id, userID).First(&tmpl).Error; err != nil {
+	if err := ctrl.db.Where("id = ? AND owner_id = ?", id, userID).First(&tmpl).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark template not found"})
 		return
 	}
@@ -136,11 +129,7 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 	id := c.Param("id")
 
 	var tmpl model.WatermarkTemplate
-	query := ctrl.db.Where("id = ?", id)
-	if !isUserAdmin(user) {
-		query = query.Where("owner_id = ?", user.ID)
-	}
-	if err := query.First(&tmpl).Error; err != nil {
+	if err := ctrl.db.Where("id = ? AND owner_id = ?", id, user.ID).First(&tmpl).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark template not found"})
 		return
 	}
@@ -161,11 +150,7 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 	if req.Name != "" {
 		req.Name = strings.TrimSpace(req.Name)
 		var count int64
-		if tmpl.OwnerID == nil {
-			ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ? AND owner_id IS NULL", req.Name, id).Count(&count)
-		} else {
-			ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ? AND (owner_id = ? OR owner_id IS NULL)", req.Name, id, *tmpl.OwnerID).Count(&count)
-		}
+		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ? AND owner_id = ?", req.Name, id, user.ID).Count(&count)
 		if count > 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name already exists"})
 			return
@@ -180,11 +165,7 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 	ctrl.db.Where("id = ?", id).First(&tmpl)
 
 	// Invalidate client keys only for affected files
-	if tmpl.OwnerID != nil {
-		ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ? OR (watermark_template_id IS NULL AND user_id = ?)", tmpl.ID, *tmpl.OwnerID).Update("sign_version", gorm.Expr("sign_version + 1"))
-	} else {
-		ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ? OR watermark_template_id IS NULL", tmpl.ID).Update("sign_version", gorm.Expr("sign_version + 1"))
-	}
+	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ? OR (watermark_template_id IS NULL AND user_id = ?)", tmpl.ID, user.ID).Update("sign_version", gorm.Expr("sign_version + 1"))
 
 	c.JSON(http.StatusOK, tmpl)
 }
@@ -194,12 +175,7 @@ func (ctrl *WatermarkController) DeleteWatermark(c *gin.Context) {
 	user := uVal.(*model.User)
 	id := c.Param("id")
 
-	query := ctrl.db.Where("id = ?", id)
-	if !isUserAdmin(user) {
-		query = query.Where("owner_id = ?", user.ID)
-	}
-
-	res := query.Delete(&model.WatermarkTemplate{})
+	res := ctrl.db.Where("id = ? AND owner_id = ?", id, user.ID).Delete(&model.WatermarkTemplate{})
 	if res.RowsAffected == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark template not found or unauthorized"})
 		return
@@ -395,4 +371,46 @@ func (ctrl *WatermarkController) ExtractBlindWatermark(c *gin.Context) {
 		"text":           text,
 		"spectrum_image": specBase64,
 	})
+}
+
+func (ctrl *WatermarkController) ListSystemWatermarks(c *gin.Context) {
+	var templates []model.WatermarkTemplate
+	ctrl.db.Where("owner_id IS NULL OR is_system = ?", true).Order("id DESC").Find(&templates)
+	c.JSON(http.StatusOK, templates)
+}
+
+func (ctrl *WatermarkController) CloneWatermark(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	id := c.Param("id")
+
+	var source model.WatermarkTemplate
+	if err := ctrl.db.Where("id = ? AND (owner_id IS NULL OR is_system = ? OR owner_id = ?)", id, true, user.ID).First(&source).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark template not found"})
+		return
+	}
+
+	cloneName := strings.TrimSpace(source.Name) + " (副本)"
+	var count int64
+	ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND owner_id = ?", cloneName, user.ID).Count(&count)
+	if count > 0 {
+		cloneName = fmt.Sprintf("%s (%d)", strings.TrimSpace(source.Name), time.Now().Unix())
+	}
+
+	cloned := model.WatermarkTemplate{
+		OwnerID:   &user.ID,
+		IsSystem:  false,
+		Name:      cloneName,
+		Layers:    source.Layers,
+		Version:   1,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := ctrl.db.Create(&cloned).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, cloned)
 }

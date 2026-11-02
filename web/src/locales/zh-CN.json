@@ -23,10 +23,14 @@
     "unlimited": "不限",
     "failed": "失败",
     "days": "天",
-    "error": "操作失败"
+    "error": "操作失败",
+    "none": "无",
+    "noData": "暂无数据",
+    "loadFailed": "加载失败",
+    "updatedAt": "更新时间"
   },
   "nav": {
-    "upload": "图片上传",
+    "upload": "文件上传",
     "files": "图库管理",
     "watermarks": "水印管理",
     "tokens": "API 令牌",
@@ -36,11 +40,12 @@
     "adminSettings": "系统设置",
     "adminStats": "系统看板",
     "adminRoles": "角色管理",
-    "adminFiles": "全站图片"
+    "adminFiles": "全站图片",
+    "adminWatermarks": "水印管理"
   },
   "setup": {
     "title": "系统初始化向导",
-    "stepSite": "站点基本信息",
+    "stepSite": "站点信息",
     "stepDb": "数据库配置",
     "stepSmtp": "邮件通知服务",
     "stepAdmin": "超级管理员账号",
@@ -182,10 +187,11 @@
     "manualSecret": "或手动输入密钥：",
     "verifyAndComplete": "验证并完成登录",
     "bindPasskeyDesc": "使用当前设备生物识别（Windows Hello/Touch ID/物理安全密钥）绑定为登录凭证。",
-    "bindPasskeyBtn": "使用当前设备绑定 Passkey 并登录"
+    "bindPasskeyBtn": "使用当前设备绑定 Passkey 并登录",
+    "login": "登录"
   },
   "upload": {
-    "title": "上传文件",
+    "title": "文件上传",
     "dragTip": "点击或拖拽文件到此处，支持粘贴剪贴板图片",
     "watermark": "防盗水印",
     "watermarkInherit": "跟随默认",
@@ -239,7 +245,9 @@
     "archiveUploading": "正在上传归档压缩包...",
     "archiveProcessing": "上传完成，服务端正在解压导入并生成元数据...",
     "cancelImportAndClear": "取消导入并清空缓存",
-    "chunkModeNotice": "由于文件过大，将采用分片上传的方式进行传输。"
+    "chunkModeNotice": "由于文件过大，将采用分片上传的方式进行传输。",
+    "success": "上传成功",
+    "failed": "上传失败"
   },
   "files": {
     "title": "图库管理",
@@ -321,7 +329,17 @@
     "noFiles": "暂无匹配的文件",
     "allWatermark": "全部水印状态",
     "allHotlink": "全部防盗链状态",
-    "allPolicy": "全部策略"
+    "allPolicy": "全部策略",
+    "publicMode": "公开状态",
+    "publicInherit": "跟随默认",
+    "publicOn": "公开",
+    "publicOff": "不公开",
+    "publicTip": "公开的图片将在广场照片墙展示",
+    "totalFiles": "全部文件",
+    "searchPlaceholder": "搜索文件名...",
+    "detailsTitle": "图片详情与外链",
+    "updatedAt": "更新时间",
+    "countText": "共 {count} 个文件"
   },
   "watermarks": {
     "title": "水印模板管理",
@@ -407,7 +425,14 @@
     "edit": "编辑",
     "confirmDelete": "确认要删除此水印模板吗？",
     "adaptiveColor": "自适应文字颜色",
-    "adaptiveColorTip": "根据图片底色明暗动态计算反差颜色，防止水印干扰图片内容"
+    "adaptiveColorTip": "根据图片底色明暗动态计算反差颜色，防止水印干扰图片内容",
+    "systemWatermarks": "系统水印",
+    "systemTemplates": "系统水印",
+    "cloneToMine": "复制到我的模板",
+    "cloneSuccess": "系统水印已成功复制到您的模板中",
+    "systemWatermarksDesc": "系统管理员预设的全局水印模板，您可以直接一键复制到自己的账户中自定义使用。",
+    "previewPlaceholder": "暂无预览",
+    "emptySystemTemplates": "系统没有预设水印，请自行创建。"
   },
   "editor": {
     "title": "图片编辑处理",
@@ -551,12 +576,30 @@
     "callStatSwitch": "启用调用统计",
     "callStatDesc": "开启后，所有图片访问将被拦截为临时重定向，精准统计PV与UV访问量，且不影响CDN缓存",
     "globalCallStatLocked": "系统已开启全局调用统计，此设置已由全局强制开启",
-    "imageSettingsSaved": "图片设置已保存"
+    "imageSettingsSaved": "图片设置已保存",
+    "userDefaultPublic": "默认图片公开",
+    "userDefaultPublicTip": "开启后新上传的图片默认公开并在广场展示",
+    "createPasskeyModalTitle": "新建通行密钥",
+    "createPasskeyModalDesc": "请为您的新通行密钥命名，方便日后辨认与管理。",
+    "passkeyNameLabel": "密钥名称",
+    "passkeyNamePlaceholder": "例如：MacBook Pro / iPhone / YubiKey",
+    "editPasskeyModalTitle": "重命名通行密钥",
+    "passkeyNameRequired": "通行密钥名称不能为空",
+    "passkeyUpdatedSuccess": "通行密钥名称修改成功",
+    "guestSinglePolicyTip": "游客角色组必须且只能绑定一个存储策略",
+    "passkeyCancelled": "通行密钥操作已取消",
+    "tabDefaultView": "默认界面",
+    "defaultLandingTitle": "站点默认打开偏好",
+    "defaultLandingLabel": "直接访问站点时",
+    "defaultLandingTip": "直接访问站点首页时默认呈现的界面。访客界面将跟随站点默认配置（如广场或游客发图），控制台则直接进入文件上传。",
+    "landingVisitor": "访客界面",
+    "landingConsole": "控制台界面",
+    "landingSaved": "默认界面设置已保存"
   },
   "adminSettings": {
     "title": "系统设置",
-    "subtitle": "管理站点基本信息、技术上限、安全策略与缓存。",
-    "siteInfo": "站点基本信息",
+    "subtitle": "管理站点信息、技术上限、安全策略与缓存。",
+    "siteInfo": "站点信息",
     "siteName": "站点名称",
     "siteDesc": "站点描述",
     "defaultDescription": "又一个Utopia Images自部署图床",
@@ -584,7 +627,7 @@
     "force2fa": "全站强制两步验证",
     "force2faTip": "启用后所有用户必须配置两步验证后方可正常使用",
     "hotlinkTitle": "防盗链安全设置",
-    "enableHotlink": "开启防盗链保护",
+    "enableHotlink": "开启全局防盗链保护",
     "enableHotlinkTip": "仅允许白名单来源的网站展示或引用本站图片",
     "allowEmptyReferer": "允许空 Referer 访问",
     "allowEmptyRefererTip": "允许浏览器直接在地址栏打开图片或无来源请求",
@@ -592,7 +635,7 @@
     "allowedDomainsPlaceholder": "支持通配符如 *.example.com，换行或逗号分隔",
     "hotlinkAction": "未授权处置方式",
     "actionForbidden": "拒绝访问并返回 403 状态码",
-    "cacheTitle": "派生图片缓存",
+    "cacheTitle": "缓存",
     "cacheDesc": "缩略图、加水印图片以及 WebP 转换后的图片会保存在本地磁盘缓存中，提升二次访问分发速度。",
     "cacheUsage": "当前缓存总消耗",
     "cacheUsageUnlimited": "无上限",
@@ -624,7 +667,7 @@
     "backupUnits": "份",
     "logMaxAge": "日志留存时效",
     "logMaxAgeTip": "超过此天数的历史归档日志将被自动清理",
-    "registrationTitle": "用户注册与权限",
+    "registrationTitle": "用户访问",
     "allowRegistration": "开放用户自主注册",
     "allowRegistrationTip": "开启后，未登录用户可在前台登录页自主注册账号",
     "defaultRegisterRole": "新注册用户默认角色",
@@ -641,7 +684,30 @@
     "uploadFavicon": "上传新图标",
     "restoreDefaultFavicon": "恢复默认图标",
     "faviconUpdated": "网站图标已成功更新",
-    "faviconRestored": "已成功恢复默认网站图标"
+    "faviconRestored": "已成功恢复默认网站图标",
+    "tabSystem": "系统",
+    "tabFile": "文件",
+    "tabSecurity": "安全",
+    "tabUser": "用户",
+    "systemSecurityTitle": "系统安全",
+    "formatConversionTitle": "格式转换",
+    "enableGuestUpload": "游客上传",
+    "enableGuestUploadTip": "开启后未登录访客可直接上传图片，系统将自动创建游客账号与角色组",
+    "guestModalTitle": "关闭游客上传",
+    "guestModalContent": "是否保留游客已上传的图片和文件？",
+    "guestKeepData": "保留数据",
+    "guestCleanData": "全部删除",
+    "enableSquare": "广场",
+    "enableSquareTip": "开启后站点将提供公开图片展示墙，未登录访客可浏览全站公开图片",
+    "defaultOpenPage": "默认打开页面",
+    "defaultOpenPageTip": "未登录访客访问站点首页时默认展示的页面",
+    "pageGuestUpload": "游客上传页",
+    "pageSquare": "广场页",
+    "pageGuestGallery": "游客图库页",
+    "pageLogin": "登录页",
+    "guestWatermark": "游客发图水印",
+    "guestWatermarkTip": "为未登录游客上传的图片自动应用的系统水印，默认无水印。",
+    "noWatermark": "无水印"
   },
   "adminUsers": {
     "title": "用户体系管理",
@@ -677,7 +743,8 @@
     "confirmBan": "确认要封禁此用户吗？封禁后该用户将立即失效且无法登录。",
     "confirmUnfreeze": "确认要解除此用户的冻结/封禁状态吗？解除后用户将恢复正常登录权限。",
     "banSuccess": "用户已被封禁",
-    "unfreezeSuccess": "用户已解除冻结并恢复正常"
+    "unfreezeSuccess": "用户已解除冻结并恢复正常",
+    "guestUserLocked": "游客账户不可编辑或删除"
   },
   "adminPolicies": {
     "title": "存储策略与路由挂载",
@@ -718,7 +785,8 @@
     "tokenFilename": "原始文件名",
     "tokenExt": "扩展名",
     "tokenTimestamp": "时间戳",
-    "tokenSha256": "SHA256哈希"
+    "tokenSha256": "SHA256哈希",
+    "guestSinglePolicyTip": "游客角色组必须且只能绑定一个存储策略"
   },
   "adminStats": {
     "title": "系统看板",
@@ -774,7 +842,17 @@
     "systemRole": "系统角色",
     "saveSuccess": "角色保存成功",
     "deleteSuccess": "角色已删除",
-    "confirmDelete": "确认要删除此角色吗？"
+    "confirmDelete": "确认要删除此角色吗？",
+    "allowedFormats": "允许文件格式",
+    "allowedFormatsPlaceholder": "例如：jpg,png,gif (留空不限)",
+    "allowedFormatsTip": "拓展名用半角逗号分隔，留空不限",
+    "maxSingleFileSize": "单文件大小上限",
+    "maxSingleFileSizeTip": "单文件大小限制，填 0 表示跟随系统限制，不能超过系统限制",
+    "guestRoleLocked": "游客角色组不可删除",
+    "guestSinglePolicyTip": "游客角色组必须且只能绑定一个存储策略",
+    "createSuccess": "角色创建成功",
+    "updateSuccess": "角色更新成功",
+    "quotaTip": "0 为不限制空间"
   },
   "errors": {
     "AUTH_INVALID_CREDENTIALS": "用户名或密码错误",
@@ -814,7 +892,8 @@
     "CANNOT_DELETE_SELF": "无法删除当前正在登录的账号",
     "ERR_AUTH_USER_INACTIVE": "账号尚未激活或已被冻结，请查收激活邮件或联系管理员",
     "ERR_REGISTRATION_SMTP_REQUIRED": "系统未配置邮件发送服务（SMTP），暂时无法开放新用户注册",
-    "ERR_ACTIVATION_TOKEN_INVALID": "激活链接无效或已过期，请重新申请或联系管理员"
+    "ERR_ACTIVATION_TOKEN_INVALID": "激活链接无效或已过期，请重新申请或联系管理员",
+    "AUTH_USERNAME_INVALID": "用户名格式不合法或属于系统保留字，长度必须大于3位（4~32位）"
   },
   "adminFiles": {
     "title": "全站图片管理",
@@ -936,6 +1015,47 @@
     "time7Days": "近 7 天",
     "time30Days": "近 30 天",
     "timeThisMonth": "本月",
-    "all": "全部"
+    "all": "全部",
+    "presetGuest": "游客",
+    "presetGuestTip": "筛选由游客上传的文件",
+    "fieldPublicMode": "公开状态",
+    "publicModeInherit": "跟随默认",
+    "publicModePublic": "公开",
+    "publicModePrivate": "不公开"
+  },
+  "square": {
+    "title": "广场",
+    "empty": "暂无公开图片",
+    "photoWall": "照片墙",
+    "copySuccess": "链接已复制",
+    "wallCount": "共 {count} 个文件"
+  },
+  "guest": {
+    "uploadTitle": "游客上传",
+    "galleryTitle": "游客图库",
+    "empty": "暂无游客上传图片",
+    "loginBtn": "登录",
+    "consoleBtn": "控制台",
+    "onlyImagesTip": "游客仅支持上传图片，单文件限制 5MB",
+    "galleryCount": "共 {count} 个文件"
+  },
+  "adminWatermarks": {
+    "title": "水印管理",
+    "subtitle": "查看、管理全站所有用户与系统的水印模板，设置全局系统水印。",
+    "createSystem": "新建系统水印",
+    "type": "水印类型",
+    "systemType": "系统水印",
+    "userType": "用户水印",
+    "owner": "归属所有者",
+    "setAsSystem": "设为系统水印",
+    "unsetSystem": "取消系统水印",
+    "setAsSystemSuccess": "已设置为系统水印",
+    "unsetSystemSuccess": "已取消系统水印属性",
+    "deleteConfirm": "确定要删除该水印模板吗？删除后关联文件的派生图缓存将被更新。",
+    "searchPlaceholder": "搜索水印名称、所有者或内容...",
+    "totalCount": "共 {count} 个水印"
+  },
+  "auth": {
+    "usernameMinLength": "用户名长度必须大于3个字符"
   }
 }

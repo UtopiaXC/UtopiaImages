@@ -8,6 +8,9 @@
         </p>
       </div>
       <div style="display: flex; gap: 12px;">
+        <n-button secondary @click="openSystemTemplatesModal">
+          {{ $t('watermarks.systemTemplates') }}
+        </n-button>
         <n-button secondary @click="openExtractModal">
           {{ $t('watermarks.extractBlind') }}
         </n-button>
@@ -78,19 +81,7 @@
           <n-input v-model:value="editForm.name" :placeholder="$t('watermarks.namePlaceholder')" />
         </n-form-item>
 
-        <n-form-item v-if="isAdmin" :label="$t('watermarks.global')">
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <n-switch v-model:value="editForm.is_global" />
-            <n-tooltip trigger="hover">
-              <template #trigger>
-                <n-icon size="16" style="color: #888; cursor: pointer;">
-                  <InformationCircleOutline />
-                </n-icon>
-              </template>
-              {{ $t('watermarks.globalTip') }}
-            </n-tooltip>
-          </div>
-        </n-form-item>
+
 
         <n-form-item :label="$t('watermarks.content')">
           <div style="width: 100%;">
@@ -363,6 +354,47 @@
         </div>
       </template>
     </n-modal>
+
+    <!-- System Watermarks Modal -->
+    <n-modal
+      v-model:show="showSystemModal"
+      preset="card"
+      :title="$t('watermarks.systemTemplates')"
+      style="width: 760px; max-width: 95vw; border-radius: 12px;"
+    >
+      <div style="font-size: 13px; color: #888; margin-bottom: 16px;">
+        {{ $t('watermarks.systemWatermarksDesc') }}
+      </div>
+      <n-spin :show="loadingSystemTemplates">
+        <div v-if="systemTemplates.length === 0" style="text-align: center; padding: 32px 0; color: #666;">
+          {{ $t('watermarks.emptySystemTemplates') }}
+        </div>
+        <n-grid v-else cols="1 s:2" :x-gap="12" :y-gap="12">
+          <n-grid-item v-for="st in systemTemplates" :key="st.id">
+            <n-card :title="st.name" size="small" style="border-radius: 8px;">
+              <template #header-extra>
+                <n-tag type="primary" size="small">{{ $t('watermarks.systemWatermarks') }}</n-tag>
+                <n-tag v-if="parseLayers(st.layers).enable_blind_watermark" type="warning" size="small" style="margin-left: 6px;">
+                  {{ $t('watermarks.blindWatermark') }}
+                </n-tag>
+              </template>
+              <div style="font-size: 12px; color: #aaa; margin-bottom: 12px; line-height: 1.8;">
+                <div><strong>{{ $t('watermarks.layout') }}: </strong>{{ parseLayers(st.layers).layout === 'tile' ? $t('watermarks.layoutTile') : $t('watermarks.layoutPosition') }}</div>
+                <div><strong>{{ $t('watermarks.content') }}: </strong><code style="background: rgba(255,255,255,0.08); padding: 2px 4px; border-radius: 4px; word-break: break-all;">{{ parseLayers(st.layers).text }}</code></div>
+                <div><strong>{{ $t('watermarks.opacity') }}: </strong>{{ Math.round((parseLayers(st.layers).opacity || 0.2) * 100) }}%</div>
+              </div>
+              <template #action>
+                <div style="display: flex; justify-content: flex-end;">
+                  <n-button size="small" type="primary" secondary :loading="cloningId === st.id" @click="handleCloneSystemWatermark(st.id)">
+                    {{ $t('watermarks.cloneToMine') }}
+                  </n-button>
+                </div>
+              </template>
+            </n-card>
+          </n-grid-item>
+        </n-grid>
+      </n-spin>
+    </n-modal>
   </div>
 </template>
 
@@ -376,6 +408,10 @@ import { api } from '../api/client'
 const message = useMessage()
 const { t } = useI18n()
 const templates = ref<any[]>([])
+const showSystemModal = ref(false)
+const systemTemplates = ref<any[]>([])
+const loadingSystemTemplates = ref(false)
+const cloningId = ref<number | null>(null)
 const showModal = ref(false)
 const showExtractModal = ref(false)
 const extracting = ref(false)
@@ -602,8 +638,7 @@ const handleSaveTemplate = async () => {
     } else {
       await api.post('/watermarks', {
         name: trimmedName,
-        layers: layers,
-        is_global: editForm.value.is_global
+        layers: layers
       })
     }
 
@@ -688,6 +723,32 @@ const handleExtractSubmit = async () => {
     }
   } finally {
     extracting.value = false
+  }
+}
+
+const openSystemTemplatesModal = async () => {
+  showSystemModal.value = true
+  loadingSystemTemplates.value = true
+  try {
+    const res = await api.get('/watermarks/system')
+    systemTemplates.value = res.data || []
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.loadFailed'))
+  } finally {
+    loadingSystemTemplates.value = false
+  }
+}
+
+const handleCloneSystemWatermark = async (id: number) => {
+  cloningId.value = id
+  try {
+    await api.post(`/watermarks/${id}/clone`)
+    message.success(t('watermarks.cloneSuccess'))
+    loadTemplates()
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.save'))
+  } finally {
+    cloningId.value = null
   }
 }
 

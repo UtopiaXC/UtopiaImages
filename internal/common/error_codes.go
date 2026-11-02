@@ -23,6 +23,7 @@ const (
 	ErrAuthPasswordMismatch     = "AUTH_PASSWORD_MISMATCH"
 	ErrAuthOldPasswordWrong     = "AUTH_OLD_PASSWORD_WRONG"
 	ErrAuthUsernameTaken        = "AUTH_USERNAME_TAKEN"
+	ErrAuthUsernameInvalid      = "AUTH_USERNAME_INVALID"
 	ErrAuthEmailTaken           = "AUTH_EMAIL_TAKEN"
 	ErrAuthUserInactive         = "AUTH_USER_INACTIVE"
 	ErrRegistrationDisabled     = "REGISTRATION_DISABLED"

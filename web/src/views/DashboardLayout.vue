@@ -224,6 +224,7 @@ const activeKey = computed(() => route.path)
 const currentTitle = computed(() => {
   if (route.path.includes('/upload')) return t('nav.upload')
   if (route.path.includes('/files')) return t('nav.files')
+  if (route.path.includes('/admin/watermarks')) return t('adminWatermarks.title')
   if (route.path.includes('/watermarks')) return t('nav.watermarks')
   if (route.path.includes('/tokens')) return t('nav.tokens')
   if (route.path.includes('/settings')) return t('nav.settings')
@@ -245,22 +246,23 @@ const isAdmin = computed(() => {
 
 const menuOptions = computed(() => {
   const items: any[] = [
-    { label: () => t('nav.upload'), key: '/console/upload', icon: renderMenuIcon(CloudUploadOutline) },
-    { label: () => t('nav.files'), key: '/console/files', icon: renderMenuIcon(ImagesOutline) },
-    { label: () => t('nav.watermarks'), key: '/console/watermarks', icon: renderMenuIcon(ColorWandOutline) },
-    { label: () => t('nav.tokens'), key: '/console/tokens', icon: renderMenuIcon(KeyOutline) },
-    { label: () => t('nav.settings'), key: '/console/settings', icon: renderMenuIcon(PersonOutline) }
+    { label: () => t('nav.upload'), key: '/dsh/upload', icon: renderMenuIcon(CloudUploadOutline) },
+    { label: () => t('nav.files'), key: '/dsh/files', icon: renderMenuIcon(ImagesOutline) },
+    { label: () => t('nav.watermarks'), key: '/dsh/watermarks', icon: renderMenuIcon(ColorWandOutline) },
+    { label: () => t('nav.tokens'), key: '/dsh/tokens', icon: renderMenuIcon(KeyOutline) },
+    { label: () => t('nav.settings'), key: '/dsh/settings', icon: renderMenuIcon(PersonOutline) }
   ]
 
   if (isAdmin.value) {
     items.push(
       { type: 'divider', key: 'd1' },
-      { label: () => t('nav.adminFiles'), key: '/console/admin/files', icon: renderMenuIcon(FolderOpenOutline) },
-      { label: () => t('nav.adminUsers'), key: '/console/admin/users', icon: renderMenuIcon(PeopleOutline) },
-      { label: () => t('nav.adminRoles'), key: '/console/admin/roles', icon: renderMenuIcon(ShieldCheckmarkOutline) },
-      { label: () => t('nav.adminPolicies'), key: '/console/admin/policies', icon: renderMenuIcon(ServerOutline) },
-      { label: () => t('nav.adminSettings'), key: '/console/admin/settings', icon: renderMenuIcon(CogOutline) },
-      { label: () => t('nav.adminStats'), key: '/console/admin/stats', icon: renderMenuIcon(StatsChartOutline) }
+      { label: () => t('nav.adminFiles'), key: '/dsh/admin/files', icon: renderMenuIcon(FolderOpenOutline) },
+      { label: () => t('nav.adminPolicies'), key: '/dsh/admin/policies', icon: renderMenuIcon(ServerOutline) },
+      { label: () => t('nav.adminRoles'), key: '/dsh/admin/roles', icon: renderMenuIcon(ShieldCheckmarkOutline) },
+      { label: () => t('nav.adminUsers'), key: '/dsh/admin/users', icon: renderMenuIcon(PeopleOutline) },
+      { label: () => t('nav.adminWatermarks'), key: '/dsh/admin/watermarks', icon: renderMenuIcon(ColorWandOutline) },
+      { label: () => t('nav.adminStats'), key: '/dsh/admin/stats', icon: renderMenuIcon(StatsChartOutline) },
+      { label: () => t('nav.adminSettings'), key: '/dsh/admin/settings', icon: renderMenuIcon(CogOutline) }
     )
   }
 
@@ -287,7 +289,7 @@ const handleLogout = async () => {
     await api.post('/auth/logout')
   } finally {
     clearCurrentUser()
-    router.push('/login')
+    router.push('/usr/login')
   }
 }
 

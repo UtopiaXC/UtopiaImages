@@ -254,6 +254,9 @@ func buildRuleSQL(rule FilterRule, db *gorm.DB, isAdmin bool) (string, []interfa
 		}
 		return "sha256 = ?", []interface{}{sVal}
 
+	case "public_mode":
+		return buildPublicModeRuleSQL(op, val)
+
 	case "uploader":
 		if !isAdmin {
 			return "", nil
@@ -662,4 +665,15 @@ func applyLegacyFileFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, isAdmin
 	}
 
 	return query
+}
+
+func buildPublicModeRuleSQL(op string, val interface{}) (string, []interface{}) {
+	sVal := strings.TrimSpace(fmt.Sprintf("%v", val))
+	if sVal == "" {
+		return "", nil
+	}
+	if op == "neq" || op == "is_not" {
+		return "public_mode != ?", []interface{}{sVal}
+	}
+	return "public_mode = ?", []interface{}{sVal}
 }
