@@ -130,6 +130,15 @@
             {{ user.nickname || user.username }}
           </n-tag>
 
+          <n-button
+            v-if="hasVisitorView"
+            size="small"
+            quaternary
+            @click="goToVisitorHome"
+          >
+            {{ $t('common.visitorHome') }}
+          </n-button>
+
           <n-button size="small" quaternary @click="handleLogout">
             {{ $t('common.logout') }}
           </n-button>
@@ -282,6 +291,31 @@ const handleMenuSelect = (key: string) => {
 const changeLocale = (val: string) => {
   locale.value = val
   localStorage.setItem('uimg_locale', val)
+}
+
+const hasVisitorView = computed(() => {
+  return !!(siteInfo.value?.enable_guest_upload || siteInfo.value?.enable_square)
+})
+
+const goToVisitorHome = () => {
+  const defPage = siteInfo.value?.default_open_page
+  if (defPage === 'guest_upload' && siteInfo.value?.enable_guest_upload) {
+    router.push('/usr/upload')
+    return
+  }
+  if (defPage === 'guest_gallery' && siteInfo.value?.enable_guest_upload) {
+    router.push('/usr/gallery')
+    return
+  }
+  if (defPage === 'square' && siteInfo.value?.enable_square) {
+    router.push('/usr/square')
+    return
+  }
+  if (siteInfo.value?.enable_guest_upload) {
+    router.push('/usr/upload')
+  } else if (siteInfo.value?.enable_square) {
+    router.push('/usr/square')
+  }
 }
 
 const handleLogout = async () => {

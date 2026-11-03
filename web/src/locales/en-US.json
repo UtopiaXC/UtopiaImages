@@ -2,6 +2,7 @@
   "common": {
     "login": "Login",
     "logout": "Logout",
+    "visitorHome": "Visitor Home",
     "setup": "Initial Setup",
     "save": "Save",
     "cancel": "Cancel",
@@ -316,6 +317,7 @@
     "selectedCount": "{count} selected",
     "batchWatermark": "Batch Watermark",
     "batchHotlink": "Batch Hotlink",
+    "batchPublic": "Batch Public Visibility",
     "batchUpdateSuccess": "Batch update completed",
     "confirmBatchDelete": "Are you sure you want to delete {count} selected files? This action cannot be undone.",
     "allFormats": "All Formats",

@@ -896,6 +896,7 @@ func (ctrl *AuthController) GetCurrentUser(c *gin.Context) {
 		"hotlink_enabled":         user.HotlinkEnabled,
 		"hotlink_allow_empty":     user.HotlinkAllowEmpty,
 		"hotlink_allowed_domains": user.HotlinkAllowedDomains,
+		"default_public":          user.DefaultPublic,
 		"created_at":              user.CreatedAt,
 		"updated_at":              user.UpdatedAt,
 	})

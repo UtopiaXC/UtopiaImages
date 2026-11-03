@@ -120,7 +120,7 @@ func (ctrl *SettingsController) GetUserSettings(c *gin.Context) {
 
 	// Fetch user watermarks
 	var watermarks []model.WatermarkTemplate
-	ctrl.db.Where("owner_id = ? OR owner_id IS NULL", userID).Find(&watermarks)
+	ctrl.db.Where("owner_id = ?", userID).Find(&watermarks)
 
 	resp := gin.H{
 		"watermark_mode":           ctrl.getSettingVal("user_wm_mode_"+strconvUint(userID), "inherit"),
@@ -194,7 +194,7 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 		ctrl.setSettingVal("user_call_stat_"+strconvUint(userID), val)
 	}
 
-	// Update user hotlink settings on model.User
+	// Update user settings on model.User
 	userUpdates := map[string]any{}
 	if req.HotlinkEnabled != nil {
 		userUpdates["hotlink_enabled"] = *req.HotlinkEnabled
@@ -204,6 +204,9 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 	}
 	if req.HotlinkAllowedDomains != nil {
 		userUpdates["hotlink_allowed_domains"] = *req.HotlinkAllowedDomains
+	}
+	if req.DefaultPublic != nil {
+		userUpdates["default_public"] = *req.DefaultPublic
 	}
 	if len(userUpdates) > 0 {
 		ctrl.db.Model(&model.User{}).Where("id = ?", userID).Updates(userUpdates)

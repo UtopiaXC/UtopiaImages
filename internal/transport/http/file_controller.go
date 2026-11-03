@@ -785,6 +785,7 @@ func (ctrl *FileController) BatchUpdateFiles(c *gin.Context) {
 		WatermarkMode       *string `json:"watermark_mode"`
 		WatermarkTemplateID *uint   `json:"watermark_template_id"`
 		HotlinkMode         *string `json:"hotlink_mode"`
+		PublicMode          *string `json:"public_mode"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -822,6 +823,17 @@ func (ctrl *FileController) BatchUpdateFiles(c *gin.Context) {
 			return
 		}
 		updates["hotlink_mode"] = *req.HotlinkMode
+	}
+	if req.PublicMode != nil && *req.PublicMode != "" {
+		pm := *req.PublicMode
+		if pm == "on" {
+			pm = "public"
+		} else if pm == "off" {
+			pm = "private"
+		}
+		if pm == "inherit" || pm == "public" || pm == "private" {
+			updates["public_mode"] = pm
+		}
 	}
 	if req.WatermarkMode != nil || req.WatermarkTemplateID != nil {
 		updates["sign_version"] = gorm.Expr("sign_version + 1")

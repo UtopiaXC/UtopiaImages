@@ -2,6 +2,7 @@
   "common": {
     "login": "登录",
     "logout": "退出登录",
+    "visitorHome": "访客主页",
     "setup": "系统初始化",
     "save": "保存",
     "cancel": "取消",
@@ -316,6 +317,7 @@
     "selectedCount": "已选中 {count} 项",
     "batchWatermark": "批量设置水印",
     "batchHotlink": "批量设置防盗链",
+    "batchPublic": "批量设置公开状态",
     "batchUpdateSuccess": "批量更新成功",
     "confirmBatchDelete": "确定要批量删除选中的 {count} 个文件吗？此操作无法撤销。",
     "allFormats": "全部格式",

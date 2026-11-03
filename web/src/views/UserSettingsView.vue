@@ -396,7 +396,7 @@ import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 import { siteInfo } from '../utils/site'
-import { userPreferences } from '../utils/auth'
+import { userPreferences, fetchUserPreferences, fetchCurrentUser } from '../utils/auth'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -641,6 +641,10 @@ const savePreferences = async () => {
   try {
     await api.post('/me/settings', preferences.value)
     userPreferences.value = { ...userPreferences.value, ...preferences.value }
+    await Promise.all([
+      fetchUserPreferences(true),
+      fetchCurrentUser(true)
+    ])
     message.success(t('settings.preferencesSaved'))
   } catch (err: any) {
     message.error(t('common.save'))
@@ -664,6 +668,10 @@ const saveImageSettings = async () => {
       hotlink_allowed_domains: hotlinkSettings.value.hotlink_allowed_domains,
       default_public: defaultPublic.value
     })
+    await Promise.all([
+      fetchUserPreferences(true),
+      fetchCurrentUser(true)
+    ])
     message.success(t('settings.imageSettingsSaved'))
   } catch (err: any) {
     message.error(err.response?.data?.error || t('common.save'))

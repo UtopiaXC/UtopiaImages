@@ -433,7 +433,7 @@ import { useI18n } from 'vue-i18n'
 import { FingerPrintOutline, CheckmarkCircleOutline, MailOutline, PersonOutline, LockClosedOutline } from '@vicons/ionicons5'
 import { api, getApiErrorMessage } from '../api/client'
 import { siteInfo } from '../utils/site'
-import { fetchCurrentUser } from '../utils/auth'
+import { fetchCurrentUser, fetchUserPreferences } from '../utils/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -459,7 +459,10 @@ const cardTitle = computed(() => {
 })
 
 const navigateAfterLogin = async () => {
-  await fetchCurrentUser(true)
+  await Promise.all([
+    fetchCurrentUser(true),
+    fetchUserPreferences(true)
+  ])
   const target = (route.query.redirect as string) || '/dsh/upload'
   router.push(target)
 }
@@ -576,7 +579,7 @@ const handleLogin = async () => {
       initSetupTOTP()
     } else {
       message.success(t('login.success'))
-      navigateAfterLogin()
+      await navigateAfterLogin()
     }
   } catch (err: any) {
     const resData = err.response?.data
@@ -816,7 +819,7 @@ const handleVerifyMFA = async () => {
       remember_me: form.value.remember_me
     })
     message.success(t('login.success'))
-    navigateAfterLogin()
+    await navigateAfterLogin()
   } catch (err: any) {
     message.error(getApiErrorMessage(err))
   } finally {
@@ -887,7 +890,7 @@ const handlePasskeyLogin = async () => {
 
     await api.post(`/auth/passkey/login-finish?session_key=${session_key}`, payload)
     message.success(t('login.success'))
-    navigateAfterLogin()
+    await navigateAfterLogin()
   } catch (err: any) {
     message.error(getApiErrorMessage(err))
   } finally {
@@ -930,7 +933,7 @@ const handlePasskeyMFA = async () => {
     }
     await api.post(`/auth/mfa/passkey-finish?session_key=${session_key}&mfa_token=${mfaToken.value}&remember_me=${form.value.remember_me}`, payload)
     message.success(t('login.success'))
-    router.push('/dsh/upload')
+    await navigateAfterLogin()
   } catch (err: any) {
     if (err.name === 'NotAllowedError' || err.message?.includes('not allowed')) {
       message.warning(t('settings.passkeyCancelled'))
@@ -971,7 +974,7 @@ const handleConfirmSetupTOTP = async () => {
       remember_me: form.value.remember_me
     })
     message.success(t('login.success'))
-    router.push('/dsh/upload')
+    await navigateAfterLogin()
   } catch (err: any) {
     message.error(getApiErrorMessage(err))
   } finally {
@@ -1014,7 +1017,7 @@ const handleSetupPasskey = async () => {
     }
     await api.post(`/auth/setup-2fa/passkey-finish?session_key=${session_key}&setup_token=${setupToken.value}&remember_me=${form.value.remember_me}`, payload)
     message.success(t('login.success'))
-    router.push('/dsh/upload')
+    await navigateAfterLogin()
   } catch (err: any) {
     if (err.name === 'NotAllowedError' || err.message?.includes('not allowed')) {
       message.warning(t('settings.passkeyCancelled'))

@@ -2,6 +2,7 @@
   "common": {
     "login": "ログイン",
     "logout": "ログアウト",
+    "visitorHome": "ビジターホーム",
     "setup": "初期設定",
     "save": "保存",
     "cancel": "キャンセル",
@@ -284,6 +285,7 @@
     "selectedCount": "{count} 件選択中",
     "batchWatermark": "透かし一括設定",
     "batchHotlink": "直リンク防止一括設定",
+    "batchPublic": "公開状態一括設定",
     "batchUpdateSuccess": "一括更新が完了しました",
     "confirmBatchDelete": "選択した {count} 件のファイルを削除してもよろしいですか？この操作は取り消せません。",
     "allFormats": "すべての形式",

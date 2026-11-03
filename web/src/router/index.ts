@@ -120,7 +120,7 @@ router.beforeEach(async (to, from, next) => {
     // If guest upload or square is enabled
     if (site.enable_guest_upload || site.enable_square) {
       // Check user preference if user is logged in
-      const user = currentUser.value || await fetchCurrentUser().catch(() => null)
+      const user = currentUser.value || await fetchCurrentUser(true).catch(() => null)
       if (user) {
         const prefs = await fetchUserPreferences().catch(() => null)
         const userLanding = prefs?.default_landing_view || 'visitor'
@@ -163,7 +163,7 @@ router.beforeEach(async (to, from, next) => {
   }
 
   // 5. Protected console routes
-  const user = currentUser.value || await fetchCurrentUser()
+  const user = currentUser.value || await fetchCurrentUser(true)
   if (!user) {
     return next({
       path: '/usr/login',

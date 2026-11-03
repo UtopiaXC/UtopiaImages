@@ -111,6 +111,13 @@
             </n-button>
           </n-dropdown>
 
+          <!-- Batch Public Mode -->
+          <n-dropdown :options="batchPublicMenuOptions" @select="handleBatchPublic">
+            <n-button size="small" type="success" secondary>
+              {{ $t('files.batchPublic') }}
+            </n-button>
+          </n-dropdown>
+
           <!-- Batch Delete -->
           <n-popconfirm @positive-click="handleBatchDelete">
             <template #trigger>
@@ -653,6 +660,12 @@ const batchHotlinkMenuOptions = computed(() => [
   { label: t('files.hotlinkInherit'), key: 'inherit' }
 ])
 
+const batchPublicMenuOptions = computed(() => [
+  { label: t('files.publicOn'), key: 'public' },
+  { label: t('files.publicOff'), key: 'private' },
+  { label: t('files.publicInherit'), key: 'inherit' }
+])
+
 const onFilterChange = () => {
   page.value = 1
   loadFiles()
@@ -859,6 +872,20 @@ const handleBatchHotlink = async (mode: string) => {
     await api.post('/files/batch-update', {
       ids: selectedIds.value,
       hotlink_mode: mode
+    })
+    message.success(t('files.batchUpdateSuccess'))
+    loadFiles()
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.error'))
+  }
+}
+
+const handleBatchPublic = async (mode: string) => {
+  if (selectedIds.value.length === 0) return
+  try {
+    await api.post('/files/batch-update', {
+      ids: selectedIds.value,
+      public_mode: mode
     })
     message.success(t('files.batchUpdateSuccess'))
     loadFiles()
