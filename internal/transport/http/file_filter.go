@@ -336,9 +336,9 @@ func buildPolicyRuleSQL(op string, val interface{}) (string, []interface{}) {
 			return "", nil
 		}
 		if op == "not_in" || op == "neq" || op == "is_not" {
-			return "policy_id NOT IN (?)", []interface{}{ids}
+			return "(policy_id NOT IN (?) AND id NOT IN (SELECT file_id FROM file_policy_replicas WHERE policy_id IN (?) AND status = 'ready'))", []interface{}{ids, ids}
 		}
-		return "policy_id IN (?)", []interface{}{ids}
+		return "(policy_id IN (?) OR id IN (SELECT file_id FROM file_policy_replicas WHERE policy_id IN (?) AND status = 'ready'))", []interface{}{ids, ids}
 	}
 
 	idNum, err := strconv.ParseUint(fmt.Sprintf("%v", val), 10, 64)
@@ -346,9 +346,9 @@ func buildPolicyRuleSQL(op string, val interface{}) (string, []interface{}) {
 		return "", nil
 	}
 	if op == "neq" || op == "is_not" || op == "not_equal" {
-		return "policy_id != ?", []interface{}{uint(idNum)}
+		return "(policy_id != ? AND id NOT IN (SELECT file_id FROM file_policy_replicas WHERE policy_id = ? AND status = 'ready'))", []interface{}{uint(idNum), uint(idNum)}
 	}
-	return "policy_id = ?", []interface{}{uint(idNum)}
+	return "(policy_id = ? OR id IN (SELECT file_id FROM file_policy_replicas WHERE policy_id = ? AND status = 'ready'))", []interface{}{uint(idNum), uint(idNum)}
 }
 
 func parseSizeBytes(val interface{}, unit string) int64 {
@@ -636,7 +636,7 @@ func applyLegacyFileFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, isAdmin
 	}
 
 	if policyID := c.Query("policy_id"); policyID != "" && policyID != "all" {
-		query = query.Where("policy_id = ?", policyID)
+		query = query.Where("(policy_id = ? OR id IN (SELECT file_id FROM file_policy_replicas WHERE policy_id = ? AND status = 'ready'))", policyID, policyID)
 	}
 
 	if wm := c.Query("watermark_mode"); wm != "" && wm != "all" {

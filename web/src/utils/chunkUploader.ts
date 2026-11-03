@@ -15,6 +15,7 @@ export interface ChunkUploadOptions {
   chunkSize?: number // default 20MB
   params?: {
     policy_id?: number | null
+    policy_ids?: number[]
     watermark_mode?: string
     watermark_template_id?: string | null
     hotlink_mode?: string
@@ -87,6 +88,7 @@ export async function uploadInChunks(options: ChunkUploadOptions): Promise<any> 
       file_sha256: fileSHA256,
       upload_type: uploadType,
       policy_id: params.policy_id || undefined,
+      policy_ids: params.policy_ids && params.policy_ids.length > 0 ? params.policy_ids : undefined,
       watermark_mode: params.watermark_mode || 'inherit',
       watermark_template_id: params.watermark_template_id ? Number(params.watermark_template_id) : undefined,
       hotlink_mode: params.hotlink_mode || 'inherit',

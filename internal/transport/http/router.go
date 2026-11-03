@@ -105,18 +105,23 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 	captchaManager := auth.NewCaptchaManager(cfg.Security.SecretKey, cfg.Security.Captcha.TurnstileSecretKey)
 	passkeyManager, _ := auth.NewPasskeyManager(db, cfg.Server.BaseURL)
 
-	// 5. Initialize Services
+	// 5. Initialize Storage Driver Manager & Services
+	driverManager := storage.NewPolicyDriverManager(db)
 	authService := service.NewAuthService(db, sessionManager, totpManager, captchaManager, passkeyManager)
 	authService.SetStorage(stDriver)
 	uploadService := service.NewUploadService(db, stDriver, processor, derivedCache)
+	uploadService.SetDriverManager(driverManager)
 	dispatchService := service.NewDispatchService(db, stDriver, processor, derivedCache)
+	dispatchService.SetDriverManager(driverManager)
 	importService := service.NewImportService(db, uploadService)
 	chunkService := service.NewChunkService(db, cfg.Cache.Dir, uploadService, importService)
 
 	// 6. Initialize Controllers
 	authController := NewAuthController(authService, db, cfg, configPath)
 	fileController := NewFileController(db, uploadService, dispatchService, importService, chunkService, cfg.Server.BaseURL, derivedCache)
+	fileController.SetDriverManager(driverManager)
 	adminController := NewAdminController(db, uploadService, cfg.Server.BaseURL, derivedCache)
+	adminController.SetDriverManager(driverManager)
 	watermarkController := NewWatermarkController(db, processor, derivedCache)
 	settingsController := NewSettingsController(db, derivedCache, cfg, configPath, passkeyManager)
 	settingsController.SetUploadService(uploadService)
@@ -138,6 +143,7 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 
 	authController.SetOnDBChange(func(newDB *gorm.DB) {
 		s.setDB(newDB)
+		driverManager.SetDB(newDB)
 		sessionManager.SetDB(newDB)
 		passkeyManager.SetDB(newDB)
 		authService.SetDB(newDB)

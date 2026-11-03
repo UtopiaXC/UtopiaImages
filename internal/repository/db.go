@@ -13,6 +13,7 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func InitDB(cfg *config.Config) (*gorm.DB, error) {
@@ -67,15 +68,43 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		&model.PasswordResetToken{},
 		&model.ImageCallStat{},
 		&model.ImageCallVisitor{},
+		&model.FilePolicyReplica{},
+		&model.FileBlob{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to auto migrate database tables: %w", err)
+	}
+
+	// Remove legacy unique constraint on storage policy name to allow duplicate display names
+	if db.Migrator().HasIndex(&model.StoragePolicy{}, "idx_storage_policies_name") {
+		_ = db.Migrator().DropIndex(&model.StoragePolicy{}, "idx_storage_policies_name")
 	}
 
 	// Compatibility fix for legacy require2_fa column in users table
 	if db.Migrator().HasColumn(&model.User{}, "require2_fa") && !db.Migrator().HasColumn(&model.User{}, "require_2fa") {
 		_ = db.Migrator().RenameColumn(&model.User{}, "require2_fa", "require_2fa")
 	}
+
+	// Backfill existing FileRecord entries into FilePolicyReplica
+	var unmigratedFiles []model.FileRecord
+	_ = db.Unscoped().
+		Where("id NOT IN (SELECT file_id FROM file_policy_replicas)").
+		FindInBatches(&unmigratedFiles, 500, func(tx *gorm.DB, batch int) error {
+			replicas := make([]model.FilePolicyReplica, 0, len(unmigratedFiles))
+			for _, f := range unmigratedFiles {
+				replicas = append(replicas, model.FilePolicyReplica{
+					FileID:     f.ID,
+					PolicyID:   f.PolicyID,
+					PublicPath: f.PublicPath,
+					StorageKey: f.StorageKey,
+					Size:       f.Size,
+					Status:     "ready",
+					CreatedAt:  f.CreatedAt,
+					UpdatedAt:  f.UpdatedAt,
+				})
+			}
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&replicas).Error
+		}).Error
 
 	// Seed defaults
 	if err := SeedDefaults(db); err != nil {

@@ -15,7 +15,8 @@
             <span class="upload-option-label">{{ $t('upload.storagePolicy') }}</span>
             <span class="upload-option-colon">:</span>
             <n-select
-              v-model:value="selectedPolicyId"
+              v-model:value="selectedPolicyIds"
+              multiple
               :options="policyOptions"
               size="small"
               :loading="loadingPolicies"
@@ -26,20 +27,20 @@
 
           <!-- Storage Policy Remaining Capacity Indicator -->
           <div
-            v-if="currentPolicy"
+            v-if="selectedPolicies.length > 0"
             class="upload-policy-capacity"
           >
             <div style="display: flex; flex-direction: column; width: 100%;">
               <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 3px; white-space: nowrap;">
                 <span style="color: #888;">{{ $t('upload.policyRemaining') }}</span>
                 <span style="color: #63e2b7; font-weight: 500;">
-                  {{ currentPolicy.max_capacity_bytes === 0 ? $t('common.unlimited') : formatBytes(Math.max(0, currentPolicy.max_capacity_bytes - currentPolicy.used_bytes)) }}
+                  {{ minRemainingCapacity === Infinity ? $t('common.unlimited') : formatBytes(minRemainingCapacity) }}
                 </span>
               </div>
               <n-progress
                 type="line"
-                :percentage="currentPolicyPercentage"
-                :status="currentPolicyPercentage >= 90 ? 'error' : currentPolicyPercentage >= 75 ? 'warning' : 'success'"
+                :percentage="maxUsedPercentage"
+                :status="maxUsedPercentage >= 90 ? 'error' : maxUsedPercentage >= 75 ? 'warning' : 'success'"
                 :show-indicator="false"
               />
             </div>
@@ -144,15 +145,25 @@
             </n-button>
           </div>
           <div style="flex: 1; min-width: 0;">
-            <div style="font-weight: bold; font-size: 15px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px;">
+            <div style="font-weight: bold; font-size: 15px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
               <span style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{{ item.file.display_name }}</span>
               <n-tag size="small" :bordered="false">{{ formatBytes(item.file.size) }}</n-tag>
               <n-tag v-if="item.file.width && item.file.height" size="small" type="info" :bordered="false">
                 {{ item.file.width }} × {{ item.file.height }}
               </n-tag>
+              <template v-if="item.links?.replicas">
+                <n-tag
+                  v-for="rep in item.links.replicas"
+                  :key="rep.id"
+                  size="small"
+                  :type="rep.status === 'ready' ? 'success' : 'error'"
+                >
+                  {{ rep.policy_name }}
+                </n-tag>
+              </template>
             </div>
             
-            <FileLinksPanel :file="item.file" :initial-url="item.links.url" />
+            <FileLinksPanel :file="item.file" :links="item.links" :initial-url="item.links.url" />
           </div>
         </div>
       </n-card>
@@ -182,7 +193,8 @@
 
         <n-form-item :label="$t('upload.storagePolicy')">
           <n-select
-            v-model:value="importOptions.policy_id"
+            v-model:value="importOptions.policy_ids"
+            multiple
             :options="policyOptions"
             :loading="loadingPolicies"
             :placeholder="$t('upload.storagePolicy')"
@@ -268,7 +280,7 @@ const selectedTemplateId = ref<string | null>(null)
 const templateOptions = ref<any[]>([])
 const results = ref<any[]>([])
 
-const selectedPolicyId = ref<number | null>(null)
+const selectedPolicyIds = ref<number[]>([])
 const policyOptions = ref<any[]>([])
 
 const showImportModal = ref(false)
@@ -288,7 +300,7 @@ const cancelImport = () => {
 }
 
 const importOptions = ref({
-  policy_id: null as number | null,
+  policy_ids: [] as number[],
   watermark_mode: 'inherit',
   watermark_template_id: null as string | null,
   hotlink_mode: 'inherit',
@@ -342,7 +354,7 @@ const handleImportZip = async () => {
   uploadStatusText.value = t('upload.archiveUploading')
   importAbortController = new AbortController()
 
-  const policyToUse = importOptions.value.policy_id || selectedPolicyId.value
+  const policiesToUse = importOptions.value.policy_ids.length > 0 ? importOptions.value.policy_ids : selectedPolicyIds.value
 
   try {
     // If archive > 20MB, use 20MB chunked streaming & SHA-256 verification
@@ -351,7 +363,7 @@ const handleImportZip = async () => {
         file: selectedZipFile.value,
         uploadType: 'archive',
         params: {
-          policy_id: policyToUse,
+          policy_ids: policiesToUse,
           watermark_mode: importOptions.value.watermark_mode,
           watermark_template_id: importOptions.value.watermark_template_id,
           hotlink_mode: importOptions.value.hotlink_mode,
@@ -384,8 +396,11 @@ const handleImportZip = async () => {
     if (importOptions.value.watermark_template_id) {
       formData.append('watermark_template_id', importOptions.value.watermark_template_id)
     }
-    if (policyToUse) {
-      formData.append('policy_id', String(policyToUse))
+    for (const pid of policiesToUse) {
+      formData.append('policy_ids[]', String(pid))
+    }
+    if (policiesToUse.length > 0) {
+      formData.append('policy_id', String(policiesToUse[0]))
     }
 
     const res = await api.post('/import/archive', formData, {
@@ -417,9 +432,9 @@ const handleImportZip = async () => {
     let errMsg = err.response?.data?.error
     if (!errMsg) {
       if (err.response?.status === 413) {
-        errMsg = '上传文件过大被拦截 (413 Payload Too Large)。若经过 Cloudflare 代理，免费/专业版单请求体上限为 100MB。'
+        errMsg = '上传文件过大被拦截: 413 Payload Too Large。若经过 Cloudflare 代理，免费或专业版单请求体上限为 100MB。'
       } else if (err.code === 'ECONNABORTED' || err.message?.includes('timeout') || err.response?.status === 524) {
-        errMsg = '上传超时 (524 Timeout)。'
+        errMsg = '上传超时: 524 Timeout。'
       } else {
         errMsg = err.message || t('upload.importFailed')
       }
@@ -448,13 +463,32 @@ const loadTemplates = async () => {
 }
 
 const policiesList = ref<any[]>([])
-const currentPolicy = computed(() => {
-  return policiesList.value.find((p: any) => p.id === selectedPolicyId.value)
+const selectedPolicies = computed(() => {
+  return policiesList.value.filter((p: any) => selectedPolicyIds.value.includes(p.id))
 })
 
-const currentPolicyPercentage = computed(() => {
-  if (!currentPolicy.value || !currentPolicy.value.max_capacity_bytes) return 0
-  return Math.min(100, Math.round((currentPolicy.value.used_bytes / currentPolicy.value.max_capacity_bytes) * 100))
+const minRemainingCapacity = computed(() => {
+  if (selectedPolicies.value.length === 0) return Infinity
+  let min = Infinity
+  for (const p of selectedPolicies.value) {
+    if (p.max_capacity_bytes > 0) {
+      const rem = Math.max(0, p.max_capacity_bytes - p.used_bytes)
+      if (rem < min) min = rem
+    }
+  }
+  return min
+})
+
+const maxUsedPercentage = computed(() => {
+  if (selectedPolicies.value.length === 0) return 0
+  let maxPct = 0
+  for (const p of selectedPolicies.value) {
+    if (p.max_capacity_bytes > 0) {
+      const pct = Math.min(100, Math.round((p.used_bytes / p.max_capacity_bytes) * 100))
+      if (pct > maxPct) maxPct = pct
+    }
+  }
+  return maxPct
 })
 
 const loadingPolicies = ref(false)
@@ -471,11 +505,11 @@ const loadPolicies = async () => {
     }))
     if (list.length > 0) {
       const def = list.find((p: any) => p.is_default) || list[0]
-      if (!selectedPolicyId.value) {
-        selectedPolicyId.value = def.id
+      if (selectedPolicyIds.value.length === 0) {
+        selectedPolicyIds.value = [def.id]
       }
-      if (!importOptions.value.policy_id) {
-        importOptions.value.policy_id = def.id
+      if (importOptions.value.policy_ids.length === 0) {
+        importOptions.value.policy_ids = [def.id]
       }
     }
   } catch (err) {
@@ -490,10 +524,10 @@ watch(showImportModal, (show) => {
     cancelImport()
   }
   if (show) {
-    if (!importOptions.value.policy_id && selectedPolicyId.value) {
-      importOptions.value.policy_id = selectedPolicyId.value
-    } else if (!importOptions.value.policy_id && policyOptions.value.length > 0) {
-      importOptions.value.policy_id = policyOptions.value[0].value
+    if (importOptions.value.policy_ids.length === 0 && selectedPolicyIds.value.length > 0) {
+      importOptions.value.policy_ids = [...selectedPolicyIds.value]
+    } else if (importOptions.value.policy_ids.length === 0 && policyOptions.value.length > 0) {
+      importOptions.value.policy_ids = [policyOptions.value[0].value]
     }
     if (policyOptions.value.length === 0) {
       loadPolicies()
@@ -517,7 +551,7 @@ const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomReque
         params: {
           watermark_mode: watermarkMode.value,
           watermark_template_id: selectedTemplateId.value,
-          policy_id: selectedPolicyId.value
+          policy_ids: selectedPolicyIds.value
         }
       })
       results.value.unshift(data)
@@ -535,12 +569,15 @@ const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomReque
   const formData = new FormData()
   formData.append('file', rawFile)
   formData.append('watermark_mode', watermarkMode.value)
-    formData.append('public_mode', publicMode.value)
+  formData.append('public_mode', publicMode.value)
   if (selectedTemplateId.value) {
     formData.append('watermark_template_id', selectedTemplateId.value)
   }
-  if (selectedPolicyId.value) {
-    formData.append('policy_id', String(selectedPolicyId.value))
+  for (const pid of selectedPolicyIds.value) {
+    formData.append('policy_ids[]', String(pid))
+  }
+  if (selectedPolicyIds.value.length > 0) {
+    formData.append('policy_id', String(selectedPolicyIds.value[0]))
   }
 
   try {
@@ -577,8 +614,11 @@ const uploadBlob = async (blob: File, name: string) => {
   if (selectedTemplateId.value) {
     formData.append('watermark_template_id', selectedTemplateId.value)
   }
-  if (selectedPolicyId.value) {
-    formData.append('policy_id', String(selectedPolicyId.value))
+  for (const pid of selectedPolicyIds.value) {
+    formData.append('policy_ids[]', String(pid))
+  }
+  if (selectedPolicyIds.value.length > 0) {
+    formData.append('policy_id', String(selectedPolicyIds.value[0]))
   }
 
   try {

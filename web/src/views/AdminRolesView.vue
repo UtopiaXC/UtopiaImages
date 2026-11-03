@@ -18,7 +18,6 @@
               <th>{{ $t('adminRoles.displayName') }}</th>
               <th>{{ $t('adminRoles.userQuota') }}</th>
               <th>{{ $t('adminRoles.allowedFormats') }}</th>
-              <th>{{ $t('adminRoles.maxSingleFileSize') }}</th>
               <th>{{ $t('adminRoles.permittedPolicies') }}</th>
               <th>{{ $t('adminRoles.userCount') }}</th>
               <th style="text-align: right;">{{ $t('common.actions') }}</th>
@@ -44,14 +43,6 @@
                 </span>
                 <span v-else style="color: #666; font-size: 12px;">
                   {{ $t('common.unlimited') }}
-                </span>
-              </td>
-              <td>
-                <span v-if="r.max_single_file_size_mb > 0">
-                  {{ r.max_single_file_size_mb }} MB
-                </span>
-                <span v-else style="color: #888; font-size: 12px;">
-                  系统默认
                 </span>
               </td>
               <td>
@@ -137,28 +128,6 @@
           </div>
         </n-form-item>
 
-        <!-- Max Single File Size -->
-        <n-form-item :label="$t('adminRoles.maxSingleFileSize')">
-          <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
-            <n-input-number
-              v-model:value="createForm.max_single_file_size_mb"
-              :min="0"
-              :step="1"
-              placeholder="0"
-              style="flex: 1;"
-            />
-            <span style="color: #aaa; font-size: 13px;">MB</span>
-            <n-tooltip trigger="hover">
-              <template #trigger>
-                <n-icon size="16" style="color: #888; cursor: pointer;">
-                  <InformationCircleOutline />
-                </n-icon>
-              </template>
-              {{ $t('adminRoles.maxSingleFileSizeTip') }}
-            </n-tooltip>
-          </div>
-        </n-form-item>
-
         <!-- Allowed Formats -->
         <n-form-item :label="$t('adminRoles.allowedFormats')">
           <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
@@ -228,28 +197,6 @@
                 </n-icon>
               </template>
               {{ $t('adminRoles.quotaTip') }}
-            </n-tooltip>
-          </div>
-        </n-form-item>
-
-        <!-- Max Single File Size -->
-        <n-form-item :label="$t('adminRoles.maxSingleFileSize')">
-          <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
-            <n-input-number
-              v-model:value="editForm.max_single_file_size_mb"
-              :min="0"
-              :step="1"
-              placeholder="0"
-              style="flex: 1;"
-            />
-            <span style="color: #aaa; font-size: 13px;">MB</span>
-            <n-tooltip trigger="hover">
-              <template #trigger>
-                <n-icon size="16" style="color: #888; cursor: pointer;">
-                  <InformationCircleOutline />
-                </n-icon>
-              </template>
-              {{ $t('adminRoles.maxSingleFileSizeTip') }}
             </n-tooltip>
           </div>
         </n-form-item>
@@ -325,7 +272,6 @@ const createForm = ref({
   name: '',
   display_name: '',
   allowed_formats: '',
-  max_single_file_size_mb: 0,
   policy_ids: [] as number[]
 })
 
@@ -335,13 +281,12 @@ const editQuotaGB = ref<number | null>(0)
 const editForm = ref({
   display_name: '',
   allowed_formats: '',
-  max_single_file_size_mb: 0,
   policy_ids: [] as number[]
 })
 
 const policyOptions = computed(() => {
   return policies.value.map(p => ({
-    label: `${p.name} (${p.driver})`,
+    label: `${p.name} - ${p.driver}`,
     value: p.id
   }))
 })
@@ -376,7 +321,6 @@ const openCreateModal = () => {
     name: '',
     display_name: '',
     allowed_formats: '',
-    max_single_file_size_mb: 0,
     policy_ids: []
   }
   showCreateModal.value = true
@@ -392,8 +336,7 @@ const handleCreateRole = async () => {
     const quotaBytes = (createQuotaGB.value || 0) * 1024 * 1024 * 1024
     await api.post('/admin/roles', {
       ...createForm.value,
-      quota_bytes: quotaBytes,
-      max_single_file_size_mb: Number(createForm.value.max_single_file_size_mb) || 0
+      quota_bytes: quotaBytes
     })
     message.success(t('adminRoles.createSuccess'))
     showCreateModal.value = false
@@ -411,7 +354,6 @@ const openEditModal = (role: any) => {
   editForm.value = {
     display_name: role.display_name,
     allowed_formats: role.allowed_formats || '',
-    max_single_file_size_mb: role.max_single_file_size_mb || 0,
     policy_ids: [...(role.policy_ids || [])]
   }
   showEditModal.value = true
@@ -428,8 +370,7 @@ const handleUpdateRole = async () => {
     const quotaBytes = (editQuotaGB.value || 0) * 1024 * 1024 * 1024
     await api.patch(`/admin/roles/${editingRole.value.id}`, {
       ...editForm.value,
-      quota_bytes: quotaBytes,
-      max_single_file_size_mb: Number(editForm.value.max_single_file_size_mb) || 0
+      quota_bytes: quotaBytes
     })
     message.success(t('adminRoles.updateSuccess'))
     showEditModal.value = false

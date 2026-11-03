@@ -97,17 +97,31 @@ docker run -d \
 本人此前使用兰空图床，虽然开源版已经停止维护，但是勉强能用，所以一直没换。直到本次严重PHP漏洞，不得不将php版本更新到最新，然而兰空图床的安装和依赖极其复杂，在我更新PHP后就无法正常启动了。鉴于其复杂、反应迟钝、不再维护甚至基于PHP的现状，因此我决定彻底抛弃它转向新平台。  
 
 因此我产生了开发一个Go版本的图床的想法。要能兼容兰空甚至其他图床的路径，要使用docker一键部署，要支持水印、防盗链、多策略等特性。
+
 ### AI使用
 
 本项目使用Claude Opus 5.5完成需求分析与可行性验证，使用Gemini 3.8 Flash进行开发，并使用Gemini 4 Argon进行漏洞检测。  
 
 ### 开发计划与目前支持情况
 
-由于我暂时没有对象存储的需求，因此第一版只添加了本地存储策略的支持。  
+目前已完整支持 13 种存储策略驱动与多策略冗余容灾备份体系：
+- 本地磁盘 (`local`)
+- 数据库存储 (`database` BLOB 分块，持久层支持 SQLite、MySQL 与 PostgreSQL)
+- WebDAV (`webdav`)
+- 通用 S3 兼容对象存储 (`s3_compatible`)
+- Amazon S3 (`s3`)
+- MinIO (`minio`)
+- 阿里云 OSS (`oss`)
+- 腾讯云 COS (`cos`)
+- 华为云 OBS (`obs`)
+- Google Cloud Storage (`gcs`)
+- Azure Blob Storage (`azure_blob`)
+- GitHub 仓库 (`github`)
+- 微软 OneDrive 个人版与企业版 (`onedrive`)
 
-未来我计划添加对阿里云OSS、腾讯云COS、Amazon S3、GCP CGS的支持。如果有需要或者希望添加其他对象存储的支持，可以提交Issue或PR。  
+支持同时上传到多个存储策略建立冗余备份副本、跨策略同步、单策略副本移除、存储源站直链与系统中转无缝切换。
 
-非登录游客上传功能是否要开发我还在思考，如果有需要可以提交Issue。  
+未来如果有需要，可以添加对自动审查与 MCP 的支持，可以提交 issue 讨论。  
 
 ---
 

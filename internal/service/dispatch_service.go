@@ -29,10 +29,11 @@ import (
 )
 
 type DispatchService struct {
-	db        *gorm.DB
-	storage   storage.StorageDriver
-	processor imaging.ImageProcessor
-	cache     *cache.DerivedCache
+	db            *gorm.DB
+	storage       storage.StorageDriver
+	driverManager *storage.PolicyDriverManager
+	processor     imaging.ImageProcessor
+	cache         *cache.DerivedCache
 }
 
 func NewDispatchService(
@@ -51,6 +52,10 @@ func NewDispatchService(
 
 func (s *DispatchService) SetDB(db *gorm.DB) {
 	s.db = db
+}
+
+func (s *DispatchService) SetDriverManager(dm *storage.PolicyDriverManager) {
+	s.driverManager = dm
 }
 
 func (s *DispatchService) abortWithError(c *gin.Context, code int) {
@@ -120,10 +125,27 @@ func (s *DispatchService) handleFileRequest(c *gin.Context, rawPath string, isRa
 	}
 
 	var file model.FileRecord
+	var preferredReplica *model.FilePolicyReplica
 	var requestedFormat string
 
-	// 2. Query file record (direct lookup or dynamic extension lookup)
-	if err := s.db.Where("public_path = ?", publicPath).First(&file).Error; err != nil {
+	// 2. Query file replica or record (direct lookup or dynamic extension lookup)
+	var matchedReplica model.FilePolicyReplica
+	if err := s.db.Where("public_path = ? AND status = 'ready'", publicPath).First(&matchedReplica).Error; err == nil {
+		if err := s.db.First(&file, matchedReplica.FileID).Error; err == nil {
+			preferredReplica = &matchedReplica
+		}
+	}
+
+	if file.ID == 0 {
+		if err := s.db.Where("public_path = ?", publicPath).First(&file).Error; err == nil {
+			var rep model.FilePolicyReplica
+			if err := s.db.Where("file_id = ? AND (public_path = ? OR policy_id = ?) AND status = 'ready'", file.ID, publicPath, file.PolicyID).First(&rep).Error; err == nil {
+				preferredReplica = &rep
+			}
+		}
+	}
+
+	if file.ID == 0 {
 		// Not matched directly, attempt dynamic format matching (e.g. photo.webp from photo.png, photo.heif)
 		reqExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(publicPath), "."))
 		supportedExts := []string{".jpg", ".jpeg", ".png", ".webp", ".gif", ".heif", ".heic"}
@@ -141,10 +163,25 @@ func (s *DispatchService) handleFileRequest(c *gin.Context, rawPath string, isRa
 			for _, ext := range supportedExts {
 				candidatePaths = append(candidatePaths, baseWithoutExt+ext)
 			}
-			var candidateRecord model.FileRecord
-			if err := s.db.Where("public_path IN ? AND is_image = 1", candidatePaths).First(&candidateRecord).Error; err == nil {
-				file = candidateRecord
-				requestedFormat = reqExt
+
+			var candRep model.FilePolicyReplica
+			if err := s.db.Where("public_path IN ? AND status = 'ready'", candidatePaths).First(&candRep).Error; err == nil {
+				if err := s.db.First(&file, candRep.FileID).Error; err == nil {
+					preferredReplica = &candRep
+					requestedFormat = reqExt
+				}
+			}
+
+			if file.ID == 0 {
+				var candidateRecord model.FileRecord
+				if err := s.db.Where("public_path IN ? AND is_image = 1", candidatePaths).First(&candidateRecord).Error; err == nil {
+					file = candidateRecord
+					requestedFormat = reqExt
+					var rep model.FilePolicyReplica
+					if err := s.db.Where("file_id = ? AND status = 'ready'", file.ID).First(&rep).Error; err == nil {
+						preferredReplica = &rep
+					}
+				}
 			}
 		}
 
@@ -285,12 +322,12 @@ func (s *DispatchService) handleFileRequest(c *gin.Context, rawPath string, isRa
 
 	// Vector images (.svg) and icon containers (.ico) or non-images should bypass raster processing
 	if !file.IsImage || (!needsWatermark && !hasTransformParams) || origExt == "ico" || origExt == "svg" {
-		s.serveDirect(c, file, isRawRedirect)
+		s.serveDirect(c, file, preferredReplica, isRawRedirect)
 		return
 	}
 
 	// 8. Handle Image Processing with 2-Stage Caching
-	s.serveProcessed(c, file, reqW, reqH, reqStyle, requestedFormat, needsWatermark, isRawRedirect)
+	s.serveProcessed(c, file, preferredReplica, reqW, reqH, reqStyle, requestedFormat, needsWatermark, isRawRedirect)
 }
 
 func (s *DispatchService) isFormatConversionEnabled() bool {
@@ -395,7 +432,120 @@ func shortHash(h string) string {
 	return h
 }
 
-func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord, isRawRedirect bool) {
+type fileSource struct {
+	driver     storage.StorageDriver
+	storageKey string
+	localPath  string
+	isLocal    bool
+}
+
+func (s *DispatchService) getFileStream(ctx context.Context, file *model.FileRecord, preferredReplica *model.FilePolicyReplica) (*fileSource, io.ReadCloser, error) {
+	type candidate struct {
+		policyID   uint
+		storageKey string
+	}
+	var candidates []candidate
+	seen := make(map[string]bool)
+
+	addCandidate := func(pID uint, key string) {
+		if key == "" {
+			return
+		}
+		sig := fmt.Sprintf("%d:%s", pID, key)
+		if !seen[sig] {
+			seen[sig] = true
+			candidates = append(candidates, candidate{policyID: pID, storageKey: key})
+		}
+	}
+
+	if preferredReplica != nil && preferredReplica.StorageKey != "" {
+		addCandidate(preferredReplica.PolicyID, preferredReplica.StorageKey)
+	}
+
+	if s.db != nil && file != nil && file.ID > 0 {
+		var reps []model.FilePolicyReplica
+		if err := s.db.Where("file_id = ? AND status = 'ready'", file.ID).Find(&reps).Error; err == nil {
+			for _, r := range reps {
+				addCandidate(r.PolicyID, r.StorageKey)
+			}
+		}
+	}
+
+	if file != nil && file.StorageKey != "" {
+		addCandidate(file.PolicyID, file.StorageKey)
+	}
+
+	for _, cand := range candidates {
+		var driver storage.StorageDriver
+		if s.driverManager != nil && cand.policyID > 0 {
+			d, _, err := s.driverManager.GetDriver(ctx, cand.policyID)
+			if err == nil {
+				driver = d
+			}
+		}
+		if driver == nil && file != nil && (cand.policyID == file.PolicyID || cand.policyID == 0) {
+			driver = s.storage
+		}
+		if driver == nil {
+			continue
+		}
+
+		if localPath, ok := driver.GetLocalPath(cand.storageKey); ok {
+			if _, statErr := os.Stat(localPath); statErr == nil {
+				f, openErr := os.Open(localPath)
+				if openErr == nil {
+					return &fileSource{
+						driver:     driver,
+						storageKey: cand.storageKey,
+						localPath:  localPath,
+						isLocal:    true,
+					}, f, nil
+				}
+			}
+		}
+
+		rc, err := driver.Get(ctx, cand.storageKey)
+		if err == nil && rc != nil {
+			return &fileSource{
+				driver:     driver,
+				storageKey: cand.storageKey,
+			}, rc, nil
+		}
+		slog.Warn("Failed to get file stream from driver", "policy_id", cand.policyID, "storage_key", cand.storageKey, "error", err)
+	}
+
+	// Fallback to default storage
+	if s.storage != nil && file != nil && file.StorageKey != "" {
+		if localPath, ok := s.storage.GetLocalPath(file.StorageKey); ok {
+			if _, statErr := os.Stat(localPath); statErr == nil {
+				f, openErr := os.Open(localPath)
+				if openErr == nil {
+					return &fileSource{
+						driver:     s.storage,
+						storageKey: file.StorageKey,
+						localPath:  localPath,
+						isLocal:    true,
+					}, f, nil
+				}
+			}
+		}
+		rc, err := s.storage.Get(ctx, file.StorageKey)
+		if err == nil && rc != nil {
+			return &fileSource{
+				driver:     s.storage,
+				storageKey: file.StorageKey,
+			}, rc, nil
+		}
+	}
+
+	fileID := uint(0)
+	if file != nil {
+		fileID = file.ID
+	}
+	return nil, nil, fmt.Errorf("file source not found for file %d", fileID)
+}
+
+func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord, preferredReplica *model.FilePolicyReplica, isRawRedirect bool) {
 	mimeType := file.MimeType
 	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
 	if origExt == "ico" && (mimeType == "" || mimeType == "application/octet-stream") {
@@ -418,28 +568,31 @@ func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord, isR
 		return
 	}
 
-	if localPath, ok := s.storage.GetLocalPath(file.StorageKey); ok {
-		http.ServeFile(c.Writer, c.Request, localPath)
-		return
-	}
-
-	r, err := s.storage.Get(c.Request.Context(), file.StorageKey)
+	src, rc, err := s.getFileStream(c.Request.Context(), &file, preferredReplica)
 	if err != nil {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	defer r.Close()
+	if rc != nil {
+		defer rc.Close()
+	}
 
-	if rs, ok := r.(io.ReadSeeker); ok {
+	if src != nil && src.isLocal && src.localPath != "" {
+		http.ServeFile(c.Writer, c.Request, src.localPath)
+		return
+	}
+
+	if rs, ok := rc.(io.ReadSeeker); ok {
 		http.ServeContent(c.Writer, c.Request, filepath.Base(file.PublicPath), file.UpdatedAt, rs)
-	} else {
-		_, _ = io.Copy(c.Writer, r)
+	} else if rc != nil {
+		_, _ = io.Copy(c.Writer, rc)
 	}
 }
 
 func (s *DispatchService) serveProcessed(
 	c *gin.Context,
 	file model.FileRecord,
+	preferredReplica *model.FilePolicyReplica,
 	reqW, reqH int,
 	style, format string,
 	watermark bool,
@@ -516,9 +669,12 @@ func (s *DispatchService) serveProcessed(
 
 		if len(baseBytes) == 0 || err != nil {
 			baseBytes, baseMime, err = s.cache.ComputeSingleFlight(baseCacheKey, func() ([]byte, string, error) {
-				r, err := s.storage.Get(context.Background(), file.StorageKey)
+				_, r, err := s.getFileStream(context.Background(), &file, preferredReplica)
 				if err != nil {
 					return nil, "", err
+				}
+				if r == nil {
+					return nil, "", fmt.Errorf("file stream is nil for %s", file.PublicPath)
 				}
 				defer r.Close()
 
@@ -532,15 +688,15 @@ func (s *DispatchService) serveProcessed(
 			})
 			if err != nil {
 				slog.Warn("Image transform failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-				s.serveDirect(c, file, isRawRedirect)
+				s.serveDirect(c, file, preferredReplica, isRawRedirect)
 				return
 			}
 			s.cache.Put(baseCacheKey, baseCacheExt, baseBytes)
 		}
 	} else {
 		// Read unconverted original directly
-		r, err := s.storage.Get(context.Background(), file.StorageKey)
-		if err != nil {
+		_, r, err := s.getFileStream(context.Background(), &file, preferredReplica)
+		if err != nil || r == nil {
 			c.AbortWithStatus(http.StatusInternalServerError)
 			return
 		}
@@ -642,7 +798,7 @@ func (s *DispatchService) serveProcessed(
 		})
 		if err != nil {
 			slog.Warn("Dynamic watermark processing failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-			s.serveDirect(c, file, isRawRedirect)
+			s.serveDirect(c, file, preferredReplica, isRawRedirect)
 			return
 		}
 
@@ -686,7 +842,7 @@ func (s *DispatchService) serveProcessed(
 	})
 	if err != nil {
 		slog.Warn("Static watermark processing failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-		s.serveDirect(c, file, isRawRedirect)
+		s.serveDirect(c, file, preferredReplica, isRawRedirect)
 		return
 	}
 
@@ -889,30 +1045,27 @@ func (s *DispatchService) ServeRaw(c *gin.Context, fileID uint, currentUserID ui
 		return
 	}
 
-	key := file.StorageKey
-	if file.SourceKey != "" {
-		key = file.SourceKey
-	}
-
 	safeName := strings.NewReplacer("\r", "", "\n", "", "\"", "\\\"").Replace(file.DisplayName)
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"; filename*=UTF-8''%s", safeName, url.PathEscape(file.DisplayName)))
 	c.Header("Content-Type", file.MimeType)
 
-	if localPath, ok := s.storage.GetLocalPath(key); ok {
-		http.ServeFile(c.Writer, c.Request, localPath)
-		return
-	}
-
-	r, err := s.storage.Get(c.Request.Context(), key)
+	src, rc, err := s.getFileStream(c.Request.Context(), &file, nil)
 	if err != nil {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	defer r.Close()
+	if rc != nil {
+		defer rc.Close()
+	}
 
-	if rs, ok := r.(io.ReadSeeker); ok {
+	if src != nil && src.isLocal && src.localPath != "" {
+		http.ServeFile(c.Writer, c.Request, src.localPath)
+		return
+	}
+
+	if rs, ok := rc.(io.ReadSeeker); ok {
 		http.ServeContent(c.Writer, c.Request, file.DisplayName, file.UpdatedAt, rs)
-	} else {
-		_, _ = io.Copy(c.Writer, r)
+	} else if rc != nil {
+		_, _ = io.Copy(c.Writer, rc)
 	}
 }

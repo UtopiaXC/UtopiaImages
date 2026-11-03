@@ -2,21 +2,47 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/UtopiaXC/UtopiaImages/internal/pkg/pathclean"
+	"gorm.io/gorm"
 )
+
+func init() {
+	RegisterDriver("local", func(ctx context.Context, policy model.StoragePolicy, db *gorm.DB) (StorageDriver, error) {
+		basePath := "data/storage"
+		if strings.TrimSpace(policy.Config) != "" {
+			var cfg struct {
+				BasePath string `json:"base_path"`
+			}
+			if err := json.Unmarshal([]byte(policy.Config), &cfg); err == nil && cfg.BasePath != "" {
+				basePath = cfg.BasePath
+			}
+		}
+		return NewLocalStorageDriver(basePath)
+	})
+}
 
 type LocalStorageDriver struct {
 	basePath string
 }
 
 func NewLocalStorageDriver(basePath string) (*LocalStorageDriver, error) {
-	cleanBase := filepath.Clean(basePath)
+	cleanBase := filepath.Clean(filepath.ToSlash(strings.TrimSpace(basePath)))
+	if cleanBase == "" {
+		cleanBase = "data/storage"
+	}
+	if !filepath.IsAbs(cleanBase) {
+		if cleanBase != "data" && !strings.HasPrefix(cleanBase, "data/") {
+			return nil, fmt.Errorf("local storage path must be within data directory: %s", cleanBase)
+		}
+	}
 	if err := os.MkdirAll(cleanBase, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create storage directory %s: %w", cleanBase, err)
 	}
@@ -123,6 +149,24 @@ func (d *LocalStorageDriver) Stat(ctx context.Context, key string) (FileInfo, er
 		Size:         info.Size(),
 		LastModified: info.ModTime(),
 	}, nil
+}
+
+func (d *LocalStorageDriver) Test(ctx context.Context) error {
+	absBase, err := filepath.Abs(d.basePath)
+	if err != nil {
+		return fmt.Errorf("invalid base path: %w", err)
+	}
+	if err := os.MkdirAll(absBase, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	tmpFile, err := os.CreateTemp(absBase, ".probe-*")
+	if err != nil {
+		return fmt.Errorf("write test failed: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	_ = os.Remove(tmpPath)
+	return nil
 }
 
 func (d *LocalStorageDriver) GetLocalPath(key string) (string, bool) {

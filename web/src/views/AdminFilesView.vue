@@ -63,7 +63,7 @@
                 :disabled="selectedIds.length === 0"
                 :loading="batchDeleting"
               >
-                {{ $t('adminFiles.batchDelete') }} ({{ selectedIds.length }})
+                {{ $t('adminFiles.batchDelete') }} · {{ selectedIds.length }}
               </n-button>
             </template>
             {{ $t('adminFiles.confirmBatchDelete', { count: selectedIds.length }) }}
@@ -151,6 +151,16 @@
                 <div style="font-weight: 500; word-break: break-all;">
                   {{ file.display_name }}
                 </div>
+                <div v-if="file.replicas && file.replicas.length > 0" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
+                  <n-tag
+                    v-for="rep in file.replicas"
+                    :key="rep.id"
+                    size="tiny"
+                    :type="rep.status === 'ready' ? 'success' : 'error'"
+                  >
+                    {{ rep.policy?.name || rep.policy_name || ('策略 ' + rep.policy_id) }}
+                  </n-tag>
+                </div>
                 <div style="color: #777; font-size: 11px; margin-top: 2px; word-break: break-all;">
                   {{ file.public_path }}
                 </div>
@@ -178,7 +188,7 @@
               </td>
               <td>
                 <n-tag v-if="file.temp_link_count > 0" type="warning" size="tiny">
-                  {{ $t('adminFiles.hasTempLinks') }} ({{ file.temp_link_count }})
+                  {{ $t('adminFiles.hasTempLinks') }} · {{ file.temp_link_count }}
                 </n-tag>
                 <span v-else style="color: #666; font-size: 12px;">{{ $t('adminFiles.noTempLinksShort') }}</span>
               </td>
@@ -250,10 +260,10 @@
                 {{ detailsData.file?.mime_type }}
               </n-descriptions-item>
               <n-descriptions-item :label="$t('adminFiles.filterPolicy')">
-                {{ detailsData.policy?.name || '-' }} ({{ detailsData.policy?.driver }})
+                {{ detailsData.policy?.name || '-' }} · {{ detailsData.policy?.driver }}
               </n-descriptions-item>
               <n-descriptions-item :label="$t('adminFiles.uploader')">
-                {{ detailsData.user?.nickname || detailsData.user?.username }} (ID: {{ detailsData.user?.id }})
+                {{ detailsData.user?.nickname || detailsData.user?.username }} · ID: {{ detailsData.user?.id }}
               </n-descriptions-item>
               <n-descriptions-item :label="$t('common.createdAt')">
                 {{ formatDate(detailsData.file?.created_at) }}
@@ -262,12 +272,56 @@
           </div>
         </div>
 
+        <!-- Storage Replicas Section -->
+        <div style="margin-bottom: 20px;">
+          <h4 style="margin: 0 0 10px; font-size: 14px; font-weight: 600;">{{ $t('files.storageReplicas') }}</h4>
+          <n-table size="small" :bordered="false" :single-line="false">
+            <thead>
+              <tr>
+                <th>{{ $t('upload.storagePolicy') }}</th>
+                <th>{{ $t('files.replicaStatus') }}</th>
+                <th style="text-align: right;">{{ $t('common.actions') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="rep in (detailsData.file?.replicas || detailsData.replicas || [])" :key="rep.id">
+                <td>
+                  <div style="font-weight: 500;">{{ rep.policy?.name || rep.policy_name || ('策略 ' + rep.policy_id) }}</div>
+                  <div style="font-size: 11px; color: #777;">{{ rep.storage_key }}</div>
+                </td>
+                <td>
+                  <n-tag :type="rep.status === 'ready' ? 'success' : 'error'" size="tiny">
+                    {{ rep.status === 'ready' ? $t('files.statusReady') : $t('files.statusError') }}
+                  </n-tag>
+                  <div v-if="rep.error_message" style="font-size: 11px; color: #e88080; margin-top: 2px;">
+                    {{ rep.error_message }}
+                  </div>
+                </td>
+                <td style="text-align: right;">
+                  <div style="display: flex; gap: 6px; justify-content: flex-end;">
+                    <n-button
+                      v-if="rep.direct_url"
+                      size="tiny"
+                      quaternary
+                      type="primary"
+                      @click="copyText(rep.direct_url)"
+                    >
+                      {{ $t('files.copyDirectLink') }}
+                    </n-button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </n-table>
+        </div>
+
         <!-- Copyable Links & Temporary Links -->
         <div style="margin-bottom: 20px;">
           <h4 style="margin: 0 0 10px; font-size: 14px; font-weight: 600;">{{ $t('adminFiles.links') }}</h4>
           <FileLinksPanel
             v-if="detailsData.file"
             :file="detailsData.file"
+            :links="detailsData.links"
             :initial-url="resolveFileUrl(detailsData.file)"
           />
         </div>
@@ -315,7 +369,7 @@
         <!-- Temporary Links List -->
         <div>
           <h4 style="margin: 0 0 10px; font-size: 14px; font-weight: 600;">
-            {{ $t('adminFiles.tempLinks') }} ({{ (detailsData.temp_links || []).length }})
+            {{ $t('adminFiles.tempLinks') }} · {{ (detailsData.temp_links || []).length }}
           </h4>
           <div v-if="(detailsData.temp_links || []).length === 0" style="color: #777; font-size: 13px;">
             {{ $t('adminFiles.noTempLinks') }}

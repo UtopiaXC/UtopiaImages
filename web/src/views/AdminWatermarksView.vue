@@ -66,7 +66,7 @@
                   {{ $t('watermarks.global') }}
                 </span>
                 <span v-else>
-                  {{ item.owner_nickname || item.owner_username }}
+                  {{ item.owner_name || item.owner_nickname || item.owner_username || ('用户 #' + item.owner_id) }}
                 </span>
               </td>
               <td>
@@ -312,7 +312,7 @@ const filteredWatermarks = computed(() => {
     if (searchQuery.value) {
       const q = searchQuery.value.toLowerCase()
       const matchName = (item.name || '').toLowerCase().includes(q)
-      const matchOwner = (item.owner_nickname || item.owner_username || '').toLowerCase().includes(q)
+      const matchOwner = (item.owner_name || item.owner_nickname || item.owner_username || '').toLowerCase().includes(q)
       const l = parseLayers(item.layers)
       const matchText = (l.text || '').toLowerCase().includes(q)
       if (!matchName && !matchOwner && !matchText) return false

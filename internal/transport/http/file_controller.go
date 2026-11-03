@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/cache"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/UtopiaXC/UtopiaImages/internal/service"
+	"github.com/UtopiaXC/UtopiaImages/internal/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -27,6 +29,7 @@ type FileController struct {
 	dispatchService *service.DispatchService
 	importService   *service.ImportService
 	chunkService    *service.ChunkService
+	driverManager   *storage.PolicyDriverManager
 	baseURL         string
 	derivedCache    *cache.DerivedCache
 }
@@ -49,6 +52,10 @@ func NewFileController(
 		baseURL:         baseURL,
 		derivedCache:    dc,
 	}
+}
+
+func (ctrl *FileController) SetDriverManager(dm *storage.PolicyDriverManager) {
+	ctrl.driverManager = dm
 }
 
 func (ctrl *FileController) SetDB(db *gorm.DB) {
@@ -85,6 +92,10 @@ func (ctrl *FileController) RegisterRoutes(rg *gin.RouterGroup) {
 		files.DELETE("/:id/temp-links/:link_id", auth.RequirePermission("file.write"), ctrl.RevokeTempLink)
 		files.DELETE("/:id/temp-links", auth.RequirePermission("file.write"), ctrl.RevokeAllTempLinks)
 		files.POST("/:id/revoke-links", auth.RequirePermission("file.write"), ctrl.RevokeAllTempLinks)
+		files.POST("/:id/policies", auth.RequirePermission("file.write"), ctrl.SyncFilePolicy)
+		files.POST("/batch-sync-policy", auth.RequirePermission("file.write"), ctrl.BatchSyncFilePolicy)
+		files.DELETE("/:id/policies/:policy_id", auth.RequirePermission("file.delete"), ctrl.RemoveFilePolicy)
+		files.POST("/batch-remove-policy", auth.RequirePermission("file.delete"), ctrl.BatchRemoveFilePolicy)
 		files.POST("/:id/edit", auth.RequirePermission("file.write"), ctrl.EditFile)
 	}
 
@@ -158,26 +169,15 @@ func (ctrl *FileController) checkRoleUploadLimits(user *model.User, filename str
 		}
 	}
 
-	// 2. Single file size check
+	// 2. System single file size check
 	sysMaxMB := int64(0)
 	var s model.Setting
 	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&s).Error; err == nil {
 		sysMaxMB, _ = strconv.ParseInt(strings.TrimSpace(s.Value), 10, 64)
 	}
 
-	effectiveMaxBytes := int64(0)
-	if sysMaxMB > 0 {
-		effectiveMaxBytes = sysMaxMB * 1024 * 1024
-	}
-	if role.MaxSingleFileSizeMB > 0 {
-		roleMaxBytes := role.MaxSingleFileSizeMB * 1024 * 1024
-		if effectiveMaxBytes == 0 || roleMaxBytes < effectiveMaxBytes {
-			effectiveMaxBytes = roleMaxBytes
-		}
-	}
-
-	if effectiveMaxBytes > 0 && size > effectiveMaxBytes {
-		return fmt.Errorf("文件大小超过限制（当前角色上限: %d MB）", effectiveMaxBytes/(1024*1024))
+	if sysMaxMB > 0 && size > sysMaxMB*1024*1024 {
+		return fmt.Errorf("文件大小超过系统上限: %d MB", sysMaxMB)
 	}
 
 	return nil
@@ -211,7 +211,26 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 		return
 	}
 
+	var policyIDs []uint
+	if pidsRaw := c.PostForm("policy_ids"); pidsRaw != "" {
+		for _, part := range strings.Split(pidsRaw, ",") {
+			if id := ParseUintSafe(strings.TrimSpace(part), 0); id > 0 {
+				policyIDs = append(policyIDs, id)
+			}
+		}
+	}
+	if len(policyIDs) == 0 {
+		for _, v := range c.Request.PostForm["policy_ids[]"] {
+			if id := ParseUintSafe(strings.TrimSpace(v), 0); id > 0 {
+				policyIDs = append(policyIDs, id)
+			}
+		}
+	}
 	policyID := ParseUintSafe(c.PostForm("policy_id"), 0)
+	if len(policyIDs) == 0 && policyID > 0 {
+		policyIDs = append(policyIDs, policyID)
+	}
+
 	watermarkMode := c.DefaultPostForm("watermark_mode", "inherit")
 	if !isValidMode(watermarkMode) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark_mode, must be inherit, on, or off"})
@@ -250,6 +269,7 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 
 	record, err := ctrl.uploadService.Upload(c.Request.Context(), user, src, fileHeader.Filename, fileHeader.Size, service.UploadOptions{
 		PolicyID:            policyID,
+		PolicyIDs:           policyIDs,
 		DisplayName:         displayName,
 		WatermarkMode:       watermarkMode,
 		WatermarkTemplateID: wmTemplateID,
@@ -278,6 +298,7 @@ type InitChunkUploadRequest struct {
 	FileSHA256          string `json:"file_sha256"`
 	UploadType          string `json:"upload_type"` // "file" or "archive"
 	PolicyID            uint   `json:"policy_id"`
+	PolicyIDs           []uint `json:"policy_ids,omitempty"`
 	WatermarkMode       string `json:"watermark_mode"`
 	WatermarkTemplateID *uint  `json:"watermark_template_id"`
 	HotlinkMode         string `json:"hotlink_mode"`
@@ -309,6 +330,11 @@ func (ctrl *FileController) InitChunkUpload(c *gin.Context) {
 		req.ConflictAction = "skip"
 	}
 
+	pIDs := req.PolicyIDs
+	if len(pIDs) == 0 && req.PolicyID > 0 {
+		pIDs = []uint{req.PolicyID}
+	}
+
 	meta, uploaded, err := ctrl.chunkService.InitChunkUpload(user, service.ChunkUploadMeta{
 		Filename:            req.Filename,
 		TotalSize:           req.TotalSize,
@@ -317,6 +343,7 @@ func (ctrl *FileController) InitChunkUpload(c *gin.Context) {
 		FileSHA256:          strings.ToLower(strings.TrimSpace(req.FileSHA256)),
 		UploadType:          req.UploadType,
 		PolicyID:            req.PolicyID,
+		PolicyIDs:           pIDs,
 		WatermarkMode:       req.WatermarkMode,
 		WatermarkTemplateID: req.WatermarkTemplateID,
 		HotlinkMode:         req.HotlinkMode,
@@ -511,6 +538,75 @@ func (ctrl *FileController) buildFileLinks(file *model.FileRecord, customBaseURL
 		links["webp_bbcode"] = fmt.Sprintf("[img]%s[/img]", webpURL)
 	}
 
+	type replicaLinkItem struct {
+		ID         uint   `json:"id"`
+		PolicyID   uint   `json:"policy_id"`
+		PolicyName string `json:"policy_name"`
+		PublicPath string `json:"public_path"`
+		URL        string `json:"url"`
+		DirectURL  string `json:"direct_url,omitempty"`
+		Status     string `json:"status"`
+	}
+
+	var replicas []*model.FilePolicyReplica
+	if len(file.Replicas) > 0 {
+		replicas = file.Replicas
+	} else if ctrl.db != nil && file.ID > 0 {
+		ctrl.db.Preload("Policy").Where("file_id = ?", file.ID).Find(&replicas)
+	}
+
+	if len(replicas) > 0 {
+		policyIDs := make([]uint, 0, len(replicas))
+		for _, r := range replicas {
+			policyIDs = append(policyIDs, r.PolicyID)
+		}
+		var policies []model.StoragePolicy
+		policyMap := make(map[uint]model.StoragePolicy)
+		if len(policyIDs) > 0 && ctrl.db != nil {
+			ctrl.db.Where("id IN (?)", policyIDs).Find(&policies)
+			for _, p := range policies {
+				policyMap[p.ID] = p
+			}
+		}
+
+		replicaItems := make([]replicaLinkItem, 0, len(replicas))
+		for _, r := range replicas {
+			pName := ""
+			if r.Policy != nil && r.Policy.Name != "" {
+				pName = r.Policy.Name
+			} else if p, ok := policyMap[r.PolicyID]; ok {
+				pName = p.Name
+			}
+			rPath := strings.TrimPrefix(r.PublicPath, "/")
+			rURL := "/" + rPath
+			if baseURL != "" {
+				rURL = baseURL + "/" + rPath
+			}
+
+			dLink := ""
+			if ctrl.uploadService != nil && r.Status == "ready" {
+				if drv, dErr := ctrl.uploadService.GetDriver(context.Background(), r.PolicyID); dErr == nil {
+					if dlp, ok := drv.(storage.DirectLinkProvider); ok {
+						if dl, ok := dlp.GetDirectURL(r.StorageKey); ok && dl != "" {
+							dLink = dl
+						}
+					}
+				}
+			}
+
+			replicaItems = append(replicaItems, replicaLinkItem{
+				ID:         r.ID,
+				PolicyID:   r.PolicyID,
+				PolicyName: pName,
+				PublicPath: r.PublicPath,
+				URL:        rURL,
+				DirectURL:  dLink,
+				Status:     r.Status,
+			})
+		}
+		links["replicas"] = replicaItems
+	}
+
 	return links
 }
 
@@ -575,9 +671,17 @@ func (ctrl *FileController) ListFiles(c *gin.Context) {
 			uvMap[ur.FileID] = ur.UV
 		}
 
+		var allReplicas []model.FilePolicyReplica
+		ctrl.db.Preload("Policy").Where("file_id IN (?)", fileIDs).Find(&allReplicas)
+		repMap := make(map[uint][]*model.FilePolicyReplica)
+		for i := range allReplicas {
+			repMap[allReplicas[i].FileID] = append(repMap[allReplicas[i].FileID], &allReplicas[i])
+		}
+
 		for i := range files {
 			files[i].TotalCalls = callMap[files[i].ID]
 			files[i].TotalUV = uvMap[files[i].ID]
+			files[i].Replicas = repMap[files[i].ID]
 		}
 	}
 
@@ -618,6 +722,10 @@ func (ctrl *FileController) GetFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 		return
 	}
+
+	var replicas []*model.FilePolicyReplica
+	ctrl.db.Preload("Policy").Where("file_id = ?", file.ID).Find(&replicas)
+	file.Replicas = replicas
 
 	links := ctrl.buildFileLinks(&file)
 	var callStats []model.ImageCallStat
@@ -1500,5 +1608,135 @@ func (ctrl *FileController) GetPublicFileDetails(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"file":  file,
 		"links": links,
+	})
+}
+
+func (ctrl *FileController) SyncFilePolicy(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	isAdmin := isUserAdmin(user)
+
+	fileID := ParseUintSafe(c.Param("id"), 0)
+	if fileID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件ID无效"})
+		return
+	}
+
+	var req struct {
+		PolicyIDs []uint `json:"policy_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	replicas, err := ctrl.uploadService.SyncFileToPolicies(c.Request.Context(), user, fileID, req.PolicyIDs, isAdmin)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var file model.FileRecord
+	ctrl.db.First(&file, fileID)
+	file.Replicas = replicas
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "策略同步完成",
+		"file":     file,
+		"replicas": replicas,
+		"links":    ctrl.buildFileLinks(&file),
+	})
+}
+
+func (ctrl *FileController) BatchSyncFilePolicy(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	isAdmin := isUserAdmin(user)
+
+	var req struct {
+		FileIDs   []uint `json:"file_ids" binding:"required"`
+		PolicyIDs []uint `json:"policy_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	successCount := 0
+	failedCount := 0
+	var errMessages []string
+
+	for _, fID := range req.FileIDs {
+		_, err := ctrl.uploadService.SyncFileToPolicies(c.Request.Context(), user, fID, req.PolicyIDs, isAdmin)
+		if err != nil {
+			failedCount++
+			errMessages = append(errMessages, fmt.Sprintf("文件 #%d: %s", fID, err.Error()))
+		} else {
+			successCount++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":   len(req.FileIDs),
+		"success": successCount,
+		"failed":  failedCount,
+		"errors":  errMessages,
+	})
+}
+
+func (ctrl *FileController) RemoveFilePolicy(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	isAdmin := isUserAdmin(user)
+
+	fileID := ParseUintSafe(c.Param("id"), 0)
+	policyID := ParseUintSafe(c.Param("policy_id"), 0)
+	if fileID == 0 || policyID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数无效"})
+		return
+	}
+
+	err := ctrl.uploadService.RemoveFileFromPolicy(c.Request.Context(), user, fileID, policyID, isAdmin)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "副本移除成功"})
+}
+
+func (ctrl *FileController) BatchRemoveFilePolicy(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	isAdmin := isUserAdmin(user)
+
+	var req struct {
+		FileIDs  []uint `json:"file_ids" binding:"required"`
+		PolicyID uint   `json:"policy_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	successCount := 0
+	failedCount := 0
+	var errMessages []string
+
+	for _, fID := range req.FileIDs {
+		err := ctrl.uploadService.RemoveFileFromPolicy(c.Request.Context(), user, fID, req.PolicyID, isAdmin)
+		if err != nil {
+			failedCount++
+			errMessages = append(errMessages, fmt.Sprintf("文件 #%d: %s", fID, err.Error()))
+		} else {
+			successCount++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":   len(req.FileIDs),
+		"success": successCount,
+		"failed":  failedCount,
+		"errors":  errMessages,
 	})
 }

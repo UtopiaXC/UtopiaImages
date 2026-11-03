@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -19,6 +20,7 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/UtopiaXC/UtopiaImages/internal/pkg/pathclean"
 	"github.com/UtopiaXC/UtopiaImages/internal/service"
+	"github.com/UtopiaXC/UtopiaImages/internal/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -28,6 +30,7 @@ var serverStartTime = time.Now()
 type AdminController struct {
 	db            *gorm.DB
 	uploadService *service.UploadService
+	driverManager *storage.PolicyDriverManager
 	baseURL       string
 	derivedCache  *cache.DerivedCache
 }
@@ -39,6 +42,10 @@ func NewAdminController(db *gorm.DB, us *service.UploadService, baseURL string, 
 		baseURL:       baseURL,
 		derivedCache:  dc,
 	}
+}
+
+func (ctrl *AdminController) SetDriverManager(dm *storage.PolicyDriverManager) {
+	ctrl.driverManager = dm
 }
 
 func (ctrl *AdminController) SetDB(db *gorm.DB) {
@@ -81,6 +88,8 @@ func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
 
 		// Storage policies management (Requirement 8)
 		admin.GET("/policies", ctrl.ListPolicies)
+		admin.GET("/policies/drivers", ctrl.ListDrivers)
+		admin.POST("/policies/test", ctrl.TestPolicy)
 		admin.POST("/policies", ctrl.CreatePolicy)
 		admin.PATCH("/policies/:id", ctrl.UpdatePolicy)
 		admin.DELETE("/policies/:id", ctrl.DeletePolicy)
@@ -572,17 +581,16 @@ func (ctrl *AdminController) UnfreezeUser(c *gin.Context) {
 // -------------------------------------------------------------
 
 type RoleDTO struct {
-	ID                  uint      `json:"id"`
-	Name                string    `json:"name"`
-	DisplayName         string    `json:"display_name"`
-	QuotaBytes          int64     `json:"quota_bytes"`
-	AllowedFormats      string    `json:"allowed_formats"`
-	MaxSingleFileSizeMB int64     `json:"max_single_file_size_mb"`
-	IsSystem            bool      `json:"is_system"`
-	UserCount           int64     `json:"user_count"`
-	PolicyIDs           []uint    `json:"policy_ids"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID             uint      `json:"id"`
+	Name           string    `json:"name"`
+	DisplayName    string    `json:"display_name"`
+	QuotaBytes     int64     `json:"quota_bytes"`
+	AllowedFormats string    `json:"allowed_formats"`
+	IsSystem       bool      `json:"is_system"`
+	UserCount      int64     `json:"user_count"`
+	PolicyIDs      []uint    `json:"policy_ids"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func (ctrl *AdminController) ListRoles(c *gin.Context) {
@@ -600,17 +608,16 @@ func (ctrl *AdminController) ListRoles(c *gin.Context) {
 		}
 
 		dtos = append(dtos, RoleDTO{
-			ID:                  r.ID,
-			Name:                r.Name,
-			DisplayName:         r.DisplayName,
-			QuotaBytes:          r.QuotaBytes,
-			AllowedFormats:      r.AllowedFormats,
-			MaxSingleFileSizeMB: r.MaxSingleFileSizeMB,
-			IsSystem:            r.IsSystem,
-			UserCount:           uCount,
-			PolicyIDs:           policyIDs,
-			CreatedAt:           r.CreatedAt,
-			UpdatedAt:           r.UpdatedAt,
+			ID:             r.ID,
+			Name:           r.Name,
+			DisplayName:    r.DisplayName,
+			QuotaBytes:     r.QuotaBytes,
+			AllowedFormats: r.AllowedFormats,
+			IsSystem:       r.IsSystem,
+			UserCount:      uCount,
+			PolicyIDs:      policyIDs,
+			CreatedAt:      r.CreatedAt,
+			UpdatedAt:      r.UpdatedAt,
 		})
 	}
 
@@ -619,27 +626,14 @@ func (ctrl *AdminController) ListRoles(c *gin.Context) {
 
 func (ctrl *AdminController) CreateRole(c *gin.Context) {
 	var req struct {
-		Name                string `json:"name" binding:"required"`
-		DisplayName         string `json:"display_name" binding:"required"`
-		QuotaBytes          int64  `json:"quota_bytes"`
-		AllowedFormats      string `json:"allowed_formats"`
-		MaxSingleFileSizeMB int64  `json:"max_single_file_size_mb"`
-		PolicyIDs           []uint `json:"policy_ids"`
+		Name           string `json:"name" binding:"required"`
+		DisplayName    string `json:"display_name" binding:"required"`
+		QuotaBytes     int64  `json:"quota_bytes"`
+		AllowedFormats string `json:"allowed_formats"`
+		PolicyIDs      []uint `json:"policy_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	var sysSetting model.Setting
-	sysLimitMB := int64(50)
-	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
-		if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
-			sysLimitMB = v
-		}
-	}
-	if req.MaxSingleFileSizeMB > sysLimitMB {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限 (%d MB)", sysLimitMB)})
 		return
 	}
 
@@ -649,18 +643,17 @@ func (ctrl *AdminController) CreateRole(c *gin.Context) {
 	}
 
 	role := model.Role{
-		Name:                req.Name,
-		DisplayName:         req.DisplayName,
-		QuotaBytes:          req.QuotaBytes,
-		AllowedFormats:      strings.TrimSpace(req.AllowedFormats),
-		MaxSingleFileSizeMB: req.MaxSingleFileSizeMB,
-		IsSystem:            false,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
+		Name:           req.Name,
+		DisplayName:    req.DisplayName,
+		QuotaBytes:     req.QuotaBytes,
+		AllowedFormats: strings.TrimSpace(req.AllowedFormats),
+		IsSystem:       false,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
 
 	if err := ctrl.db.Create(&role).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create role: " + err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "创建角色失败: " + err.Error()})
 		return
 	}
 
@@ -675,16 +668,15 @@ func (ctrl *AdminController) UpdateRole(c *gin.Context) {
 	id := ParseUintSafe(c.Param("id"), 0)
 	var role model.Role
 	if err := ctrl.db.Where("id = ?", id).First(&role).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Role not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "角色不存在"})
 		return
 	}
 
 	var req struct {
-		DisplayName         string  `json:"display_name"`
-		QuotaBytes          *int64  `json:"quota_bytes"`
-		AllowedFormats      *string `json:"allowed_formats"`
-		MaxSingleFileSizeMB *int64  `json:"max_single_file_size_mb"`
-		PolicyIDs           []uint  `json:"policy_ids"`
+		DisplayName    string  `json:"display_name"`
+		QuotaBytes     *int64  `json:"quota_bytes"`
+		AllowedFormats *string `json:"allowed_formats"`
+		PolicyIDs      []uint  `json:"policy_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -700,22 +692,6 @@ func (ctrl *AdminController) UpdateRole(c *gin.Context) {
 	}
 	if req.AllowedFormats != nil {
 		updates["allowed_formats"] = strings.TrimSpace(*req.AllowedFormats)
-	}
-	if req.MaxSingleFileSizeMB != nil {
-		if *req.MaxSingleFileSizeMB > 0 {
-			var sysSetting model.Setting
-			sysLimitMB := int64(50)
-			if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
-				if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
-					sysLimitMB = v
-				}
-			}
-			if *req.MaxSingleFileSizeMB > sysLimitMB {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限 (%d MB)", sysLimitMB)})
-				return
-			}
-		}
-		updates["max_single_file_size_mb"] = *req.MaxSingleFileSizeMB
 	}
 
 	if role.Name == "guest" && req.PolicyIDs != nil {
@@ -769,18 +745,19 @@ func (ctrl *AdminController) DeleteRole(c *gin.Context) {
 // -------------------------------------------------------------
 
 type PolicyDTO struct {
-	ID               uint      `json:"id"`
-	Name             string    `json:"name"`
-	Driver           string    `json:"driver"`
-	Config           string    `json:"config"`
-	MaxCapacityBytes int64     `json:"max_capacity_bytes"`
-	UsedBytes        int64     `json:"used_bytes"`
-	IsDefault        bool      `json:"is_default"`
-	PathPrefix       string    `json:"path_prefix"`
-	NamingRule       string    `json:"naming_rule"`
-	RoleIDs          []uint    `json:"role_ids"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                  uint      `json:"id"`
+	Name                string    `json:"name"`
+	Driver              string    `json:"driver"`
+	Config              string    `json:"config"`
+	MaxCapacityBytes    int64     `json:"max_capacity_bytes"`
+	MaxSingleFileSizeMB int64     `json:"max_single_file_size_mb"`
+	UsedBytes           int64     `json:"used_bytes"`
+	IsDefault           bool      `json:"is_default"`
+	PathPrefix          string    `json:"path_prefix"`
+	NamingRule          string    `json:"naming_rule"`
+	RoleIDs             []uint    `json:"role_ids"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 func (ctrl *AdminController) ListPolicies(c *gin.Context) {
@@ -794,40 +771,152 @@ func (ctrl *AdminController) ListPolicies(c *gin.Context) {
 			roleIDs = append(roleIDs, r.ID)
 		}
 		dtos = append(dtos, PolicyDTO{
-			ID:               p.ID,
-			Name:             p.Name,
-			Driver:           p.Driver,
-			Config:           p.Config,
-			MaxCapacityBytes: p.MaxCapacityBytes,
-			UsedBytes:        p.UsedBytes,
-			IsDefault:        p.IsDefault,
-			PathPrefix:       p.PathPrefix,
-			NamingRule:       p.NamingRule,
-			RoleIDs:          roleIDs,
-			CreatedAt:        p.CreatedAt,
-			UpdatedAt:        p.UpdatedAt,
+			ID:                  p.ID,
+			Name:                p.Name,
+			Driver:              p.Driver,
+			Config:              p.Config,
+			MaxCapacityBytes:    p.MaxCapacityBytes,
+			MaxSingleFileSizeMB: p.MaxSingleFileSizeMB,
+			UsedBytes:           p.UsedBytes,
+			IsDefault:           p.IsDefault,
+			PathPrefix:          p.PathPrefix,
+			NamingRule:          p.NamingRule,
+			RoleIDs:             roleIDs,
+			CreatedAt:           p.CreatedAt,
+			UpdatedAt:           p.UpdatedAt,
 		})
 	}
 	c.JSON(http.StatusOK, dtos)
 }
 
-func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
+func (ctrl *AdminController) ListDrivers(c *gin.Context) {
+	c.JSON(http.StatusOK, storage.SupportedDrivers())
+}
+
+func (ctrl *AdminController) validateLocalStoragePath(excludeID uint, configStr string) (string, error) {
+	basePath := "data/storage"
+	if strings.TrimSpace(configStr) != "" {
+		var cfg struct {
+			BasePath string `json:"base_path"`
+		}
+		if err := json.Unmarshal([]byte(configStr), &cfg); err == nil && cfg.BasePath != "" {
+			basePath = cfg.BasePath
+		}
+	}
+	cleaned := filepath.Clean(filepath.ToSlash(strings.TrimSpace(basePath)))
+	if cleaned == "" {
+		cleaned = "data/storage"
+	}
+	if cleaned != "data" && !strings.HasPrefix(cleaned, "data/") {
+		return "", fmt.Errorf("本地存储路径必须位于 data/ 目录下，当前路径: %s", basePath)
+	}
+
+	var otherPolicies []model.StoragePolicy
+	ctrl.db.Where("driver = 'local' AND id != ?", excludeID).Find(&otherPolicies)
+	for _, op := range otherPolicies {
+		otherBase := "data/storage"
+		var ocfg struct {
+			BasePath string `json:"base_path"`
+		}
+		if err := json.Unmarshal([]byte(op.Config), &ocfg); err == nil && ocfg.BasePath != "" {
+			otherBase = ocfg.BasePath
+		}
+		if filepath.Clean(filepath.ToSlash(otherBase)) == cleaned {
+			return "", fmt.Errorf("本地存储路径与策略「%s」重复: %s", op.Name, cleaned)
+		}
+	}
+
+	cfgData := map[string]string{"base_path": cleaned}
+	b, _ := json.Marshal(cfgData)
+	return string(b), nil
+}
+
+func (ctrl *AdminController) TestPolicy(c *gin.Context) {
 	var req struct {
-		Name             string  `json:"name" binding:"required"`
-		Driver           string  `json:"driver"`
-		MaxCapacityBytes int64   `json:"max_capacity_bytes"`
-		IsDefault        bool    `json:"is_default"`
-		PathPrefix       *string `json:"path_prefix"`
-		NamingRule       string  `json:"naming_rule"`
-		RoleIDs          []uint  `json:"role_ids"`
+		ID     uint   `json:"id"`
+		Driver string `json:"driver"`
+		Config string `json:"config"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Currently only "local" driver is supported
-	driver := "local"
+	driverType := req.Driver
+	configStr := req.Config
+	if req.ID > 0 && driverType == "" {
+		var p model.StoragePolicy
+		if err := ctrl.db.First(&p, req.ID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
+			return
+		}
+		driverType = p.Driver
+		configStr = p.Config
+	}
+
+	if driverType == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "存储驱动类型不能为空"})
+		return
+	}
+
+	if driverType == "local" {
+		normCfg, err := ctrl.validateLocalStoragePath(req.ID, configStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		configStr = normCfg
+	}
+
+	policy := model.StoragePolicy{
+		Driver: driverType,
+		Config: configStr,
+	}
+	drv, err := storage.BuildDriver(c.Request.Context(), policy, ctrl.db)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "驱动初始化失败: " + err.Error()})
+		return
+	}
+
+	if err := drv.Test(c.Request.Context()); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "连接测试失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "连接测试成功"})
+}
+
+func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
+	var req struct {
+		Name                string  `json:"name" binding:"required"`
+		Driver              string  `json:"driver" binding:"required"`
+		Config              string  `json:"config"`
+		MaxCapacityBytes    int64   `json:"max_capacity_bytes"`
+		MaxSingleFileSizeMB int64   `json:"max_single_file_size_mb"`
+		IsDefault           bool    `json:"is_default"`
+		PathPrefix          *string `json:"path_prefix"`
+		NamingRule          string  `json:"naming_rule"`
+		RoleIDs             []uint  `json:"role_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if _, ok := storage.GetDriverFactory(req.Driver); !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的存储驱动类型: " + req.Driver})
+		return
+	}
+
+	if req.Driver == "local" {
+		normCfg, err := ctrl.validateLocalStoragePath(0, req.Config)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		req.Config = normCfg
+	}
+
 	if req.NamingRule == "" {
 		req.NamingRule = "{Y}/{m}/{d}/{random:16}.{ext}"
 	}
@@ -836,20 +925,45 @@ func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
 		pathPrefix = strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
 	}
 
+	var conflictCount int64
+	ctrl.db.Model(&model.StoragePolicy{}).Where("path_prefix = ?", pathPrefix).Count(&conflictCount)
+	if conflictCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "路径前缀已被其他存储策略占用，必须唯一"})
+		return
+	}
+
+	var sysSetting model.Setting
+	sysLimitMB := int64(50)
+	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
+		if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
+			sysLimitMB = v
+		}
+	}
+	if req.MaxSingleFileSizeMB > sysLimitMB {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限: %d MB", sysLimitMB)})
+		return
+	}
+
 	if req.IsDefault {
 		ctrl.db.Model(&model.StoragePolicy{}).Where("1 = 1").Update("is_default", false)
 	}
 
+	cfg := req.Config
+	if cfg == "" && req.Driver == "local" {
+		cfg = `{"base_path":"data/storage"}`
+	}
+
 	policy := model.StoragePolicy{
-		Name:             req.Name,
-		Driver:           driver,
-		Config:           `{"base_path":"data/storage"}`,
-		MaxCapacityBytes: req.MaxCapacityBytes,
-		IsDefault:        req.IsDefault,
-		PathPrefix:       pathPrefix,
-		NamingRule:       req.NamingRule,
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
+		Name:                req.Name,
+		Driver:              req.Driver,
+		Config:              cfg,
+		MaxCapacityBytes:    req.MaxCapacityBytes,
+		MaxSingleFileSizeMB: req.MaxSingleFileSizeMB,
+		IsDefault:           req.IsDefault,
+		PathPrefix:          pathPrefix,
+		NamingRule:          req.NamingRule,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
 	}
 
 	if err := ctrl.db.Create(&policy).Error; err != nil {
@@ -872,30 +986,65 @@ func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
 	id := ParseUintSafe(c.Param("id"), 0)
 	var policy model.StoragePolicy
 	if err := ctrl.db.Where("id = ?", id).First(&policy).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Policy not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
 		return
 	}
 
 	var req struct {
-		Name             string  `json:"name"`
-		MaxCapacityBytes *int64  `json:"max_capacity_bytes"`
-		IsDefault        bool    `json:"is_default"`
-		PathPrefix       *string `json:"path_prefix"`
-		NamingRule       string  `json:"naming_rule"`
-		RoleIDs          []uint  `json:"role_ids"`
+		Name                string  `json:"name"`
+		Driver              string  `json:"driver"`
+		Config              *string `json:"config"`
+		MaxCapacityBytes    *int64  `json:"max_capacity_bytes"`
+		MaxSingleFileSizeMB *int64  `json:"max_single_file_size_mb"`
+		IsDefault           bool    `json:"is_default"`
+		PathPrefix          *string `json:"path_prefix"`
+		NamingRule          string  `json:"naming_rule"`
+		RoleIDs             []uint  `json:"role_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if req.IsDefault {
-		ctrl.db.Model(&model.StoragePolicy{}).Where("id != ?", policy.ID).Update("is_default", false)
+	var sysSetting model.Setting
+	sysLimitMB := int64(50)
+	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
+		if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
+			sysLimitMB = v
+		}
 	}
 
 	updates := map[string]any{
 		"updated_at": time.Now(),
 		"is_default": req.IsDefault,
+	}
+
+	if req.Driver != "" {
+		if _, ok := storage.GetDriverFactory(req.Driver); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的存储驱动类型: " + req.Driver})
+			return
+		}
+		updates["driver"] = req.Driver
+	}
+	if req.Config != nil {
+		updates["config"] = *req.Config
+	}
+
+	targetDriver := policy.Driver
+	if req.Driver != "" {
+		targetDriver = req.Driver
+	}
+	if targetDriver == "local" {
+		cfgToCheck := policy.Config
+		if req.Config != nil {
+			cfgToCheck = *req.Config
+		}
+		normCfg, err := ctrl.validateLocalStoragePath(policy.ID, cfgToCheck)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		updates["config"] = normCfg
 	}
 	if req.Name != "" {
 		updates["name"] = req.Name
@@ -903,14 +1052,36 @@ func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
 	if req.MaxCapacityBytes != nil {
 		updates["max_capacity_bytes"] = *req.MaxCapacityBytes
 	}
+	if req.MaxSingleFileSizeMB != nil {
+		if *req.MaxSingleFileSizeMB > sysLimitMB {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限: %d MB", sysLimitMB)})
+			return
+		}
+		updates["max_single_file_size_mb"] = *req.MaxSingleFileSizeMB
+	}
 	if req.PathPrefix != nil {
-		updates["path_prefix"] = strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
+		cleanPrefix := strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
+		var conflictCount int64
+		ctrl.db.Model(&model.StoragePolicy{}).Where("id != ? AND path_prefix = ?", policy.ID, cleanPrefix).Count(&conflictCount)
+		if conflictCount > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "路径前缀已被其他存储策略占用，必须唯一"})
+			return
+		}
+		updates["path_prefix"] = cleanPrefix
 	}
 	if req.NamingRule != "" {
 		updates["naming_rule"] = req.NamingRule
 	}
 
+	if req.IsDefault {
+		ctrl.db.Model(&model.StoragePolicy{}).Where("id != ?", policy.ID).Update("is_default", false)
+	}
+
 	ctrl.db.Model(&policy).Updates(updates)
+
+	if ctrl.driverManager != nil {
+		ctrl.driverManager.Invalidate(policy.ID)
+	}
 
 	// Update role policy associations
 	if req.RoleIDs != nil {
@@ -951,25 +1122,30 @@ func (ctrl *AdminController) DeletePolicy(c *gin.Context) {
 	id := ParseUintSafe(c.Param("id"), 0)
 	var policy model.StoragePolicy
 	if err := ctrl.db.Where("id = ?", id).First(&policy).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Policy not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
 		return
 	}
 
 	if policy.IsDefault {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Default storage policy cannot be deleted"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "默认存储策略无法删除"})
 		return
 	}
 
-	var fileCount int64
+	var fileCount, replicaCount int64
 	ctrl.db.Model(&model.FileRecord{}).Where("policy_id = ?", policy.ID).Count(&fileCount)
-	if fileCount > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete storage policy that currently stores files"})
+	ctrl.db.Model(&model.FilePolicyReplica{}).Where("policy_id = ?", policy.ID).Count(&replicaCount)
+	if fileCount > 0 || replicaCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "存储策略下存在文件副本，无法删除"})
 		return
+	}
+
+	if ctrl.driverManager != nil {
+		ctrl.driverManager.Invalidate(policy.ID)
 	}
 
 	ctrl.db.Where("policy_id = ?", policy.ID).Delete(&model.RolePolicy{})
 	ctrl.db.Delete(&policy)
-	c.JSON(http.StatusOK, gin.H{"message": "Policy deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "存储策略删除成功"})
 }
 
 // -------------------------------------------------------------
@@ -1030,23 +1206,24 @@ func (ctrl *AdminController) GetDatabaseStatus(c *gin.Context) {
 // -------------------------------------------------------------
 
 type AdminFileItem struct {
-	ID            uint      `json:"id"`
-	PublicPath    string    `json:"public_path"`
-	StorageKey    string    `json:"storage_key"`
-	DisplayName   string    `json:"display_name"`
-	MimeType      string    `json:"mime_type"`
-	Size          int64     `json:"size"`
-	Width         int       `json:"width"`
-	Height        int       `json:"height"`
-	Sha256        string    `json:"sha256"`
-	IsImage       bool      `json:"is_image"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	URL           string    `json:"url"`
-	ThumbnailURL  string    `json:"thumbnail_url"`
-	TempLinkCount int64     `json:"temp_link_count"`
-	TotalCalls    int64     `json:"total_calls"`
-	TotalUV       int64     `json:"total_uv"`
+	ID            uint                       `json:"id"`
+	PublicPath    string                     `json:"public_path"`
+	StorageKey    string                     `json:"storage_key"`
+	DisplayName   string                     `json:"display_name"`
+	MimeType      string                     `json:"mime_type"`
+	Size          int64                      `json:"size"`
+	Width         int                        `json:"width"`
+	Height        int                        `json:"height"`
+	Sha256        string                     `json:"sha256"`
+	IsImage       bool                       `json:"is_image"`
+	CreatedAt     time.Time                  `json:"created_at"`
+	UpdatedAt     time.Time                  `json:"updated_at"`
+	URL           string                     `json:"url"`
+	ThumbnailURL  string                     `json:"thumbnail_url"`
+	TempLinkCount int64                      `json:"temp_link_count"`
+	TotalCalls    int64                      `json:"total_calls"`
+	TotalUV       int64                      `json:"total_uv"`
+	Replicas      []*model.FilePolicyReplica `json:"replicas,omitempty"`
 	User          struct {
 		ID       uint   `json:"id"`
 		Username string `json:"username"`
@@ -1155,6 +1332,15 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 		}
 	}
 
+	var allReplicas []model.FilePolicyReplica
+	if len(fileIDs) > 0 {
+		ctrl.db.Preload("Policy").Where("file_id IN (?)", fileIDs).Find(&allReplicas)
+	}
+	repMap := make(map[uint][]*model.FilePolicyReplica)
+	for i := range allReplicas {
+		repMap[allReplicas[i].FileID] = append(repMap[allReplicas[i].FileID], &allReplicas[i])
+	}
+
 	currentBaseURL := ctrl.resolveBaseURL(c)
 	items := make([]AdminFileItem, 0, len(files))
 	for _, f := range files {
@@ -1193,6 +1379,7 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 			TempLinkCount: linkCountMap[f.ID],
 			TotalCalls:    callCountMap[f.ID],
 			TotalUV:       callUVMap[f.ID],
+			Replicas:      repMap[f.ID],
 		}
 		if u, ok := usersMap[f.UserID]; ok {
 			item.User.ID = u.ID
@@ -1234,6 +1421,9 @@ func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
 	var policy model.StoragePolicy
 	ctrl.db.Where("id = ?", file.PolicyID).First(&policy)
 
+	var replicas []model.FilePolicyReplica
+	ctrl.db.Preload("Policy").Where("file_id = ?", file.ID).Find(&replicas)
+
 	var tempLinks []model.TemporaryLink
 	ctrl.db.Where("file_id = ?", file.ID).Order("id DESC").Find(&tempLinks)
 
@@ -1273,6 +1463,7 @@ func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
 			"email":    user.Email,
 		},
 		"policy":     policy,
+		"replicas":   replicas,
 		"links":      links,
 		"temp_links": tempLinks,
 		"call_stats": func() []model.ImageCallStat {
@@ -1332,15 +1523,17 @@ func (ctrl *AdminController) BatchDeleteSiteFiles(c *gin.Context) {
 }
 
 type AdminWatermarkDTO struct {
-	ID        uint      `json:"id"`
-	OwnerID   *uint     `json:"owner_id"`
-	OwnerName string    `json:"owner_name"`
-	IsSystem  bool      `json:"is_system"`
-	Name      string    `json:"name"`
-	Layers    string    `json:"layers"`
-	Version   int64     `json:"version"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            uint      `json:"id"`
+	OwnerID       *uint     `json:"owner_id"`
+	OwnerName     string    `json:"owner_name"`
+	OwnerUsername string    `json:"owner_username,omitempty"`
+	OwnerNickname string    `json:"owner_nickname,omitempty"`
+	IsSystem      bool      `json:"is_system"`
+	Name          string    `json:"name"`
+	Layers        string    `json:"layers"`
+	Version       int64     `json:"version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (ctrl *AdminController) ListAllWatermarks(c *gin.Context) {
@@ -1353,40 +1546,46 @@ func (ctrl *AdminController) ListAllWatermarks(c *gin.Context) {
 			userIDs = append(userIDs, *t.OwnerID)
 		}
 	}
-	userMap := make(map[uint]string)
+	userMap := make(map[uint]model.User)
 	if len(userIDs) > 0 {
 		var users []model.User
 		ctrl.db.Where("id IN ?", userIDs).Find(&users)
 		for _, u := range users {
-			displayName := u.Nickname
-			if displayName == "" {
-				displayName = u.Username
-			}
-			userMap[u.ID] = displayName
+			userMap[u.ID] = u
 		}
 	}
 
 	dtos := make([]AdminWatermarkDTO, 0, len(templates))
 	for _, t := range templates {
 		ownerName := "系统"
+		ownerUsername := ""
+		ownerNickname := ""
 		if t.OwnerID != nil {
-			if name, ok := userMap[*t.OwnerID]; ok {
-				ownerName = name
+			if u, ok := userMap[*t.OwnerID]; ok {
+				ownerUsername = u.Username
+				ownerNickname = u.Nickname
+				if u.Nickname != "" {
+					ownerName = u.Nickname
+				} else {
+					ownerName = u.Username
+				}
 			} else {
 				ownerName = fmt.Sprintf("User #%d", *t.OwnerID)
 			}
 		}
 		isSys := t.IsSystem || t.OwnerID == nil
 		dtos = append(dtos, AdminWatermarkDTO{
-			ID:        t.ID,
-			OwnerID:   t.OwnerID,
-			OwnerName: ownerName,
-			IsSystem:  isSys,
-			Name:      t.Name,
-			Layers:    t.Layers,
-			Version:   t.Version,
-			CreatedAt: t.CreatedAt,
-			UpdatedAt: t.UpdatedAt,
+			ID:            t.ID,
+			OwnerID:       t.OwnerID,
+			OwnerName:     ownerName,
+			OwnerUsername: ownerUsername,
+			OwnerNickname: ownerNickname,
+			IsSystem:      isSys,
+			Name:          t.Name,
+			Layers:        t.Layers,
+			Version:       t.Version,
+			CreatedAt:     t.CreatedAt,
+			UpdatedAt:     t.UpdatedAt,
 		})
 	}
 	c.JSON(http.StatusOK, dtos)
@@ -1405,13 +1604,6 @@ func (ctrl *AdminController) CreateAdminWatermark(c *gin.Context) {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "水印名称不能为空"})
-		return
-	}
-
-	var count int64
-	ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND owner_id IS NULL", req.Name).Count(&count)
-	if count > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "系统水印名称已存在"})
 		return
 	}
 
@@ -1460,12 +1652,6 @@ func (ctrl *AdminController) UpdateAdminWatermark(c *gin.Context) {
 	}
 	if req.Name != "" {
 		trimmed := strings.TrimSpace(req.Name)
-		var count int64
-		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ? AND owner_id IS NULL", trimmed, id).Count(&count)
-		if count > 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "系统水印名称已存在"})
-			return
-		}
 		updates["name"] = trimmed
 	}
 	if req.Layers != "" {

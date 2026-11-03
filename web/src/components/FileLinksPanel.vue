@@ -1,26 +1,46 @@
 <template>
   <div style="background: rgba(255, 255, 255, 0.02); border-radius: 8px; padding: 14px;">
-    <!-- Top toolbar: Image Size Selector & Domain Selector -->
+    <!-- Top toolbar: Replica Selector, Link Source, Image Size Selector & Domain Selector -->
     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
       <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <!-- Storage Replica Selector -->
+        <div v-if="replicas.length > 1" style="display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 13px; color: #aaa;">{{ $t('files.storageReplica') }}</span>
+          <n-select
+            v-model:value="selectedReplicaId"
+            :options="replicaOptions"
+            size="small"
+            style="width: 160px;"
+          />
+        </div>
+
+        <!-- Link Source Toggle -->
+        <div v-if="hasDirectUrl" style="display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 13px; color: #aaa;">{{ $t('files.linkType') }}</span>
+          <n-radio-group v-model:value="linkSource" size="small">
+            <n-radio-button value="proxy">{{ $t('files.proxyLink') }}</n-radio-button>
+            <n-radio-button value="direct">{{ $t('files.storageDirectLink') }}</n-radio-button>
+          </n-radio-group>
+        </div>
+
         <!-- Domain Selector (Multi-Domain Support) -->
-        <div v-if="domainOptions.length > 1" style="display: flex; align-items: center; gap: 6px;">
+        <div v-if="linkSource === 'proxy' && domainOptions.length > 1" style="display: flex; align-items: center; gap: 6px;">
           <span style="font-size: 13px; color: #aaa;">{{ $t('upload.domainSelect') }}</span>
           <n-select
             v-model:value="selectedDomain"
             :options="domainOptions"
             size="small"
-            style="width: 210px;"
+            style="width: 200px;"
           />
         </div>
 
-        <div style="display: flex; align-items: center; gap: 6px;">
+        <div v-if="linkSource === 'proxy'" style="display: flex; align-items: center; gap: 6px;">
           <span style="font-size: 13px; color: #aaa;">{{ $t('upload.imageSize') }}</span>
           <n-select
             v-model:value="selectedSize"
             :options="sizeOptions"
             size="small"
-            style="width: 150px;"
+            style="width: 140px;"
           />
         </div>
       </div>
@@ -101,7 +121,7 @@
         </div>
         <div style="display: flex; gap: 6px;">
           <n-button size="tiny" quaternary @click="showHistoryModal = true">
-            {{ $t('files.tempLinkHistory') }} ({{ tempLinks.length }})
+            {{ $t('files.tempLinkHistory') }} · {{ tempLinks.length }}
           </n-button>
         </div>
       </div>
@@ -226,9 +246,11 @@ import { userPreferences, fetchUserPreferences } from '../utils/auth'
 
 const props = withDefaults(defineProps<{
   file: any
+  links?: any
   initialUrl?: string
   hideTempLinks?: boolean
 }>(), {
+  links: null,
   initialUrl: '',
   hideTempLinks: false
 })
@@ -251,6 +273,49 @@ const selectedDurationHours = ref(24)
 const generatingTemp = ref(false)
 const showHistoryModal = ref(false)
 const tempLinks = ref<any[]>([])
+
+const getReplicaKey = (r: any): number => {
+  return r?.id ?? r?.policy_id ?? 0
+}
+
+const replicas = computed(() => {
+  const r = props.links?.replicas || props.file?.replicas || props.file?.Replicas || []
+  return Array.isArray(r) ? r : []
+})
+const selectedReplicaId = ref<number | null>(null)
+
+watch(replicas, (reps) => {
+  if (reps.length > 0) {
+    const exists = reps.some(r => getReplicaKey(r) === selectedReplicaId.value)
+    if (!exists || selectedReplicaId.value === null) {
+      selectedReplicaId.value = getReplicaKey(reps[0])
+    }
+  }
+}, { immediate: true })
+
+const replicaOptions = computed(() => {
+  return replicas.value.map(r => ({
+    label: r.policy_name || r.policy?.name || `策略 ${r.policy_id}`,
+    value: getReplicaKey(r)
+  }))
+})
+
+const activeReplica = computed(() => {
+  if (replicas.value.length === 0) return null
+  return replicas.value.find(r => getReplicaKey(r) === selectedReplicaId.value) || replicas.value[0]
+})
+
+const hasDirectUrl = computed(() => {
+  return Boolean(activeReplica.value?.direct_url || props.links?.direct_url)
+})
+
+const linkSource = ref<'proxy' | 'direct'>('proxy')
+
+watch(hasDirectUrl, (has) => {
+  if (!has && linkSource.value === 'direct') {
+    linkSource.value = 'proxy'
+  }
+})
 
 const configuredDomains = ref<string[]>([])
 const selectedDomain = ref<string>(window.location.origin)
@@ -360,6 +425,12 @@ watch(() => props.file?.id, () => {
 })
 
 const getRawUrl = () => {
+  if (linkSource.value === 'direct') {
+    return activeReplica.value?.direct_url || props.links?.direct_url || ''
+  }
+  if (activeReplica.value?.url) {
+    return applySelectedDomain(activeReplica.value.url)
+  }
   if (props.initialUrl) {
     return applySelectedDomain(props.initialUrl)
   }
@@ -386,6 +457,12 @@ const sizeSuffix = computed(() => {
 
 const visibleFormatRows = computed(() => {
   const rawUrl = getRawUrl()
+  if (linkSource.value === 'direct') {
+    return [
+      { key: 'direct', label: t('files.storageDirectLink'), url: rawUrl }
+    ]
+  }
+
   const baseNoExt = rawUrl.replace(/\.[^.]+$/, '')
   const ext = originalExt.value
   const isImage = props.file.is_image

@@ -190,6 +190,13 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 			}
 		}
 
+		// Enforce storage policy single file limit
+		if policy.MaxSingleFileSizeMB > 0 && itemSize > policy.MaxSingleFileSizeMB*1024*1024 {
+			slog.Warn("Import skipped: file size exceeds policy limit", "path", publicPath, "size", itemSize, "limit_mb", policy.MaxSingleFileSizeMB)
+			skipped++
+			return nil
+		}
+
 		// Enforce storage policy capacity
 		if sizeDelta > 0 && policy.MaxCapacityBytes > 0 && policy.UsedBytes+sizeDelta > policy.MaxCapacityBytes {
 			slog.Warn("Import skipped: storage policy capacity exceeded", "path", publicPath, "policy", policy.Name)
@@ -208,8 +215,15 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 		hasher := sha256.New()
 		teeStream := io.TeeReader(fullStream, hasher)
 
+		drv, err := s.upload.getDriver(ctx, policy.ID)
+		if err != nil {
+			slog.Error("Failed to get storage driver for import", "policy_id", policy.ID, "error", err)
+			skipped++
+			return nil
+		}
+
 		storageKey := publicPath
-		if err := s.upload.storage.Put(ctx, storageKey, teeStream, itemSize); err != nil {
+		if err := drv.Put(ctx, storageKey, teeStream, itemSize); err != nil {
 			slog.Error("Failed to store imported archive file", "path", publicPath, "error", err)
 			skipped++
 			return nil
@@ -218,7 +232,7 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 		sha256Hex := hex.EncodeToString(hasher.Sum(nil))
 		finalItemSize := itemSize
 		if finalItemSize <= 0 {
-			if st, err := s.upload.storage.Stat(ctx, storageKey); err == nil {
+			if st, err := drv.Stat(ctx, storageKey); err == nil {
 				finalItemSize = st.Size
 			}
 		}
@@ -226,7 +240,7 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 		// Read dimensions from saved local file
 		var width, height int
 		if isImg && s.upload != nil && s.upload.processor != nil {
-			if localPath, ok := s.upload.storage.GetLocalPath(storageKey); ok {
+			if localPath, ok := drv.GetLocalPath(storageKey); ok {
 				if imgF, err := os.Open(localPath); err == nil {
 					if w, h, err := s.upload.processor.GetDimensions(imgF); err == nil {
 						width = w
@@ -235,7 +249,7 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 					_ = imgF.Close()
 				}
 			} else {
-				if rCloser, err := s.upload.storage.Get(ctx, storageKey); err == nil {
+				if rCloser, err := drv.Get(ctx, storageKey); err == nil {
 					if w, h, err := s.upload.processor.GetDimensions(rCloser); err == nil {
 						width = w
 						height = h
@@ -285,6 +299,33 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 				Columns:   []clause.Column{{Name: "public_path"}},
 				DoNothing: true,
 			}).Create(&record)
+		}
+
+		finalFileID := record.ID
+		if hasExisting {
+			finalFileID = existingFile.ID
+		}
+		if finalFileID > 0 {
+			var rep model.FilePolicyReplica
+			if err := s.db.Where("file_id = ? AND policy_id = ?", finalFileID, policy.ID).First(&rep).Error; err == nil {
+				s.db.Model(&rep).Updates(map[string]any{
+					"public_path": publicPath,
+					"storage_key": storageKey,
+					"size":        finalItemSize,
+					"status":      "ready",
+					"error_msg":   "",
+					"updated_at":  time.Now(),
+				})
+			} else {
+				s.db.Create(&model.FilePolicyReplica{
+					FileID:     finalFileID,
+					PolicyID:   policy.ID,
+					PublicPath: publicPath,
+					StorageKey: storageKey,
+					Size:       finalItemSize,
+					Status:     "ready",
+				})
+			}
 		}
 
 		// Track user used quota & policy used capacity

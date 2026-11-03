@@ -29,6 +29,7 @@ type ChunkUploadMeta struct {
 	FileSHA256          string    `json:"file_sha256"`
 	UploadType          string    `json:"upload_type"` // "file" or "archive"
 	PolicyID            uint      `json:"policy_id"`
+	PolicyIDs           []uint    `json:"policy_ids,omitempty"`
 	WatermarkMode       string    `json:"watermark_mode"`
 	WatermarkTemplateID *uint     `json:"watermark_template_id"`
 	HotlinkMode         string    `json:"hotlink_mode"`
@@ -337,7 +338,7 @@ func (s *ChunkService) CompleteChunkUpload(ctx context.Context, user *model.User
 	if meta.FileSHA256 != "" && !strings.EqualFold(actualSHA, meta.FileSHA256) {
 		_ = os.Remove(assembledPath)
 		_ = os.RemoveAll(dir)
-		return nil, nil, fmt.Errorf("SHA-256校验失败：组装文件哈希 (%s) 与客户端哈希 (%s) 不符，文件损坏", actualSHA, meta.FileSHA256)
+		return nil, nil, fmt.Errorf("SHA-256校验失败: 组装文件哈希与客户端哈希不符")
 	}
 
 	// Dispatch based on upload_type
@@ -379,8 +380,14 @@ func (s *ChunkService) CompleteChunkUpload(ctx context.Context, user *model.User
 		return nil, nil, fmt.Errorf("failed to stat assembled file: %w", err)
 	}
 
+	pIDs := meta.PolicyIDs
+	if len(pIDs) == 0 && meta.PolicyID > 0 {
+		pIDs = []uint{meta.PolicyID}
+	}
+
 	record, err := s.uploadService.Upload(ctx, user, f, meta.Filename, info.Size(), UploadOptions{
 		PolicyID:            meta.PolicyID,
+		PolicyIDs:           pIDs,
 		DisplayName:         meta.Filename,
 		WatermarkMode:       meta.WatermarkMode,
 		WatermarkTemplateID: meta.WatermarkTemplateID,

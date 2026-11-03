@@ -22,18 +22,19 @@ type Role struct {
 
 // StoragePolicy defines physical storage location and naming rules
 type StoragePolicy struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	Name             string    `gorm:"uniqueIndex;size:64;not null" json:"name"`
-	Driver           string    `gorm:"size:32;default:local" json:"driver"` // currently "local", extensible to "oss", "s3"
-	Config           string    `gorm:"type:text" json:"config"`             // JSON backend driver configuration
-	MaxCapacityBytes int64     `gorm:"default:0" json:"max_capacity_bytes"` // 0 = unlimited
-	UsedBytes        int64     `gorm:"default:0" json:"used_bytes"`
-	IsDefault        bool      `gorm:"default:false" json:"is_default"`
-	PathPrefix       string    `gorm:"size:128" json:"path_prefix"`
-	NamingRule       string    `gorm:"size:255;default:{Y}/{m}/{d}/{random:16}.{ext}" json:"naming_rule"`
-	Roles            []*Role   `gorm:"many2many:role_policies;joinForeignKey:policy_id;joinReferences:role_id;" json:"roles,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                  uint      `gorm:"primaryKey" json:"id"`
+	Name                string    `gorm:"uniqueIndex;size:64;not null" json:"name"`
+	Driver              string    `gorm:"size:32;default:local" json:"driver"` // currently "local", extensible to "oss", "s3"
+	Config              string    `gorm:"type:text" json:"config"`             // JSON backend driver configuration
+	MaxCapacityBytes    int64     `gorm:"default:0" json:"max_capacity_bytes"` // 0 = unlimited
+	UsedBytes           int64     `gorm:"default:0" json:"used_bytes"`
+	MaxSingleFileSizeMB int64     `gorm:"default:0" json:"max_single_file_size_mb"` // 0 = system default
+	IsDefault           bool      `gorm:"default:false" json:"is_default"`
+	PathPrefix          string    `gorm:"size:128" json:"path_prefix"`
+	NamingRule          string    `gorm:"size:255;default:{Y}/{m}/{d}/{random:16}.{ext}" json:"naming_rule"`
+	Roles               []*Role   `gorm:"many2many:role_policies;joinForeignKey:policy_id;joinReferences:role_id;" json:"roles,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // RolePolicy is the junction table connecting Roles and StoragePolicies (3NF)
@@ -133,31 +134,57 @@ type RecoveryCode struct {
 
 // FileRecord represents an uploaded file
 type FileRecord struct {
-	ID                    uint           `gorm:"primaryKey" json:"id"`
-	UserID                uint           `gorm:"index;not null" json:"user_id"`
-	PolicyID              uint           `gorm:"index;not null" json:"policy_id"`
-	PublicPath            string         `gorm:"uniqueIndex;size:512;not null" json:"public_path"` // e.g. "uploads/2026/05/23/a.jpg"
-	StorageKey            string         `gorm:"size:512;not null" json:"storage_key"`             // key inside storage driver
-	DisplayName           string         `gorm:"size:255;not null" json:"display_name"`
-	MimeType              string         `gorm:"size:128;not null" json:"mime_type"`
-	Size                  int64          `gorm:"not null" json:"size"`
-	Width                 int            `json:"width"`
-	Height                int            `json:"height"`
-	Sha256                string         `gorm:"size:64;index" json:"sha256"`
-	IsImage               bool           `gorm:"index" json:"is_image"`
-	SourceKey             string         `gorm:"size:512" json:"source_key,omitempty"` // if converted, key of original unconverted file
-	SourceSize            int64          `json:"source_size,omitempty"`
-	WatermarkMode         string         `gorm:"size:16;default:inherit" json:"watermark_mode"` // inherit / on / off
-	WatermarkTemplateID   *uint          `json:"watermark_template_id,omitempty"`
-	HotlinkMode           string         `gorm:"size:16;default:inherit" json:"hotlink_mode"` // inherit / on / off
-	HotlinkAllowedDomains string         `gorm:"type:text" json:"hotlink_allowed_domains"`
-	PublicMode            string         `gorm:"size:16;default:inherit" json:"public_mode"`
-	SignVersion           int64          `gorm:"default:1" json:"sign_version"`
-	TotalCalls            int64          `gorm:"-" json:"total_calls"`
-	TotalUV               int64          `gorm:"-" json:"total_uv"`
-	CreatedAt             time.Time      `json:"created_at"`
-	UpdatedAt             time.Time      `json:"updated_at"`
-	DeletedAt             gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                    uint                 `gorm:"primaryKey" json:"id"`
+	UserID                uint                 `gorm:"index;not null" json:"user_id"`
+	PolicyID              uint                 `gorm:"index;not null" json:"policy_id"`
+	PublicPath            string               `gorm:"uniqueIndex;size:512;not null" json:"public_path"` // e.g. "uploads/2026/05/23/a.jpg"
+	StorageKey            string               `gorm:"size:512;not null" json:"storage_key"`             // key inside storage driver
+	DisplayName           string               `gorm:"size:255;not null" json:"display_name"`
+	MimeType              string               `gorm:"size:128;not null" json:"mime_type"`
+	Size                  int64                `gorm:"not null" json:"size"`
+	Width                 int                  `json:"width"`
+	Height                int                  `json:"height"`
+	Sha256                string               `gorm:"size:64;index" json:"sha256"`
+	IsImage               bool                 `gorm:"index" json:"is_image"`
+	SourceKey             string               `gorm:"size:512" json:"source_key,omitempty"` // if converted, key of original unconverted file
+	SourceSize            int64                `json:"source_size,omitempty"`
+	WatermarkMode         string               `gorm:"size:16;default:inherit" json:"watermark_mode"` // inherit / on / off
+	WatermarkTemplateID   *uint                `json:"watermark_template_id,omitempty"`
+	HotlinkMode           string               `gorm:"size:16;default:inherit" json:"hotlink_mode"` // inherit / on / off
+	HotlinkAllowedDomains string               `gorm:"type:text" json:"hotlink_allowed_domains"`
+	PublicMode            string               `gorm:"size:16;default:inherit" json:"public_mode"`
+	SignVersion           int64                `gorm:"default:1" json:"sign_version"`
+	TotalCalls            int64                `gorm:"-" json:"total_calls"`
+	TotalUV               int64                `gorm:"-" json:"total_uv"`
+	Replicas              []*FilePolicyReplica `gorm:"-" json:"replicas,omitempty"`
+	CreatedAt             time.Time            `json:"created_at"`
+	UpdatedAt             time.Time            `json:"updated_at"`
+	DeletedAt             gorm.DeletedAt       `gorm:"index" json:"-"`
+}
+
+// FilePolicyReplica records physical replicas of a file across storage policies
+type FilePolicyReplica struct {
+	ID         uint           `gorm:"primaryKey" json:"id"`
+	FileID     uint           `gorm:"uniqueIndex:idx_file_policy;index;not null" json:"file_id"`
+	PolicyID   uint           `gorm:"uniqueIndex:idx_file_policy;index;not null" json:"policy_id"`
+	Policy     *StoragePolicy `gorm:"foreignKey:PolicyID" json:"policy,omitempty"`
+	PublicPath string         `gorm:"uniqueIndex;size:512;not null" json:"public_path"`
+	StorageKey string         `gorm:"size:512;not null" json:"storage_key"`
+	Size       int64          `gorm:"not null" json:"size"`
+	Status     string         `gorm:"size:32;default:'ready'" json:"status"` // ready, failed, syncing
+	ErrorMsg   string         `gorm:"size:512" json:"error_msg,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+}
+
+// FileBlob stores binary chunks when using database storage driver
+type FileBlob struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	StorageKey string    `gorm:"uniqueIndex:idx_blob_key_chunk;size:512;not null" json:"storage_key"`
+	ChunkIndex int       `gorm:"uniqueIndex:idx_blob_key_chunk;not null;default:0" json:"chunk_index"`
+	Data       []byte    `gorm:"size:16777216" json:"-"`
+	Size       int64     `gorm:"not null" json:"size"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // TemporaryLink records authorized temporary unwatermarked raw links
