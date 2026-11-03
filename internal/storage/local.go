@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,16 +15,7 @@ import (
 
 func init() {
 	RegisterDriver("local", func(ctx context.Context, policy model.StoragePolicy, db *gorm.DB) (StorageDriver, error) {
-		basePath := "data/storage"
-		if strings.TrimSpace(policy.Config) != "" {
-			var cfg struct {
-				BasePath string `json:"base_path"`
-			}
-			if err := json.Unmarshal([]byte(policy.Config), &cfg); err == nil && cfg.BasePath != "" {
-				basePath = cfg.BasePath
-			}
-		}
-		return NewLocalStorageDriver(basePath)
+		return NewLocalStorageDriver("data/storage")
 	})
 }
 

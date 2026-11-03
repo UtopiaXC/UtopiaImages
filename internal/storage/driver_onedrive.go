@@ -179,11 +179,7 @@ func (d *OneDriveStorageDriver) ensureAccessToken(ctx context.Context) (string, 
 }
 
 func (d *OneDriveStorageDriver) buildItemURL(key string, suffix string) string {
-	cleanKey := strings.TrimLeft(key, "/")
-	if d.cfg.BasePath != "" {
-		cleanKey = path.Join(strings.Trim(d.cfg.BasePath, "/"), cleanKey)
-	}
-
+	cleanKey := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
 	prefix := "/me/drive"
 	if d.cfg.DriveID != "" {
 		prefix = fmt.Sprintf("/drives/%s", d.cfg.DriveID)

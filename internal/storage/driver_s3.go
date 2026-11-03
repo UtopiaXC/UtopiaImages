@@ -137,11 +137,7 @@ func NewS3StorageDriver(cfg S3Config) (*S3StorageDriver, error) {
 }
 
 func (d *S3StorageDriver) resolveKey(key string) string {
-	cleanKey := strings.TrimLeft(key, "/")
-	if d.cfg.RootDir != "" {
-		return path.Join(strings.Trim(d.cfg.RootDir, "/"), cleanKey)
-	}
-	return cleanKey
+	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
 }
 
 func (d *S3StorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {

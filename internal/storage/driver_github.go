@@ -114,11 +114,7 @@ func NewGitHubStorageDriver(cfg GitHubConfig) (*GitHubStorageDriver, error) {
 }
 
 func (d *GitHubStorageDriver) resolvePath(key string) string {
-	cleanKey := strings.TrimLeft(key, "/")
-	if d.cfg.PathPrefix != "" {
-		return path.Join(strings.Trim(d.cfg.PathPrefix, "/"), cleanKey)
-	}
-	return cleanKey
+	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
 }
 
 func (d *GitHubStorageDriver) getFileSHA(ctx context.Context, fullPath string) (string, error) {

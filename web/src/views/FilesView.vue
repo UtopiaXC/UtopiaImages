@@ -118,6 +118,16 @@
             </n-button>
           </n-dropdown>
 
+          <!-- Batch Sync Policy -->
+          <n-button size="small" type="primary" secondary @click="showBatchSyncModal = true">
+            {{ $t('files.batchSyncPolicy') }}
+          </n-button>
+
+          <!-- Batch Remove Policy -->
+          <n-button size="small" secondary @click="showBatchRemoveModal = true">
+            {{ $t('files.batchRemovePolicy') }}
+          </n-button>
+
           <!-- Batch Delete -->
           <n-popconfirm @positive-click="handleBatchDelete">
             <template #trigger>
@@ -172,6 +182,16 @@
             <div style="font-weight: 500; font-size: 13px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; margin-bottom: 4px;">
               {{ file.display_name }}
             </div>
+            <div v-if="file.replicas && file.replicas.length > 0" style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px;">
+              <n-tag
+                v-for="rep in file.replicas"
+                :key="rep.id"
+                size="tiny"
+                :type="rep.status === 'ready' ? 'success' : 'error'"
+              >
+                {{ getPolicyName(rep) }}
+              </n-tag>
+            </div>
             <div style="font-size: 11px; color: #777; display: flex; justify-content: space-between; margin-bottom: 8px;">
               <span>{{ formatBytes(file.size) }}</span>
               <span v-if="file.width && file.height">{{ file.width }} × {{ file.height }}</span>
@@ -184,6 +204,9 @@
               </n-button>
               <n-button size="tiny" quaternary type="primary" @click="openLinksModal(file)">
                 {{ $t('files.showLinks') }}
+              </n-button>
+              <n-button size="tiny" quaternary type="warning" @click="openManageReplicasModal(file)">
+                {{ $t('files.manageReplicas') }}
               </n-button>
               <n-button size="tiny" quaternary @click="openEditPropertiesModal(file)">
                 {{ $t('files.editProperties') }}
@@ -244,6 +267,16 @@
               <div style="font-weight: 500; font-size: 13px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; margin-bottom: 4px;">
                 {{ file.display_name }}
               </div>
+              <div v-if="file.replicas && file.replicas.length > 0" style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px;">
+                <n-tag
+                  v-for="rep in file.replicas"
+                  :key="rep.id"
+                  size="tiny"
+                  :type="rep.status === 'ready' ? 'success' : 'error'"
+                >
+                  {{ getPolicyName(rep) }}
+                </n-tag>
+              </div>
               <div style="font-size: 12px; color: #777; display: flex; justify-content: space-between;">
                 <span>{{ formatBytes(file.size) }}</span>
                 <span v-if="file.width && file.height">{{ file.width }} × {{ file.height }}</span>
@@ -257,6 +290,9 @@
               </n-button>
               <n-button size="tiny" quaternary type="primary" @click="openLinksModal(file)">
                 {{ $t('files.showLinks') }}
+              </n-button>
+              <n-button size="tiny" quaternary type="warning" @click="openManageReplicasModal(file)">
+                {{ $t('files.manageReplicas') }}
               </n-button>
               <n-button size="tiny" quaternary @click="openEditPropertiesModal(file)">
                 {{ $t('files.editProperties') }}
@@ -289,6 +325,7 @@
               <th>{{ $t('files.fileSize') }}</th>
               <th>{{ $t('files.dimensions') }}</th>
               <th>{{ $t('files.mimeType') }}</th>
+              <th>{{ $t('files.storageReplicas') }}</th>
               <th>{{ $t('files.watermarkSetting') }}</th>
               <th>{{ $t('files.callStats') }}</th>
               <th>{{ $t('common.createdAt') }}</th>
@@ -319,6 +356,18 @@
               <td>{{ file.width && file.height ? `${file.width} × ${file.height}` : '-' }}</td>
               <td><code>{{ file.mime_type }}</code></td>
               <td>
+                <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                  <n-tag
+                    v-for="rep in (file.replicas || [])"
+                    :key="rep.id"
+                    size="tiny"
+                    :type="rep.status === 'ready' ? 'success' : 'error'"
+                  >
+                    {{ getPolicyName(rep) }}
+                  </n-tag>
+                </div>
+              </td>
+              <td>
                 <n-tag v-if="file.watermark_mode === 'on'" type="warning" size="tiny">{{ $t('files.watermarked') }}</n-tag>
                 <n-tag v-else-if="file.watermark_mode === 'off'" size="tiny">{{ $t('common.no') }}</n-tag>
                 <n-tag v-else size="tiny" type="info">{{ $t('upload.watermarkInherit') }}</n-tag>
@@ -336,6 +385,9 @@
                   </n-button>
                   <n-button size="tiny" quaternary type="primary" @click="openLinksModal(file)">
                     {{ $t('files.showLinks') }}
+                  </n-button>
+                  <n-button size="tiny" quaternary type="warning" @click="openManageReplicasModal(file)">
+                    {{ $t('files.manageReplicas') }}
                   </n-button>
                   <n-button size="tiny" quaternary @click="openEditPropertiesModal(file)">
                     {{ $t('files.editProperties') }}
@@ -400,6 +452,9 @@
             <n-button size="small" secondary @click="openLinksModal(lightboxTarget)">
               {{ $t('files.showLinks') }}
             </n-button>
+            <n-button size="small" secondary @click="openManageReplicasModal(lightboxTarget)">
+              {{ $t('files.manageReplicas') }}
+            </n-button>
             <n-button size="small" secondary @click="openEditPropertiesModal(lightboxTarget)">
               {{ $t('files.editProperties') }}
             </n-button>
@@ -419,7 +474,11 @@
       style="width: 760px; max-width: 95vw; border-radius: 12px;"
     >
       <div v-if="linksTarget" style="margin-top: 6px;">
-        <FileLinksPanel :file="linksTarget" :initial-url="baseURL + '/' + linksTarget.public_path" />
+        <FileLinksPanel
+          :file="linksTarget"
+          :links="linksTarget?.links"
+          :initial-url="baseURL + '/' + linksTarget.public_path"
+        />
 
         <!-- Call Statistics Section -->
         <div style="margin-top: 24px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 16px;">
@@ -560,6 +619,162 @@
       @apply="onApplyFilter"
       @reset="onResetFilter"
     />
+
+    <!-- Manage Replicas Modal -->
+    <n-modal
+      v-model:show="showManageReplicasModal"
+      preset="card"
+      :title="$t('files.manageReplicas')"
+      style="width: 760px; max-width: 95vw; border-radius: 12px;"
+    >
+      <div v-if="manageReplicasTarget" style="display: flex; flex-direction: column; gap: 16px;">
+        <div style="font-weight: 500; font-size: 14px; margin-bottom: 4px;">
+          {{ manageReplicasTarget.display_name }}
+        </div>
+
+        <!-- Existing Replicas Table -->
+        <n-table size="small" :bordered="false" :single-line="false">
+          <thead>
+            <tr>
+              <th>{{ $t('upload.storagePolicy') }}</th>
+              <th>{{ $t('files.replicaStatus') }}</th>
+              <th style="text-align: right;">{{ $t('common.actions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rep in (manageReplicasTarget.replicas || [])" :key="rep.id">
+              <td>
+                <div style="font-weight: 500;">{{ getPolicyName(rep) }}</div>
+                <div style="font-size: 11px; color: #777;">{{ rep.storage_key }}</div>
+              </td>
+              <td>
+                <n-tag :type="rep.status === 'ready' ? 'success' : 'error'" size="tiny">
+                  {{ rep.status === 'ready' ? $t('files.statusReady') : $t('files.statusError') }}
+                </n-tag>
+                <div v-if="rep.error_message" style="font-size: 11px; color: #e88080; margin-top: 2px;">
+                  {{ rep.error_message }}
+                </div>
+              </td>
+              <td style="text-align: right;">
+                <div style="display: flex; gap: 6px; align-items: center; justify-content: flex-end;">
+                  <n-button
+                    v-if="rep.direct_url"
+                    size="tiny"
+                    quaternary
+                    type="primary"
+                    @click="copyLink(rep.direct_url)"
+                  >
+                    {{ $t('files.copyDirectLink') }}
+                  </n-button>
+                  <n-popconfirm @positive-click="removeFileReplica(manageReplicasTarget.id, rep.policy_id)">
+                    <template #trigger>
+                      <n-button size="tiny" quaternary type="error">
+                        {{ $t('common.delete') }}
+                      </n-button>
+                    </template>
+                    {{ $t('files.confirmRemoveReplica') }}
+                  </n-popconfirm>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!(manageReplicasTarget.replicas && manageReplicasTarget.replicas.length > 0)">
+              <td colspan="3" style="text-align: center; color: #777; padding: 20px 0;">
+                {{ $t('common.noData') }}
+              </td>
+            </tr>
+          </tbody>
+        </n-table>
+
+        <!-- Sync to New Policy -->
+        <div style="margin-top: 10px; padding: 14px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
+          <div style="font-weight: 500; font-size: 13px; margin-bottom: 8px;">
+            {{ $t('files.syncToPolicies') }}
+          </div>
+          <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <n-select
+              v-model:value="syncTargetPolicyIds"
+              multiple
+              :options="availableSyncPolicies"
+              size="small"
+              :placeholder="$t('files.selectTargetPolicy')"
+              style="flex: 1; min-width: 220px;"
+            />
+            <n-button
+              type="primary"
+              size="small"
+              :disabled="syncTargetPolicyIds.length === 0"
+              :loading="syncingReplicas"
+              @click="handleSyncFileReplicas"
+            >
+              {{ $t('files.startSync') }}
+            </n-button>
+          </div>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Batch Sync Policy Modal -->
+    <n-modal
+      v-model:show="showBatchSyncModal"
+      preset="card"
+      :title="$t('files.batchSyncPolicy')"
+      style="width: 500px; max-width: 95vw; border-radius: 12px;"
+    >
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <p style="margin: 0; color: #aaa; font-size: 13px;">
+          {{ $t('files.batchSyncNotice', { count: selectedIds.length }) }}
+        </p>
+        <n-select
+          v-model:value="batchSyncPolicyIds"
+          multiple
+          :options="allPolicyOptions"
+          size="small"
+          :placeholder="$t('files.selectTargetPolicy')"
+        />
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;">
+          <n-button @click="showBatchSyncModal = false">{{ $t('common.cancel') }}</n-button>
+          <n-button
+            type="primary"
+            :disabled="batchSyncPolicyIds.length === 0"
+            :loading="batchSyncing"
+            @click="handleBatchSyncPolicies"
+          >
+            {{ $t('files.startSync') }}
+          </n-button>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Batch Remove Policy Modal -->
+    <n-modal
+      v-model:show="showBatchRemoveModal"
+      preset="card"
+      :title="$t('files.batchRemovePolicy')"
+      style="width: 500px; max-width: 95vw; border-radius: 12px;"
+    >
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <p style="margin: 0; color: #e88080; font-size: 13px;">
+          {{ $t('files.batchRemoveNotice', { count: selectedIds.length }) }}
+        </p>
+        <n-select
+          v-model:value="batchRemovePolicyId"
+          :options="allPolicyOptions"
+          size="small"
+          :placeholder="$t('files.selectRemovePolicy')"
+        />
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;">
+          <n-button @click="showBatchRemoveModal = false">{{ $t('common.cancel') }}</n-button>
+          <n-button
+            type="error"
+            :disabled="!batchRemovePolicyId"
+            :loading="batchRemoving"
+            @click="handleBatchRemovePolicy"
+          >
+            {{ $t('common.delete') }}
+          </n-button>
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>
 
@@ -584,6 +799,16 @@ const showFilterModal = ref(false)
 const filterPayload = ref<AdvancedFilterPayload>({ logic: 'and', rules: [] })
 const policies = ref<any[]>([])
 
+const getPolicyName = (rep: any) => {
+  if (!rep) return ''
+  if (rep.policy?.name) return rep.policy.name
+  if (rep.policy_name) return rep.policy_name
+  const found = policies.value.find((p: any) => p.id === rep.policy_id)
+  if (found) return found.name
+  return `策略 #${rep.policy_id}`
+}
+
+
 const page = ref(1)
 const pageSize = ref(24)
 const total = ref(0)
@@ -599,10 +824,149 @@ const viewModeOptions = computed(() => [
 
 const policyOptions = computed(() =>
   policies.value.map((p: any) => ({
-    label: `${p.name} (${p.driver})`,
+    label: `${p.name} · ${p.driver}`,
     value: String(p.id)
   }))
 )
+
+const allPolicyOptions = computed(() =>
+  policies.value.map((p: any) => ({
+    label: `${p.name} · ${p.driver}`,
+    value: p.id
+  }))
+)
+
+// Manage Replicas
+const showManageReplicasModal = ref(false)
+const manageReplicasTarget = ref<any>(null)
+const syncTargetPolicyIds = ref<number[]>([])
+const syncingReplicas = ref(false)
+
+const availableSyncPolicies = computed(() => {
+  if (!manageReplicasTarget.value) return []
+  const existingPolicyIds = new Set(
+    (manageReplicasTarget.value.replicas || []).map((r: any) => r.policy_id)
+  )
+  return policies.value
+    .filter((p: any) => !existingPolicyIds.has(p.id))
+    .map((p: any) => ({
+      label: `${p.name} · ${p.driver}`,
+      value: p.id
+    }))
+})
+
+const openManageReplicasModal = async (file: any) => {
+  manageReplicasTarget.value = { ...file }
+  syncTargetPolicyIds.value = []
+  showManageReplicasModal.value = true
+  try {
+    const res = await api.get(`/files/${file.id}`)
+    if (res.data.file) {
+      manageReplicasTarget.value = res.data.file
+    }
+  } catch {}
+}
+
+const handleSyncFileReplicas = async () => {
+  if (!manageReplicasTarget.value || syncTargetPolicyIds.value.length === 0) return
+  syncingReplicas.value = true
+  try {
+    const res = await api.post(`/files/${manageReplicasTarget.value.id}/policies`, {
+      policy_ids: syncTargetPolicyIds.value
+    })
+    manageReplicasTarget.value.replicas = res.data.replicas || []
+    syncTargetPolicyIds.value = []
+    message.success(t('files.syncSuccess'))
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
+    loadFiles()
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.failed'))
+  } finally {
+    syncingReplicas.value = false
+  }
+}
+
+const removeFileReplica = async (fileId: number, policyId: number) => {
+  try {
+    const res = await api.delete(`/files/${fileId}/policies/${policyId}`)
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
+    if (res.data.deleted) {
+      message.success(t('files.fileDeleted'))
+      showManageReplicasModal.value = false
+      loadFiles()
+    } else {
+      message.success(t('files.removeReplicaSuccess'))
+      if (manageReplicasTarget.value) {
+        manageReplicasTarget.value.replicas = (manageReplicasTarget.value.replicas || []).filter(
+          (r: any) => r.policy_id !== policyId
+        )
+      }
+      loadFiles()
+    }
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.failed'))
+  }
+}
+
+// Batch Sync Policies
+const showBatchSyncModal = ref(false)
+const batchSyncPolicyIds = ref<number[]>([])
+const batchSyncing = ref(false)
+
+const handleBatchSyncPolicies = async () => {
+  if (selectedIds.value.length === 0 || batchSyncPolicyIds.value.length === 0) return
+  batchSyncing.value = true
+  try {
+    const res = await api.post('/files/batch-sync-policy', {
+      file_ids: selectedIds.value,
+      policy_ids: batchSyncPolicyIds.value
+    })
+    message.success(t('files.batchSyncSuccess', { count: res.data.synced || selectedIds.value.length }))
+    showBatchSyncModal.value = false
+    batchSyncPolicyIds.value = []
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
+    loadFiles()
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.failed'))
+  } finally {
+    batchSyncing.value = false
+  }
+}
+
+// Batch Remove Policy
+const showBatchRemoveModal = ref(false)
+const batchRemovePolicyId = ref<number | null>(null)
+const batchRemoving = ref(false)
+
+const handleBatchRemovePolicy = async () => {
+  if (selectedIds.value.length === 0 || !batchRemovePolicyId.value) return
+  batchRemoving.value = true
+  try {
+    const res = await api.post('/files/batch-remove-policy', {
+      file_ids: selectedIds.value,
+      policy_id: batchRemovePolicyId.value
+    })
+    const succ = res.data.success ?? res.data.removed ?? 0
+    const fail = res.data.failed ?? 0
+    if (fail > 0) {
+      if (succ > 0) {
+        message.warning(`${t('files.batchRemoveSuccess', { count: succ })}，${t('files.batchRemoveSkipped', { count: fail })}`)
+      } else {
+        message.error(res.data.errors?.[0] || t('files.batchRemoveFailedAll'))
+      }
+    } else {
+      message.success(t('files.batchRemoveSuccess', { count: succ }))
+    }
+    showBatchRemoveModal.value = false
+    batchRemovePolicyId.value = null
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
+    loadFiles()
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.failed'))
+  } finally {
+    batchRemoving.value = false
+  }
+}
 
 const activeFilterCount = computed(() => {
   return filterPayload.value.rules ? filterPayload.value.rules.length : 0
@@ -761,6 +1125,7 @@ const openLinksModal = async (file: any) => {
     if (res.data.file) {
       linksTarget.value = {
         ...res.data.file,
+        links: res.data.links,
         call_stats: res.data.call_stats || [],
         total_calls: res.data.total_calls || 0,
         total_uv: res.data.total_uv || 0

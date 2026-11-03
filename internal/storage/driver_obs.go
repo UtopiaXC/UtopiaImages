@@ -106,11 +106,7 @@ func NewOBSStorageDriver(cfg OBSConfig) (*OBSStorageDriver, error) {
 }
 
 func (d *OBSStorageDriver) resolveKey(key string) string {
-	cleanKey := strings.TrimLeft(key, "/")
-	if d.cfg.RootDir != "" {
-		return path.Join(strings.Trim(d.cfg.RootDir, "/"), cleanKey)
-	}
-	return cleanKey
+	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
 }
 
 func (d *OBSStorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {

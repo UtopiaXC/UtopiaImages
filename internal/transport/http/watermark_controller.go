@@ -85,12 +85,7 @@ func (ctrl *WatermarkController) CreateWatermark(c *gin.Context) {
 		return
 	}
 
-	var count int64
-	ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND owner_id = ?", req.Name, user.ID).Count(&count)
-	if count > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name already exists"})
-		return
-	}
+	// Name uniqueness check removed per design
 
 	tmpl := model.WatermarkTemplate{
 		OwnerID:   &user.ID,
@@ -149,12 +144,6 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 	}
 	if req.Name != "" {
 		req.Name = strings.TrimSpace(req.Name)
-		var count int64
-		ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND id != ? AND owner_id = ?", req.Name, id, user.ID).Count(&count)
-		if count > 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name already exists"})
-			return
-		}
 		updates["name"] = req.Name
 	}
 	if req.Layers != "" {
@@ -390,12 +379,7 @@ func (ctrl *WatermarkController) CloneWatermark(c *gin.Context) {
 		return
 	}
 
-	cloneName := strings.TrimSpace(source.Name) + " (副本)"
-	var count int64
-	ctrl.db.Model(&model.WatermarkTemplate{}).Where("name = ? AND owner_id = ?", cloneName, user.ID).Count(&count)
-	if count > 0 {
-		cloneName = fmt.Sprintf("%s (%d)", strings.TrimSpace(source.Name), time.Now().Unix())
-	}
+	cloneName := strings.TrimSpace(source.Name) + " 副本"
 
 	cloned := model.WatermarkTemplate{
 		OwnerID:   &user.ID,

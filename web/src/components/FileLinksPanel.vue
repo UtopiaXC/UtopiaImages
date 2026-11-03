@@ -295,7 +295,7 @@ watch(replicas, (reps) => {
 
 const replicaOptions = computed(() => {
   return replicas.value.map(r => ({
-    label: r.policy_name || r.policy?.name || `策略 ${r.policy_id}`,
+    label: r.policy_name || r.policy?.name || (r.policy_id ? `策略 #${r.policy_id}` : '默认策略'),
     value: getReplicaKey(r)
   }))
 })

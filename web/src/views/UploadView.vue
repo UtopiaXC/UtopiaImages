@@ -9,7 +9,6 @@
 
       <!-- Options Bar -->
       <div class="upload-options-container">
-        <!-- Row 1: Storage Policy & Capacity -->
         <div class="upload-options-row">
           <div class="upload-option-item">
             <span class="upload-option-label">{{ $t('upload.storagePolicy') }}</span>
@@ -22,33 +21,11 @@
               :loading="loadingPolicies"
               :placeholder="$t('upload.storagePolicy')"
               class="upload-policy-select"
+              :render-tag="renderPolicyTag"
+              max-tag-count="responsive"
             />
           </div>
 
-          <!-- Storage Policy Remaining Capacity Indicator -->
-          <div
-            v-if="selectedPolicies.length > 0"
-            class="upload-policy-capacity"
-          >
-            <div style="display: flex; flex-direction: column; width: 100%;">
-              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 3px; white-space: nowrap;">
-                <span style="color: #888;">{{ $t('upload.policyRemaining') }}</span>
-                <span style="color: #63e2b7; font-weight: 500;">
-                  {{ minRemainingCapacity === Infinity ? $t('common.unlimited') : formatBytes(minRemainingCapacity) }}
-                </span>
-              </div>
-              <n-progress
-                type="line"
-                :percentage="maxUsedPercentage"
-                :status="maxUsedPercentage >= 90 ? 'error' : maxUsedPercentage >= 75 ? 'warning' : 'success'"
-                :show-indicator="false"
-              />
-            </div>
-          </div>
-        </div>
-
-        <!-- Row 2: Watermark & Public Mode -->
-        <div class="upload-options-row">
           <div class="upload-option-item">
             <span class="upload-option-label">{{ $t('upload.watermark') }}</span>
             <n-tooltip trigger="hover">
@@ -64,7 +41,7 @@
               v-model:value="watermarkMode"
               :options="watermarkModeOptions"
               size="small"
-              style="width: 140px;"
+              style="width: 120px;"
             />
           </div>
 
@@ -76,7 +53,7 @@
               :options="templateOptions"
               size="small"
               :placeholder="$t('upload.defaultTemplate')"
-              style="width: 180px;"
+              style="width: 150px;"
             />
           </div>
 
@@ -95,7 +72,7 @@
               v-model:value="publicMode"
               :options="publicModeOptions"
               size="small"
-              style="width: 140px;"
+              style="width: 120px;"
             />
           </div>
         </div>
@@ -257,8 +234,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { useMessage, type UploadCustomRequestOptions } from 'naive-ui'
+import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
+import { useMessage, NTag, type UploadCustomRequestOptions, type SelectRenderTag } from 'naive-ui'
 import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
@@ -279,6 +256,22 @@ const publicModeOptions = computed(() => [
 const selectedTemplateId = ref<string | null>(null)
 const templateOptions = ref<any[]>([])
 const results = ref<any[]>([])
+
+const renderPolicyTag: SelectRenderTag = ({ option, handleClose }) => {
+  return h(
+    NTag,
+    {
+      closable: true,
+      onClose: (e: MouseEvent) => {
+        e.stopPropagation()
+        handleClose()
+      },
+      size: 'small',
+      round: true
+    },
+    { default: () => option.shortLabel || option.label }
+  )
+}
 
 const selectedPolicyIds = ref<number[]>([])
 const policyOptions = ref<any[]>([])
@@ -467,29 +460,7 @@ const selectedPolicies = computed(() => {
   return policiesList.value.filter((p: any) => selectedPolicyIds.value.includes(p.id))
 })
 
-const minRemainingCapacity = computed(() => {
-  if (selectedPolicies.value.length === 0) return Infinity
-  let min = Infinity
-  for (const p of selectedPolicies.value) {
-    if (p.max_capacity_bytes > 0) {
-      const rem = Math.max(0, p.max_capacity_bytes - p.used_bytes)
-      if (rem < min) min = rem
-    }
-  }
-  return min
-})
 
-const maxUsedPercentage = computed(() => {
-  if (selectedPolicies.value.length === 0) return 0
-  let maxPct = 0
-  for (const p of selectedPolicies.value) {
-    if (p.max_capacity_bytes > 0) {
-      const pct = Math.min(100, Math.round((p.used_bytes / p.max_capacity_bytes) * 100))
-      if (pct > maxPct) maxPct = pct
-    }
-  }
-  return maxPct
-})
 
 const loadingPolicies = ref(false)
 
@@ -499,10 +470,15 @@ const loadPolicies = async () => {
     const res = await api.get('/me/policies')
     const list = res.data || []
     policiesList.value = list
-    policyOptions.value = list.map((item: any) => ({
-      label: item.name,
-      value: item.id
-    }))
+    policyOptions.value = list.map((item: any) => {
+      const used = formatBytes(item.used_bytes || 0)
+      const cap = item.max_capacity_bytes > 0 ? formatBytes(item.max_capacity_bytes) : t('common.unlimited')
+      return {
+        label: `${item.name} · 容量: ${used} / ${cap}`,
+        shortLabel: item.name,
+        value: item.id
+      }
+    })
     if (list.length > 0) {
       const def = list.find((p: any) => p.is_default) || list[0]
       if (selectedPolicyIds.value.length === 0) {
@@ -637,11 +613,12 @@ const copyText = (text: string) => {
 }
 
 const formatBytes = (bytes: number) => {
-  if (bytes === 0) return '0 B'
+  if (!bytes || bytes === 0) return '0 B'
   const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  const idx = Math.min(Math.max(0, i), sizes.length - 1)
+  return parseFloat((bytes / Math.pow(k, idx)).toFixed(1)) + ' ' + sizes[idx]
 }
 
 onMounted(() => {
@@ -657,9 +634,6 @@ onUnmounted(() => {
 
 <style scoped>
 .upload-options-container {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
   margin-bottom: 20px;
 }
 
@@ -687,19 +661,8 @@ onUnmounted(() => {
 }
 
 .upload-policy-select {
-  width: 200px;
-}
-
-.upload-policy-capacity {
-  display: flex;
-  align-items: center;
-  background: rgba(255, 255, 255, 0.03);
-  padding: 4px 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  width: 200px;
-  height: 34px;
-  box-sizing: border-box;
+  min-width: 200px;
+  max-width: 280px;
 }
 
 @media (max-width: 640px) {
@@ -712,9 +675,9 @@ onUnmounted(() => {
     width: 100%;
     justify-content: space-between;
   }
-  .upload-policy-select,
-  .upload-policy-capacity {
+  .upload-policy-select {
     width: 100% !important;
+    max-width: none !important;
   }
 }
 

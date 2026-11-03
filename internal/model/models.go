@@ -23,7 +23,7 @@ type Role struct {
 // StoragePolicy defines physical storage location and naming rules
 type StoragePolicy struct {
 	ID                  uint      `gorm:"primaryKey" json:"id"`
-	Name                string    `gorm:"uniqueIndex;size:64;not null" json:"name"`
+	Name                string    `gorm:"size:64;not null" json:"name"`
 	Driver              string    `gorm:"size:32;default:local" json:"driver"` // currently "local", extensible to "oss", "s3"
 	Config              string    `gorm:"type:text" json:"config"`             // JSON backend driver configuration
 	MaxCapacityBytes    int64     `gorm:"default:0" json:"max_capacity_bytes"` // 0 = unlimited
@@ -167,6 +167,7 @@ type FilePolicyReplica struct {
 	ID         uint           `gorm:"primaryKey" json:"id"`
 	FileID     uint           `gorm:"uniqueIndex:idx_file_policy;index;not null" json:"file_id"`
 	PolicyID   uint           `gorm:"uniqueIndex:idx_file_policy;index;not null" json:"policy_id"`
+	PolicyName string         `gorm:"-" json:"policy_name,omitempty"`
 	Policy     *StoragePolicy `gorm:"foreignKey:PolicyID" json:"policy,omitempty"`
 	PublicPath string         `gorm:"uniqueIndex;size:512;not null" json:"public_path"`
 	StorageKey string         `gorm:"size:512;not null" json:"storage_key"`

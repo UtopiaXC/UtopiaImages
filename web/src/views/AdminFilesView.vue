@@ -158,7 +158,7 @@
                     size="tiny"
                     :type="rep.status === 'ready' ? 'success' : 'error'"
                   >
-                    {{ rep.policy?.name || rep.policy_name || ('策略 ' + rep.policy_id) }}
+                    {{ getPolicyName(rep) }}
                   </n-tag>
                 </div>
                 <div style="color: #777; font-size: 11px; margin-top: 2px; word-break: break-all;">
@@ -286,7 +286,7 @@
             <tbody>
               <tr v-for="rep in (detailsData.file?.replicas || detailsData.replicas || [])" :key="rep.id">
                 <td>
-                  <div style="font-weight: 500;">{{ rep.policy?.name || rep.policy_name || ('策略 ' + rep.policy_id) }}</div>
+                  <div style="font-weight: 500;">{{ getPolicyName(rep) }}</div>
                   <div style="font-size: 11px; color: #777;">{{ rep.storage_key }}</div>
                 </td>
                 <td>
@@ -505,6 +505,15 @@ const detailsData = ref<any>(null)
 
 // Storage Policies
 const policyOptions = ref<{ label: string; value: string }[]>([])
+
+const getPolicyName = (rep: any) => {
+  if (!rep) return ''
+  if (rep.policy?.name) return rep.policy.name
+  if (rep.policy_name) return rep.policy_name
+  const found = policyOptions.value.find((p: any) => p.value === String(rep.policy_id))
+  if (found) return found.label
+  return `策略 #${rep.policy_id}`
+}
 
 const isAllSelected = computed(() => {
   return files.value.length > 0 && files.value.every(f => selectedIds.value.includes(f.id))

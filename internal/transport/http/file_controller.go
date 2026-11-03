@@ -675,6 +675,9 @@ func (ctrl *FileController) ListFiles(c *gin.Context) {
 		ctrl.db.Preload("Policy").Where("file_id IN (?)", fileIDs).Find(&allReplicas)
 		repMap := make(map[uint][]*model.FilePolicyReplica)
 		for i := range allReplicas {
+			if allReplicas[i].Policy != nil {
+				allReplicas[i].PolicyName = allReplicas[i].Policy.Name
+			}
 			repMap[allReplicas[i].FileID] = append(repMap[allReplicas[i].FileID], &allReplicas[i])
 		}
 
@@ -725,6 +728,11 @@ func (ctrl *FileController) GetFile(c *gin.Context) {
 
 	var replicas []*model.FilePolicyReplica
 	ctrl.db.Preload("Policy").Where("file_id = ?", file.ID).Find(&replicas)
+	for i := range replicas {
+		if replicas[i].Policy != nil {
+			replicas[i].PolicyName = replicas[i].Policy.Name
+		}
+	}
 	file.Replicas = replicas
 
 	links := ctrl.buildFileLinks(&file)

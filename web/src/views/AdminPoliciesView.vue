@@ -39,7 +39,7 @@
                   {{ p.max_single_file_size_mb }} MB
                 </span>
                 <span v-else style="color: #888; font-size: 12px;">
-                  系统默认
+                  {{ $t('adminPolicies.systemDefault') }}
                 </span>
               </td>
               <td>{{ formatBytes(p.used_bytes) }}</td>
@@ -103,21 +103,16 @@
         <n-card size="small" embedded style="margin-bottom: 18px; border-radius: 8px;">
           <template #header>
             <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-size: 13px; font-weight: bold;">存储驱动配置</span>
+              <span style="font-size: 13px; font-weight: bold;">{{ $t('adminPolicies.driverConfig') }}</span>
               <n-button size="tiny" secondary :loading="testingConnection" @click="handleTestConnection">
-                测试连接
+                {{ $t('adminPolicies.testConnection') }}
               </n-button>
             </div>
           </template>
 
           <!-- Local -->
-          <div v-if="policyForm.driver === 'local'">
-            <n-form-item label="存储基路径" :show-feedback="false">
-              <n-input-group style="width: 100%;">
-                <n-input-group-label>data/</n-input-group-label>
-                <n-input v-model:value="driverConfig.local_sub_path" placeholder="storage" />
-              </n-input-group>
-            </n-form-item>
+          <div v-if="policyForm.driver === 'local'" style="font-size: 13px; color: #888; line-height: 1.6;">
+            本地文件统一存储于服务端 data/storage 目录，通过下方保存与URL访问路径进行隔离与组织。
           </div>
 
           <!-- Database -->
@@ -129,19 +124,16 @@
 
           <!-- WebDAV -->
           <div v-else-if="policyForm.driver === 'webdav'" style="display: flex; flex-direction: column; gap: 12px;">
-            <n-form-item label="服务地址" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.serviceEndpoint')" :show-feedback="false">
               <n-input v-model:value="driverConfig.webdav_endpoint" placeholder="https://dav.example.com" />
             </n-form-item>
-            <n-form-item label="用户名" :show-feedback="false">
+            <n-form-item :label="$t('auth.username')" :show-feedback="false">
               <n-input v-model:value="driverConfig.webdav_username" />
             </n-form-item>
-            <n-form-item label="密码" :show-feedback="false">
+            <n-form-item :label="$t('auth.password')" :show-feedback="false">
               <n-input v-model:value="driverConfig.webdav_password" type="password" show-password-on="click" />
             </n-form-item>
-            <n-form-item label="根目录" :show-feedback="false">
-              <n-input v-model:value="driverConfig.webdav_root_path" placeholder="/images" />
-            </n-form-item>
-            <n-form-item label="公网直链地址" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.directUrl')" :show-feedback="false">
               <n-input v-model:value="driverConfig.webdav_direct_url" placeholder="可选，直链访问域名" />
             </n-form-item>
           </div>
@@ -163,13 +155,10 @@
             <n-form-item label="SecretKey" :show-feedback="false">
               <n-input v-model:value="driverConfig.s3_secret_access_key" type="password" show-password-on="click" />
             </n-form-item>
-            <n-form-item label="自定义直链域名" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.customDomain')" :show-feedback="false">
               <n-input v-model:value="driverConfig.s3_custom_domain" placeholder="可选，如 https://cdn.example.com" />
             </n-form-item>
-            <n-form-item label="文件保存根目录" :show-feedback="false">
-              <n-input v-model:value="driverConfig.s3_root_dir" placeholder="可选，例如 images" />
-            </n-form-item>
-            <n-form-item v-if="policyForm.driver !== 's3'" label="路径样式" :show-feedback="false">
+            <n-form-item v-if="policyForm.driver !== 's3'" :label="$t('adminPolicies.forcePathStyle')" :show-feedback="false">
               <n-switch v-model:value="driverConfig.s3_use_path_style" />
             </n-form-item>
           </div>
@@ -188,11 +177,8 @@
             <n-form-item label="AccessKey Secret" :show-feedback="false">
               <n-input v-model:value="driverConfig.oss_secret_access_key" type="password" show-password-on="click" />
             </n-form-item>
-            <n-form-item label="自定义直链域名" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.customDomain')" :show-feedback="false">
               <n-input v-model:value="driverConfig.oss_custom_domain" placeholder="可选，如 https://cdn.example.com" />
-            </n-form-item>
-            <n-form-item label="文件保存根目录" :show-feedback="false">
-              <n-input v-model:value="driverConfig.oss_root_dir" placeholder="可选，例如 images" />
             </n-form-item>
           </div>
 
@@ -210,11 +196,8 @@
             <n-form-item label="SecretKey" :show-feedback="false">
               <n-input v-model:value="driverConfig.cos_secret_key" type="password" show-password-on="click" />
             </n-form-item>
-            <n-form-item label="自定义直链域名" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.customDomain')" :show-feedback="false">
               <n-input v-model:value="driverConfig.cos_custom_domain" placeholder="可选" />
-            </n-form-item>
-            <n-form-item label="文件保存根目录" :show-feedback="false">
-              <n-input v-model:value="driverConfig.cos_root_dir" placeholder="可选，例如 images" />
             </n-form-item>
           </div>
 
@@ -232,11 +215,8 @@
             <n-form-item label="SecretKey" :show-feedback="false">
               <n-input v-model:value="driverConfig.obs_secret_access_key" type="password" show-password-on="click" />
             </n-form-item>
-            <n-form-item label="自定义直链域名" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.customDomain')" :show-feedback="false">
               <n-input v-model:value="driverConfig.obs_custom_domain" placeholder="可选" />
-            </n-form-item>
-            <n-form-item label="文件保存根目录" :show-feedback="false">
-              <n-input v-model:value="driverConfig.obs_root_dir" placeholder="可选，例如 images" />
             </n-form-item>
           </div>
 
@@ -245,7 +225,7 @@
             <n-form-item label="Bucket" :show-feedback="false">
               <n-input v-model:value="driverConfig.gcs_bucket" />
             </n-form-item>
-            <n-form-item label="服务账号密钥" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.serviceAccountKey')" :show-feedback="false">
               <n-input
                 v-model:value="driverConfig.gcs_credentials_json"
                 type="textarea"
@@ -253,11 +233,8 @@
                 placeholder="Service Account 密钥 JSON 文本"
               />
             </n-form-item>
-            <n-form-item label="自定义直链域名" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.customDomain')" :show-feedback="false">
               <n-input v-model:value="driverConfig.gcs_custom_domain" placeholder="可选" />
-            </n-form-item>
-            <n-form-item label="文件保存根目录" :show-feedback="false">
-              <n-input v-model:value="driverConfig.gcs_root_dir" placeholder="可选，例如 images" />
             </n-form-item>
           </div>
 
@@ -266,7 +243,7 @@
             <n-form-item label="Container" :show-feedback="false">
               <n-input v-model:value="driverConfig.azure_container_name" />
             </n-form-item>
-            <n-form-item label="连接字符串" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.connectionString')" :show-feedback="false">
               <n-input v-model:value="driverConfig.azure_connection_string" placeholder="完整连接字符串，或在下方分别填写账号与密钥" />
             </n-form-item>
             <n-form-item label="Account Name" :show-feedback="false">
@@ -275,11 +252,8 @@
             <n-form-item label="Account Key" :show-feedback="false">
               <n-input v-model:value="driverConfig.azure_account_key" type="password" show-password-on="click" />
             </n-form-item>
-            <n-form-item label="自定义直链域名" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.customDomain')" :show-feedback="false">
               <n-input v-model:value="driverConfig.azure_custom_domain" placeholder="可选" />
-            </n-form-item>
-            <n-form-item label="文件保存根目录" :show-feedback="false">
-              <n-input v-model:value="driverConfig.azure_root_dir" placeholder="可选，例如 images" />
             </n-form-item>
           </div>
 
@@ -297,10 +271,7 @@
             <n-form-item label="Token" :show-feedback="false">
               <n-input v-model:value="driverConfig.github_token" type="password" show-password-on="click" placeholder="Personal Access Token" />
             </n-form-item>
-            <n-form-item label="目录前缀" :show-feedback="false">
-              <n-input v-model:value="driverConfig.github_path_prefix" placeholder="可选，如 images" />
-            </n-form-item>
-            <n-form-item label="CDN 模式" :show-feedback="false">
+            <n-form-item :label="$t('adminPolicies.githubCdn')" :show-feedback="false">
               <n-select
                 v-model:value="driverConfig.github_cdn_type"
                 :options="[
@@ -310,37 +281,50 @@
                 ]"
               />
             </n-form-item>
-            <n-form-item v-if="driverConfig.github_cdn_type === 'custom'" label="自定义 CDN 地址" :show-feedback="false">
+            <n-form-item v-if="driverConfig.github_cdn_type === 'custom'" :label="$t('adminPolicies.customCdnUrl')" :show-feedback="false">
               <n-input v-model:value="driverConfig.github_cdn_custom_url" placeholder="https://cdn.example.com" />
             </n-form-item>
           </div>
 
           <!-- OneDrive -->
           <div v-else-if="policyForm.driver === 'onedrive'" style="display: flex; flex-direction: column; gap: 12px;">
-            <n-form-item label="账号类型" :show-feedback="false">
+            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div style="font-weight: 500; font-size: 13px;">快速授权</div>
+                  <div style="font-size: 12px; color: #888; margin-top: 2px;">通过微软官方设备代码验证，一键自动获取并填充授权凭证</div>
+                </div>
+                <n-button type="primary" secondary size="small" :loading="startingOneDriveAuth" @click="handleStartOneDriveAuth">
+                  {{ $t('adminPolicies.onedriveAuthBtn') }}
+                </n-button>
+              </div>
+              <div v-if="driverConfig.onedrive_refresh_token" style="font-size: 12px; color: #63e2b7; display: flex; align-items: center; gap: 4px; margin-top: 8px;">
+                <n-icon size="14"><CheckmarkCircleOutline /></n-icon>
+                <span>已具备授权凭证</span>
+              </div>
+            </div>
+
+            <n-form-item :label="$t('adminPolicies.accountType')" :show-feedback="false">
               <n-select
                 v-model:value="driverConfig.onedrive_account_type"
                 :options="[
-                  { label: '国际个人版', value: 'personal' },
-                  { label: '国际商业与教育版', value: 'business' },
-                  { label: '世纪互联版', value: 'china' }
+                  { label: $t('adminPolicies.accountPersonal'), value: 'personal' },
+                  { label: $t('adminPolicies.accountBusiness'), value: 'business' },
+                  { label: $t('adminPolicies.accountChina'), value: 'china' }
                 ]"
               />
             </n-form-item>
             <n-form-item label="Client ID" :show-feedback="false">
-              <n-input v-model:value="driverConfig.onedrive_client_id" />
+              <n-input v-model:value="driverConfig.onedrive_client_id" placeholder="使用默认内置公共客户端或自定义 Azure AD App" />
             </n-form-item>
             <n-form-item label="Client Secret" :show-feedback="false">
-              <n-input v-model:value="driverConfig.onedrive_client_secret" type="password" show-password-on="click" />
+              <n-input v-model:value="driverConfig.onedrive_client_secret" type="password" show-password-on="click" placeholder="可选，公共客户端留空即可" />
             </n-form-item>
             <n-form-item label="Redirect URI" :show-feedback="false">
-              <n-input v-model:value="driverConfig.onedrive_redirect_uri" />
+              <n-input v-model:value="driverConfig.onedrive_redirect_uri" placeholder="可选" />
             </n-form-item>
             <n-form-item label="Refresh Token" :show-feedback="false">
-              <n-input v-model:value="driverConfig.onedrive_refresh_token" type="password" show-password-on="click" />
-            </n-form-item>
-            <n-form-item label="存储基路径" :show-feedback="false">
-              <n-input v-model:value="driverConfig.onedrive_base_path" placeholder="留空为网盘根目录" />
+              <n-input v-model:value="driverConfig.onedrive_refresh_token" type="password" show-password-on="click" placeholder="点击上方一键授权自动填充，或手动填入" />
             </n-form-item>
           </div>
         </n-card>
@@ -349,20 +333,24 @@
         <n-form-item :label="$t('adminPolicies.maxCapacity')">
           <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
             <n-input-number
-              v-model:value="capacityGB"
+              v-model:value="capacityValue"
               :min="0"
               :step="1"
               :placeholder="$t('adminPolicies.capacityPlaceholder')"
               style="flex: 1;"
             />
-            <span style="color: #aaa; font-size: 13px;">GB</span>
+            <n-select
+              v-model:value="capacityUnit"
+              :options="capacityUnitOptions"
+              style="width: 90px;"
+            />
             <n-tooltip trigger="hover">
               <template #trigger>
                 <n-icon size="16" style="color: #888; cursor: pointer;">
                   <InformationCircleOutline />
                 </n-icon>
               </template>
-              0 为容量无上限
+              {{ $t('adminPolicies.capacityUnlimitedTip') }}
             </n-tooltip>
           </div>
         </n-form-item>
@@ -384,18 +372,31 @@
                   <InformationCircleOutline />
                 </n-icon>
               </template>
-              0 为继承系统单文件大小上限
+              {{ $t('adminPolicies.maxSingleFileTip') }}
             </n-tooltip>
           </div>
         </n-form-item>
 
-        <n-form-item :label="$t('adminPolicies.pathPrefix')">
+        <n-form-item>
+          <template #label>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <span>{{ $t('adminPolicies.pathPrefix') }}</span>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-icon size="16" style="color: #888; cursor: pointer;">
+                    <InformationCircleOutline />
+                  </n-icon>
+                </template>
+                {{ $t('adminPolicies.pathPrefixTip') }}
+              </n-tooltip>
+            </div>
+          </template>
           <div style="width: 100%;">
             <n-input v-model:value="policyForm.path_prefix" placeholder="留空为根路径，或输入前缀如 uploads" clearable />
             <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center;">
               <span style="font-size: 12px; color: #888;">{{ $t('adminPolicies.insertToken') }}:</span>
               <n-button size="tiny" secondary type="warning" @click="policyForm.path_prefix = ''">
-                留空根路径
+                {{ $t('adminPolicies.rootDirect') }}
               </n-button>
               <n-button size="tiny" secondary type="info" @click="policyForm.path_prefix = 'uploads'">
                 uploads
@@ -469,13 +470,22 @@
 
         <n-form-item :label="$t('adminPolicies.permittedRoles')">
           <div style="width: 100%;">
-            <n-select
-              v-model:value="policyForm.role_ids"
-              multiple
-              :options="roleOptions"
-              :placeholder="$t('adminPolicies.rolesPlaceholder')"
-            />
-            <div style="font-size: 12px; color: #888; margin-top: 4px;">
+            <n-checkbox-group v-model:value="policyForm.role_ids">
+              <div class="role-checkbox-container">
+                <n-checkbox
+                  v-for="r in roles"
+                  :key="r.id"
+                  :value="r.id"
+                  class="role-checkbox-card"
+                >
+                  <div class="role-checkbox-text">
+                    <span class="role-checkbox-title">{{ r.display_name }}</span>
+                    <span class="role-checkbox-sub">· {{ r.name }}</span>
+                  </div>
+                </n-checkbox>
+              </div>
+            </n-checkbox-group>
+            <div style="font-size: 12px; color: #888; margin-top: 6px;">
               {{ $t('adminPolicies.guestSinglePolicyTip') }}
             </div>
           </div>
@@ -493,13 +503,56 @@
         </div>
       </template>
     </n-modal>
+
+    <!-- OneDrive Device Code Auth Modal -->
+    <n-modal
+      v-model:show="showOneDriveModal"
+      preset="card"
+      :title="$t('adminPolicies.onedriveAuthTitle')"
+      style="width: 520px; max-width: 95vw; border-radius: 12px;"
+      :mask-closable="false"
+      :closable="!oneDrivePolling"
+    >
+      <div v-if="oneDriveAuthData" style="display: flex; flex-direction: column; gap: 16px;">
+        <div style="font-size: 13px; color: #aaa; line-height: 1.6;">
+          {{ $t('adminPolicies.onedriveAuthStep1') }}
+        </div>
+
+        <div style="background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 16px; text-align: center;">
+          <div style="font-size: 12px; color: #888; margin-bottom: 6px;">{{ $t('adminPolicies.onedriveDeviceCode') }}</div>
+          <div style="font-size: 26px; font-weight: bold; letter-spacing: 4px; color: #63e2b7; user-select: all;">
+            {{ oneDriveAuthData.user_code }}
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 12px; justify-content: center;">
+          <n-button type="primary" @click="handleOpenOneDriveLogin">
+            <template #icon>
+              <n-icon><OpenOutline /></n-icon>
+            </template>
+            {{ $t('adminPolicies.onedriveOpenAndCopy') }}
+          </n-button>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 8px; font-size: 13px; color: #888;">
+          <n-spin size="small" />
+          <span>{{ $t('adminPolicies.onedriveWaiting') }}</span>
+        </div>
+      </div>
+
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end;">
+          <n-button @click="handleCancelOneDriveAuth">{{ $t('common.cancel') }}</n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
-import { InformationCircleOutline } from '@vicons/ionicons5'
+import { InformationCircleOutline, CheckmarkCircleOutline, OpenOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 
@@ -513,7 +566,28 @@ const isEditing = ref(false)
 const editTargetId = ref<number | null>(null)
 const saving = ref(false)
 const testingConnection = ref(false)
-const capacityGB = ref<number | null>(0)
+const capacityValue = ref<number | null>(0)
+const capacityUnit = ref<'KB' | 'MB' | 'GB' | 'TB'>('GB')
+const capacityUnitOptions = [
+  { label: 'KB', value: 'KB' },
+  { label: 'MB', value: 'MB' },
+  { label: 'GB', value: 'GB' },
+  { label: 'TB', value: 'TB' }
+]
+
+const unitMultiplier: Record<string, number> = {
+  KB: 1024,
+  MB: 1024 * 1024,
+  GB: 1024 * 1024 * 1024,
+  TB: 1024 * 1024 * 1024 * 1024
+}
+
+// OneDrive Device Code Auth State
+const startingOneDriveAuth = ref(false)
+const showOneDriveModal = ref(false)
+const oneDrivePolling = ref(false)
+const oneDriveAuthData = ref<{ user_code: string; verification_uri: string; device_code: string; expires_in: number; interval?: number } | null>(null)
+let oneDrivePollTimer: any = null
 
 const policyForm = ref({
   name: '',
@@ -585,24 +659,24 @@ const driverConfig = ref<any>({
   onedrive_base_path: ''
 })
 
-const driverOptions = [
-  { label: '本地存储 · local', value: 'local' },
-  { label: '数据库存储 · database', value: 'database' },
-  { label: 'WebDAV · webdav', value: 'webdav' },
-  { label: 'S3 兼容通用存储 · s3_compatible', value: 's3_compatible' },
-  { label: 'Amazon S3 · s3', value: 's3' },
-  { label: 'MinIO · minio', value: 'minio' },
-  { label: '阿里云 OSS · oss', value: 'oss' },
-  { label: '腾讯云 COS · cos', value: 'cos' },
-  { label: '华为云 OBS · obs', value: 'obs' },
-  { label: 'Google Cloud Storage · gcs', value: 'gcs' },
-  { label: 'Azure Blob Storage · azure_blob', value: 'azure_blob' },
-  { label: 'GitHub 仓库 · github', value: 'github' },
-  { label: 'Microsoft OneDrive · onedrive', value: 'onedrive' }
-]
+const driverOptions = computed(() => [
+  { label: `${t('adminPolicies.driverLocal')} · local`, value: 'local' },
+  { label: `${t('adminPolicies.driverDatabase')} · database`, value: 'database' },
+  { label: `${t('adminPolicies.driverWebdav')} · webdav`, value: 'webdav' },
+  { label: `${t('adminPolicies.driverS3')} · s3_compatible`, value: 's3_compatible' },
+  { label: `${t('adminPolicies.s3Standard')} · s3`, value: 's3' },
+  { label: `${t('adminPolicies.minio')} · minio`, value: 'minio' },
+  { label: `${t('adminPolicies.driverOss')} · oss`, value: 'oss' },
+  { label: `${t('adminPolicies.driverCos')} · cos`, value: 'cos' },
+  { label: `${t('adminPolicies.driverObs')} · obs`, value: 'obs' },
+  { label: `${t('adminPolicies.driverGcs')} · gcs`, value: 'gcs' },
+  { label: `${t('adminPolicies.driverAzure')} · azure_blob`, value: 'azure_blob' },
+  { label: `${t('adminPolicies.driverGithub')} · github`, value: 'github' },
+  { label: `${t('adminPolicies.driverOnedrive')} · onedrive`, value: 'onedrive' }
+])
 
 const getDriverLabel = (driver: string) => {
-  const match = driverOptions.find(d => d.value === driver)
+  const match = driverOptions.value.find(d => d.value === driver)
   return match ? match.label.split(' · ')[0] : driver
 }
 
@@ -658,11 +732,8 @@ const formatPathPrefix = (prefix: string | undefined | null) => {
 const buildConfigJSON = (driver: string): string => {
   const c = driverConfig.value
   switch (driver) {
-    case 'local': {
-      const sub = (c.local_sub_path !== undefined ? c.local_sub_path : (c.base_path || 'storage')).replace(/^data\//, '').replace(/^\/+/, '')
-      const finalPath = sub ? `data/${sub}` : 'data/storage'
-      return JSON.stringify({ base_path: finalPath })
-    }
+    case 'local':
+      return JSON.stringify({ base_path: 'data/storage' })
     case 'database':
       return '{}'
     case 'webdav':
@@ -670,7 +741,6 @@ const buildConfigJSON = (driver: string): string => {
         endpoint: c.webdav_endpoint,
         username: c.webdav_username,
         password: c.webdav_password,
-        root_path: c.webdav_root_path,
         direct_url: c.webdav_direct_url
       })
     case 's3_compatible':
@@ -682,7 +752,6 @@ const buildConfigJSON = (driver: string): string => {
         access_key_id: c.s3_access_key_id,
         secret_access_key: c.s3_secret_access_key,
         custom_domain: c.s3_custom_domain,
-        root_dir: c.s3_root_dir || undefined,
         use_path_style: c.s3_use_path_style,
         use_ssl: c.s3_use_ssl
       })
@@ -693,7 +762,6 @@ const buildConfigJSON = (driver: string): string => {
         access_key_id: c.s3_access_key_id,
         secret_access_key: c.s3_secret_access_key,
         custom_domain: c.s3_custom_domain,
-        root_dir: c.s3_root_dir || undefined
       })
     case 'oss':
       return JSON.stringify({
@@ -702,7 +770,6 @@ const buildConfigJSON = (driver: string): string => {
         access_key_id: c.oss_access_key_id,
         secret_access_key: c.oss_secret_access_key,
         custom_domain: c.oss_custom_domain,
-        root_dir: c.oss_root_dir || undefined
       })
     case 'cos':
       return JSON.stringify({
@@ -711,7 +778,6 @@ const buildConfigJSON = (driver: string): string => {
         secret_id: c.cos_secret_id,
         secret_key: c.cos_secret_key,
         custom_domain: c.cos_custom_domain,
-        root_dir: c.cos_root_dir || undefined
       })
     case 'obs':
       return JSON.stringify({
@@ -720,14 +786,12 @@ const buildConfigJSON = (driver: string): string => {
         access_key_id: c.obs_access_key_id,
         secret_access_key: c.obs_secret_access_key,
         custom_domain: c.obs_custom_domain,
-        root_dir: c.obs_root_dir || undefined
       })
     case 'gcs':
       return JSON.stringify({
         bucket: c.gcs_bucket,
         credentials_json: c.gcs_credentials_json,
         custom_domain: c.gcs_custom_domain,
-        root_dir: c.gcs_root_dir || undefined
       })
     case 'azure_blob':
       return JSON.stringify({
@@ -736,7 +800,6 @@ const buildConfigJSON = (driver: string): string => {
         container_name: c.azure_container_name,
         connection_string: c.azure_connection_string,
         custom_domain: c.azure_custom_domain,
-        root_dir: c.azure_root_dir || undefined
       })
     case 'github':
       return JSON.stringify({
@@ -744,7 +807,6 @@ const buildConfigJSON = (driver: string): string => {
         repo: c.github_repo,
         branch: c.github_branch || 'main',
         token: c.github_token,
-        path_prefix: c.github_path_prefix,
         cdn_type: c.github_cdn_type || 'jsdelivr',
         cdn_custom_url: c.github_cdn_custom_url
       })
@@ -755,7 +817,6 @@ const buildConfigJSON = (driver: string): string => {
         client_secret: c.onedrive_client_secret,
         redirect_uri: c.onedrive_redirect_uri,
         refresh_token: c.onedrive_refresh_token,
-        base_path: c.onedrive_base_path
       })
     default:
       return '{}'
@@ -853,6 +914,78 @@ const parseConfigJSON = (driver: string, raw: string) => {
   } catch {}
 }
 
+const handleStartOneDriveAuth = async () => {
+  startingOneDriveAuth.value = true
+  try {
+    const res = await api.post('/admin/policies/onedrive/device-code', {
+      client_id: driverConfig.value.onedrive_client_id,
+      account_type: driverConfig.value.onedrive_account_type || 'personal'
+    })
+    oneDriveAuthData.value = res.data
+    showOneDriveModal.value = true
+    oneDrivePolling.value = true
+
+    const interval = Math.max(res.data.interval || 5, 3) * 1000
+    const expiresAt = Date.now() + (res.data.expires_in || 900) * 1000
+
+    if (oneDrivePollTimer) clearInterval(oneDrivePollTimer)
+    oneDrivePollTimer = setInterval(async () => {
+      if (Date.now() > expiresAt) {
+        clearInterval(oneDrivePollTimer)
+        oneDrivePollTimer = null
+        oneDrivePolling.value = false
+        message.error(t('adminPolicies.onedriveTimeout'))
+        return
+      }
+
+      try {
+        const tokenRes = await api.post('/admin/policies/onedrive/device-token', {
+          client_id: driverConfig.value.onedrive_client_id,
+          account_type: driverConfig.value.onedrive_account_type || 'personal',
+          device_code: oneDriveAuthData.value?.device_code
+        })
+        if (tokenRes.data && tokenRes.data.refresh_token) {
+          driverConfig.value.onedrive_refresh_token = tokenRes.data.refresh_token
+          clearInterval(oneDrivePollTimer)
+          oneDrivePollTimer = null
+          oneDrivePolling.value = false
+          showOneDriveModal.value = false
+          message.success(t('adminPolicies.onedriveSuccess'))
+        }
+      } catch (pollErr: any) {
+        const errType = pollErr.response?.data?.error
+        if (errType === 'authorization_pending') {
+          return
+        }
+        clearInterval(oneDrivePollTimer)
+        oneDrivePollTimer = null
+        oneDrivePolling.value = false
+        message.error(pollErr.response?.data?.error || t('common.failed'))
+      }
+    }, interval)
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.failed'))
+  } finally {
+    startingOneDriveAuth.value = false
+  }
+}
+
+const handleOpenOneDriveLogin = () => {
+  if (!oneDriveAuthData.value) return
+  navigator.clipboard.writeText(oneDriveAuthData.value.user_code)
+  message.success(t('common.copied'))
+  window.open(oneDriveAuthData.value.verification_uri, '_blank')
+}
+
+const handleCancelOneDriveAuth = () => {
+  if (oneDrivePollTimer) {
+    clearInterval(oneDrivePollTimer)
+    oneDrivePollTimer = null
+  }
+  oneDrivePolling.value = false
+  showOneDriveModal.value = false
+}
+
 const handleTestConnection = async () => {
   testingConnection.value = true
   try {
@@ -862,9 +995,9 @@ const handleTestConnection = async () => {
       config: configStr,
       id: isEditing.value ? editTargetId.value : undefined
     })
-    message.success(res.data?.message || '连接测试成功')
+    message.success(res.data?.message || t('adminPolicies.testSuccess'))
   } catch (err: any) {
-    message.error(err.response?.data?.error || '连接测试失败')
+    message.error(err.response?.data?.error || t('adminPolicies.testFailed'))
   } finally {
     testingConnection.value = false
   }
@@ -873,7 +1006,8 @@ const handleTestConnection = async () => {
 const openCreateModal = () => {
   isEditing.value = false
   editTargetId.value = null
-  capacityGB.value = 0
+  capacityValue.value = 0
+  capacityUnit.value = 'GB'
   policyForm.value = {
     name: '',
     driver: 'local',
@@ -884,20 +1018,38 @@ const openCreateModal = () => {
     role_ids: roles.value.map(r => r.id)
   }
   driverConfig.value.base_path = 'data/storage'
-  driverConfig.value.local_sub_path = 'storage'
-  driverConfig.value.s3_root_dir = ''
-  driverConfig.value.oss_root_dir = ''
-  driverConfig.value.cos_root_dir = ''
-  driverConfig.value.obs_root_dir = ''
-  driverConfig.value.gcs_root_dir = ''
-  driverConfig.value.azure_root_dir = ''
   showModal.value = true
 }
 
 const openEditModal = (p: any) => {
   isEditing.value = true
   editTargetId.value = p.id
-  capacityGB.value = p.max_capacity_bytes > 0 ? Math.round(p.max_capacity_bytes / (1024 * 1024 * 1024)) : 0
+  if (!p.max_capacity_bytes || p.max_capacity_bytes <= 0) {
+    capacityValue.value = 0
+    capacityUnit.value = 'GB'
+  } else {
+    const b = p.max_capacity_bytes
+    const tb = 1024 * 1024 * 1024 * 1024
+    const gb = 1024 * 1024 * 1024
+    const mb = 1024 * 1024
+    const kb = 1024
+    if (b % tb === 0) {
+      capacityValue.value = b / tb
+      capacityUnit.value = 'TB'
+    } else if (b % gb === 0) {
+      capacityValue.value = b / gb
+      capacityUnit.value = 'GB'
+    } else if (b % mb === 0) {
+      capacityValue.value = b / mb
+      capacityUnit.value = 'MB'
+    } else if (b % kb === 0) {
+      capacityValue.value = b / kb
+      capacityUnit.value = 'KB'
+    } else {
+      capacityValue.value = Math.round((b / mb) * 100) / 100
+      capacityUnit.value = 'MB'
+    }
+  }
   policyForm.value = {
     name: p.name,
     driver: p.driver || 'local',
@@ -919,7 +1071,8 @@ const handleSavePolicy = async () => {
 
   saving.value = true
   try {
-    const maxCapacityBytes = (capacityGB.value || 0) * 1024 * 1024 * 1024
+    const mult = unitMultiplier[capacityUnit.value] || (1024 * 1024 * 1024)
+    const maxCapacityBytes = (capacityValue.value || 0) * mult
     const cleanPrefix = (policyForm.value.path_prefix || '').trim().replace(/^\/+|\/+$/g, '')
     const configStr = buildConfigJSON(policyForm.value.driver)
 
@@ -931,10 +1084,14 @@ const handleSavePolicy = async () => {
       config: configStr
     }
 
+    let res: any
     if (isEditing.value && editTargetId.value) {
-      await api.patch(`/admin/policies/${editTargetId.value}`, payload)
+      res = await api.patch(`/admin/policies/${editTargetId.value}`, payload)
     } else {
-      await api.post('/admin/policies', payload)
+      res = await api.post('/admin/policies', payload)
+    }
+    if (res.data?.warning) {
+      message.warning(res.data.warning, { duration: 6000 })
     }
     message.success(t('adminPolicies.saveSuccess'))
     showModal.value = false
@@ -966,3 +1123,41 @@ const formatBytes = (bytes: number) => {
 
 onMounted(loadData)
 </script>
+
+<style scoped>
+.role-checkbox-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.role-checkbox-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.role-checkbox-card:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(99, 226, 183, 0.4);
+}
+
+.role-checkbox-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.role-checkbox-title {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.role-checkbox-sub {
+  font-size: 12px;
+  color: #888;
+}
+</style>

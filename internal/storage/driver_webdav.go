@@ -97,10 +97,7 @@ func NewWebDAVStorageDriver(cfg WebDAVConfig) (*WebDAVStorageDriver, error) {
 }
 
 func (d *WebDAVStorageDriver) buildFileURL(key string) string {
-	cleanKey := strings.TrimLeft(key, "/")
-	if d.cfg.BasePath != "" {
-		cleanKey = path.Join(d.cfg.BasePath, cleanKey)
-	}
+	cleanKey := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
 	return d.cfg.URL + "/" + cleanKey
 }
 

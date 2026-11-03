@@ -194,18 +194,30 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		requestedIDs = append(requestedIDs, opts.PolicyID)
 	}
 
-	if len(requestedIDs) > 0 {
-		var permittedIDs []uint
-		s.db.Table("role_policies").
-			Where("role_id = ? AND policy_id IN ?", user.RoleID, requestedIDs).
-			Pluck("policy_id", &permittedIDs)
-		if len(permittedIDs) > 0 {
-			s.db.Where("id IN ?", permittedIDs).Find(&candidatePolicies)
-		}
-	}
+	isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
 
-	if len(candidatePolicies) == 0 {
-		// Find default policy assigned to this role
+	if len(requestedIDs) > 0 {
+		if isAdmin {
+			s.db.Where("id IN ?", requestedIDs).Find(&candidatePolicies)
+		} else {
+			var permittedIDs []uint
+			s.db.Table("role_policies").
+				Where("role_id = ? AND policy_id IN ?", user.RoleID, requestedIDs).
+				Pluck("policy_id", &permittedIDs)
+			var unresIDs []uint
+			s.db.Table("storage_policies").
+				Where("id IN ? AND id NOT IN (SELECT policy_id FROM role_policies)", requestedIDs).
+				Pluck("id", &unresIDs)
+			allPermitted := append(permittedIDs, unresIDs...)
+			if len(allPermitted) > 0 {
+				s.db.Where("id IN ?", allPermitted).Find(&candidatePolicies)
+			}
+		}
+		if len(candidatePolicies) == 0 {
+			return nil, errors.New("无权使用指定的存储策略")
+		}
+	} else {
+		// When no policies requested, find default policy for user's role
 		var defaultPolicyID uint
 		s.db.Table("role_policies").
 			Joins("JOIN storage_policies ON storage_policies.id = role_policies.policy_id").
@@ -217,29 +229,29 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 				candidatePolicies = append(candidatePolicies, p)
 			}
 		}
-	}
-	if len(candidatePolicies) == 0 {
-		var firstPolicyID uint
-		s.db.Table("role_policies").Where("role_id = ?", user.RoleID).Select("policy_id").Scan(&firstPolicyID)
-		if firstPolicyID > 0 {
+		if len(candidatePolicies) == 0 {
+			var firstPolicyID uint
+			s.db.Table("role_policies").Where("role_id = ?", user.RoleID).Select("policy_id").Scan(&firstPolicyID)
+			if firstPolicyID > 0 {
+				var p model.StoragePolicy
+				if err := s.db.Where("id = ?", firstPolicyID).First(&p).Error; err == nil {
+					candidatePolicies = append(candidatePolicies, p)
+				}
+			}
+		}
+		if len(candidatePolicies) == 0 {
 			var p model.StoragePolicy
-			if err := s.db.Where("id = ?", firstPolicyID).First(&p).Error; err == nil {
+			s.db.Where("is_default = 1").First(&p)
+			if p.ID == 0 {
+				s.db.First(&p)
+			}
+			if p.ID > 0 {
 				candidatePolicies = append(candidatePolicies, p)
 			}
 		}
 	}
 	if len(candidatePolicies) == 0 {
-		var p model.StoragePolicy
-		s.db.Where("is_default = 1").First(&p)
-		if p.ID == 0 {
-			s.db.First(&p)
-		}
-		if p.ID > 0 {
-			candidatePolicies = append(candidatePolicies, p)
-		}
-	}
-	if len(candidatePolicies) == 0 {
-		return nil, errors.New("no storage policy available")
+		return nil, errors.New("无可用存储策略")
 	}
 
 	// Filter policies passing single file size limit and capacity check
@@ -288,7 +300,7 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		}
 		drv, err := s.getDriver(ctx, p.ID)
 		if err != nil {
-			lastErr = err
+			lastErr = fmt.Errorf("策略「%s」初始化失败: %w", p.Name, err)
 			continue
 		}
 		renderedName := s.renderNamingRule(p.NamingRule, originalFilename, finalExt, fileSha256)
@@ -297,7 +309,7 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 
 		if err := drv.Put(ctx, storKey, tempFile, finalSize); err != nil {
 			slog.Warn("Failed to upload to storage policy", "policy_id", p.ID, "policy_name", p.Name, "error", err)
-			lastErr = err
+			lastErr = fmt.Errorf("策略「%s」上传失败: %w", p.Name, err)
 			continue
 		}
 
@@ -309,7 +321,7 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	}
 
 	if len(successes) == 0 {
-		return nil, fmt.Errorf("所有策略上传失败: %v", lastErr)
+		return nil, lastErr
 	}
 
 	// Total physical size across all successfully saved replicas
@@ -371,9 +383,12 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		}
 
 		for _, succ := range successes {
+			polCopy := succ.policy
 			replica := &model.FilePolicyReplica{
 				FileID:     fileRecord.ID,
 				PolicyID:   succ.policy.ID,
+				PolicyName: succ.policy.Name,
+				Policy:     &polCopy,
 				PublicPath: succ.publicPath,
 				StorageKey: succ.storageKey,
 				Size:       finalSize,
@@ -690,9 +705,12 @@ func (s *UploadService) SyncFileToPolicies(ctx context.Context, user *model.User
 			continue
 		}
 
+		polCopy := p
 		replica := &model.FilePolicyReplica{
 			FileID:     file.ID,
 			PolicyID:   p.ID,
+			PolicyName: p.Name,
+			Policy:     &polCopy,
 			PublicPath: pubPath,
 			StorageKey: storKey,
 			Size:       file.Size,

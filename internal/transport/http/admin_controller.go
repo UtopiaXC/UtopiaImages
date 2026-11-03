@@ -7,6 +7,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -93,6 +94,8 @@ func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
 		admin.POST("/policies", ctrl.CreatePolicy)
 		admin.PATCH("/policies/:id", ctrl.UpdatePolicy)
 		admin.DELETE("/policies/:id", ctrl.DeletePolicy)
+		admin.POST("/policies/onedrive/device-code", ctrl.OneDriveDeviceCode)
+		admin.POST("/policies/onedrive/device-token", ctrl.OneDriveDeviceToken)
 
 		// Image Presets
 		admin.GET("/presets", ctrl.ListPresets)
@@ -793,50 +796,17 @@ func (ctrl *AdminController) ListDrivers(c *gin.Context) {
 	c.JSON(http.StatusOK, storage.SupportedDrivers())
 }
 
-func (ctrl *AdminController) validateLocalStoragePath(excludeID uint, configStr string) (string, error) {
-	basePath := "data/storage"
-	if strings.TrimSpace(configStr) != "" {
-		var cfg struct {
-			BasePath string `json:"base_path"`
-		}
-		if err := json.Unmarshal([]byte(configStr), &cfg); err == nil && cfg.BasePath != "" {
-			basePath = cfg.BasePath
-		}
-	}
-	trimmed := strings.TrimSpace(basePath)
-	if trimmed == "" {
-		trimmed = "data/storage"
-	}
-	cleaned := filepath.ToSlash(filepath.Clean(trimmed))
-	if cleaned == "." {
-		cleaned = "data/storage"
-	}
-	if cleaned != "data" && !strings.HasPrefix(cleaned, "data/") {
-		return "", fmt.Errorf("本地存储路径必须位于 data/ 目录下，当前路径: %s", basePath)
-	}
-
+func (ctrl *AdminController) checkPathPrefixDuplicate(excludeID uint, driver, pathPrefix string) string {
+	normPrefix := strings.Trim(pathclean.CleanPath(pathPrefix), "/")
 	var otherPolicies []model.StoragePolicy
-	ctrl.db.Where("driver = 'local' AND id != ?", excludeID).Find(&otherPolicies)
+	ctrl.db.Where("driver = ? AND id != ?", driver, excludeID).Find(&otherPolicies)
 	for _, op := range otherPolicies {
-		otherBase := "data/storage"
-		var ocfg struct {
-			BasePath string `json:"base_path"`
-		}
-		if err := json.Unmarshal([]byte(op.Config), &ocfg); err == nil && ocfg.BasePath != "" {
-			otherBase = ocfg.BasePath
-		}
-		otherCleaned := filepath.ToSlash(filepath.Clean(strings.TrimSpace(otherBase)))
-		if otherCleaned == "." || otherCleaned == "" {
-			otherCleaned = "data/storage"
-		}
-		if otherCleaned == cleaned {
-			return "", fmt.Errorf("本地存储路径与策略「%s」重复: %s", op.Name, cleaned)
+		opPrefix := strings.Trim(pathclean.CleanPath(op.PathPrefix), "/")
+		if opPrefix == normPrefix {
+			return fmt.Sprintf("该路径已被策略「%s」使用，混用路径可能会导致文件冲突", op.Name)
 		}
 	}
-
-	cfgData := map[string]string{"base_path": cleaned}
-	b, _ := json.Marshal(cfgData)
-	return string(b), nil
+	return ""
 }
 
 func (ctrl *AdminController) TestPolicy(c *gin.Context) {
@@ -868,12 +838,7 @@ func (ctrl *AdminController) TestPolicy(c *gin.Context) {
 	}
 
 	if driverType == "local" {
-		normCfg, err := ctrl.validateLocalStoragePath(req.ID, configStr)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		configStr = normCfg
+		configStr = `{"base_path":"data/storage"}`
 	}
 
 	policy := model.StoragePolicy{
@@ -917,12 +882,7 @@ func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
 	}
 
 	if req.Driver == "local" {
-		normCfg, err := ctrl.validateLocalStoragePath(0, req.Config)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		req.Config = normCfg
+		req.Config = `{"base_path":"data/storage"}`
 	}
 
 	if req.NamingRule == "" {
@@ -932,13 +892,7 @@ func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
 	if req.PathPrefix != nil {
 		pathPrefix = strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
 	}
-
-	var conflictCount int64
-	ctrl.db.Model(&model.StoragePolicy{}).Where("path_prefix = ?", pathPrefix).Count(&conflictCount)
-	if conflictCount > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "路径前缀已被其他存储策略占用，必须唯一"})
-		return
-	}
+	warnMsg := ctrl.checkPathPrefixDuplicate(0, req.Driver, pathPrefix)
 
 	var sysSetting model.Setting
 	sysLimitMB := int64(50)
@@ -987,7 +941,11 @@ func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
 		ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
 	}
 
-	c.JSON(http.StatusOK, policy)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "存储策略保存成功",
+		"warning": warnMsg,
+		"policy":  policy,
+	})
 }
 
 func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
@@ -1043,16 +1001,7 @@ func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
 		targetDriver = req.Driver
 	}
 	if targetDriver == "local" {
-		cfgToCheck := policy.Config
-		if req.Config != nil {
-			cfgToCheck = *req.Config
-		}
-		normCfg, err := ctrl.validateLocalStoragePath(policy.ID, cfgToCheck)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		updates["config"] = normCfg
+		updates["config"] = `{"base_path":"data/storage"}`
 	}
 	if req.Name != "" {
 		updates["name"] = req.Name
@@ -1067,14 +1016,10 @@ func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
 		}
 		updates["max_single_file_size_mb"] = *req.MaxSingleFileSizeMB
 	}
+	var warnMsg string
 	if req.PathPrefix != nil {
 		cleanPrefix := strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
-		var conflictCount int64
-		ctrl.db.Model(&model.StoragePolicy{}).Where("id != ? AND path_prefix = ?", policy.ID, cleanPrefix).Count(&conflictCount)
-		if conflictCount > 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "路径前缀已被其他存储策略占用，必须唯一"})
-			return
-		}
+		warnMsg = ctrl.checkPathPrefixDuplicate(policy.ID, targetDriver, cleanPrefix)
 		updates["path_prefix"] = cleanPrefix
 	}
 	if req.NamingRule != "" {
@@ -1123,7 +1068,11 @@ func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
 	}
 
 	ctrl.db.Preload("Roles").First(&policy, policy.ID)
-	c.JSON(http.StatusOK, policy)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "存储策略保存成功",
+		"warning": warnMsg,
+		"policy":  policy,
+	})
 }
 
 func (ctrl *AdminController) DeletePolicy(c *gin.Context) {
@@ -1346,6 +1295,9 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 	}
 	repMap := make(map[uint][]*model.FilePolicyReplica)
 	for i := range allReplicas {
+		if allReplicas[i].Policy != nil {
+			allReplicas[i].PolicyName = allReplicas[i].Policy.Name
+		}
 		repMap[allReplicas[i].FileID] = append(repMap[allReplicas[i].FileID], &allReplicas[i])
 	}
 
@@ -1431,6 +1383,11 @@ func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
 
 	var replicas []model.FilePolicyReplica
 	ctrl.db.Preload("Policy").Where("file_id = ?", file.ID).Find(&replicas)
+	for i := range replicas {
+		if replicas[i].Policy != nil {
+			replicas[i].PolicyName = replicas[i].Policy.Name
+		}
+	}
 
 	var tempLinks []model.TemporaryLink
 	ctrl.db.Where("file_id = ?", file.ID).Order("id DESC").Find(&tempLinks)
@@ -1687,4 +1644,103 @@ func (ctrl *AdminController) DeleteAdminWatermark(c *gin.Context) {
 		"sign_version":          gorm.Expr("sign_version + 1"),
 	})
 	c.JSON(http.StatusOK, gin.H{"message": "Watermark template deleted"})
+}
+
+func (ctrl *AdminController) OneDriveDeviceCode(c *gin.Context) {
+	var req struct {
+		ClientID    string `json:"client_id"`
+		AccountType string `json:"account_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	clientID := strings.TrimSpace(req.ClientID)
+	if clientID == "" {
+		clientID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+	}
+
+	deviceEndpoint := "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode"
+	if strings.ToLower(req.AccountType) == "china" {
+		deviceEndpoint = "https://login.partner.microsoftonline.cn/common/oauth2/v2.0/devicecode"
+	}
+
+	form := url.Values{}
+	form.Set("client_id", clientID)
+	form.Set("scope", "offline_access Files.ReadWrite Files.ReadWrite.All")
+
+	resp, err := http.PostForm(deviceEndpoint, form)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无法连接微软授权服务: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var res map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解析微软授权响应失败"})
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("微软服务返回错误: %v", res["error_description"])})
+		return
+	}
+
+	res["client_id"] = clientID
+	c.JSON(http.StatusOK, res)
+}
+
+func (ctrl *AdminController) OneDriveDeviceToken(c *gin.Context) {
+	var req struct {
+		ClientID    string `json:"client_id" binding:"required"`
+		DeviceCode  string `json:"device_code" binding:"required"`
+		AccountType string `json:"account_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	tokenEndpoint := "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+	if strings.ToLower(req.AccountType) == "china" {
+		tokenEndpoint = "https://login.partner.microsoftonline.cn/common/oauth2/v2.0/token"
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+	form.Set("client_id", req.ClientID)
+	form.Set("device_code", req.DeviceCode)
+
+	resp, err := http.PostForm(tokenEndpoint, form)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无法连接微软令牌服务: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var tokenRes map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&tokenRes); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解析微软令牌响应失败"})
+		return
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		c.JSON(http.StatusOK, gin.H{
+			"status":        "success",
+			"refresh_token": tokenRes["refresh_token"],
+			"access_token":  tokenRes["access_token"],
+		})
+		return
+	}
+
+	errCode, _ := tokenRes["error"].(string)
+	if errCode == "authorization_pending" {
+		c.JSON(http.StatusOK, gin.H{"status": "pending"})
+		return
+	}
+
+	errDesc, _ := tokenRes["error_description"].(string)
+	c.JSON(http.StatusBadRequest, gin.H{"error": errDesc, "code": errCode})
 }
