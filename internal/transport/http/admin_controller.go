@@ -803,8 +803,12 @@ func (ctrl *AdminController) validateLocalStoragePath(excludeID uint, configStr 
 			basePath = cfg.BasePath
 		}
 	}
-	cleaned := filepath.Clean(filepath.ToSlash(strings.TrimSpace(basePath)))
-	if cleaned == "" {
+	trimmed := strings.TrimSpace(basePath)
+	if trimmed == "" {
+		trimmed = "data/storage"
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(trimmed))
+	if cleaned == "." {
 		cleaned = "data/storage"
 	}
 	if cleaned != "data" && !strings.HasPrefix(cleaned, "data/") {
@@ -821,7 +825,11 @@ func (ctrl *AdminController) validateLocalStoragePath(excludeID uint, configStr 
 		if err := json.Unmarshal([]byte(op.Config), &ocfg); err == nil && ocfg.BasePath != "" {
 			otherBase = ocfg.BasePath
 		}
-		if filepath.Clean(filepath.ToSlash(otherBase)) == cleaned {
+		otherCleaned := filepath.ToSlash(filepath.Clean(strings.TrimSpace(otherBase)))
+		if otherCleaned == "." || otherCleaned == "" {
+			otherCleaned = "data/storage"
+		}
+		if otherCleaned == cleaned {
 			return "", fmt.Errorf("本地存储路径与策略「%s」重复: %s", op.Name, cleaned)
 		}
 	}

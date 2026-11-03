@@ -34,8 +34,12 @@ type LocalStorageDriver struct {
 }
 
 func NewLocalStorageDriver(basePath string) (*LocalStorageDriver, error) {
-	cleanBase := filepath.Clean(filepath.ToSlash(strings.TrimSpace(basePath)))
-	if cleanBase == "" {
+	trimmed := strings.TrimSpace(basePath)
+	if trimmed == "" {
+		trimmed = "data/storage"
+	}
+	cleanBase := filepath.ToSlash(filepath.Clean(trimmed))
+	if cleanBase == "." {
 		cleanBase = "data/storage"
 	}
 	if !filepath.IsAbs(cleanBase) {
