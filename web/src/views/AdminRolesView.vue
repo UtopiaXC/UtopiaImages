@@ -13,10 +13,10 @@
         <n-table :bordered="false" :single-line="false">
           <thead>
             <tr>
-              <th>ID</th>
-              <th>{{ $t('adminRoles.roleName') }}</th>
-              <th>{{ $t('adminRoles.displayName') }}</th>
-              <th>{{ $t('adminRoles.userQuota') }}</th>
+              <th style="width: 80px;"><SortableHeader title="ID" column="id" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminRoles.roleName')" column="name" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminRoles.displayName')" column="display_name" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminRoles.userQuota')" column="quota_bytes" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th>{{ $t('adminRoles.allowedFormats') }}</th>
               <th>{{ $t('adminRoles.permittedPolicies') }}</th>
               <th>{{ $t('adminRoles.userCount') }}</th>
@@ -148,10 +148,10 @@
         </n-form-item>
 
         <n-form-item :label="$t('adminRoles.permittedPolicies')">
-          <n-select
+          <PolicySelectButton
             v-model:value="createForm.policy_ids"
-            multiple
-            :options="policyOptions"
+            :policies="policies"
+            :min="1"
             :placeholder="$t('adminRoles.policiesPlaceholder')"
           />
         </n-form-item>
@@ -232,11 +232,11 @@
               {{ $t('adminRoles.guestSinglePolicyTip') }}
             </div>
           </div>
-          <n-select
+          <PolicySelectButton
             v-else
             v-model:value="editForm.policy_ids"
-            multiple
-            :options="policyOptions"
+            :policies="policies"
+            :min="1"
             :placeholder="$t('adminRoles.policiesPlaceholder')"
           />
         </n-form-item>
@@ -258,6 +258,8 @@ import { useMessage } from 'naive-ui'
 import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
+import SortableHeader from '../components/SortableHeader.vue'
+import PolicySelectButton from '../components/PolicySelectButton.vue'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -265,6 +267,15 @@ const { t } = useI18n()
 const roles = ref<any[]>([])
 const policies = ref<any[]>([])
 const saving = ref(false)
+
+const sortBy = ref<string>('id')
+const sortOrder = ref<'asc' | 'desc' | null>('asc')
+
+const handleSort = (key: string, order: 'asc' | 'desc' | null) => {
+  sortBy.value = key
+  sortOrder.value = order
+  loadData()
+}
 
 const showCreateModal = ref(false)
 const createQuotaGB = ref<number | null>(0)
@@ -306,8 +317,13 @@ const formatBytes = (bytes: number): string => {
 
 const loadData = async () => {
   try {
+    const params: any = {}
+    if (sortBy.value && sortOrder.value) {
+      params.sort_by = sortBy.value
+      params.order = sortOrder.value
+    }
     const [rRes, pRes] = await Promise.all([
-      api.get('/admin/roles'),
+      api.get('/admin/roles', { params }),
       api.get('/admin/policies')
     ])
     roles.value = rRes.data || []

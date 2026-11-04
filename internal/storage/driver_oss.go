@@ -81,19 +81,41 @@ type OSSStorageDriver struct {
 	bucket *oss.Bucket
 }
 
-func normalizeOSSEndpoint(ep string) string {
+func normalizeOSSEndpoint(ep, bucket string) (string, bool) {
 	cleaned := strings.TrimPrefix(ep, "https://")
 	cleaned = strings.TrimPrefix(cleaned, "http://")
 	cleaned = strings.TrimRight(cleaned, "/")
-	return cleaned
+
+	if bucket != "" && strings.HasPrefix(cleaned, bucket+".") {
+		cleaned = strings.TrimPrefix(cleaned, bucket+".")
+	}
+
+	isCname := false
+	if strings.Contains(cleaned, ".oss-accesspoint.") {
+		if strings.HasSuffix(bucket, "-ossalias") {
+			isCname = true
+		} else {
+			// Extract region from access point domain: <ap-name>.<region>.oss-accesspoint.aliyuncs.com
+			parts := strings.Split(cleaned, ".")
+			for i, p := range parts {
+				if p == "oss-accesspoint" && i > 0 {
+					region := parts[i-1]
+					suffix := strings.Join(parts[i+1:], ".")
+					cleaned = region + "." + suffix
+					break
+				}
+			}
+		}
+	}
+	return cleaned, isCname
 }
 
 func NewOSSStorageDriver(cfg OSSConfig) (*OSSStorageDriver, error) {
-	normHost := normalizeOSSEndpoint(cfg.Endpoint)
+	normHost, isCname := normalizeOSSEndpoint(cfg.Endpoint, cfg.Bucket)
 	endpoint := "https://" + normHost
 
 	var clientOpts []oss.ClientOption
-	if strings.Contains(normHost, ".oss-accesspoint.") {
+	if isCname {
 		clientOpts = append(clientOpts, oss.UseCname(true))
 	}
 
@@ -177,11 +199,11 @@ func (d *OSSStorageDriver) GetDirectURL(key string) (string, bool) {
 		return strings.TrimRight(d.cfg.PublicURLPrefix, "/") + "/" + cleanKey, true
 	}
 
-	normHost := normalizeOSSEndpoint(d.cfg.Endpoint)
+	normHost, isCname := normalizeOSSEndpoint(d.cfg.Endpoint, d.cfg.Bucket)
 	if normHost == "" {
 		return "", false
 	}
-	if strings.Contains(normHost, ".oss-accesspoint.") || strings.HasPrefix(normHost, d.cfg.Bucket+".") {
+	if isCname || strings.HasPrefix(normHost, d.cfg.Bucket+".") {
 		return fmt.Sprintf("https://%s/%s", normHost, cleanKey), true
 	}
 	return fmt.Sprintf("https://%s.%s/%s", d.cfg.Bucket, normHost, cleanKey), true

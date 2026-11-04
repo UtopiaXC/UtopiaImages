@@ -61,8 +61,27 @@ func (ctrl *WatermarkController) RegisterRoutes(rg *gin.RouterGroup) {
 
 func (ctrl *WatermarkController) ListWatermarks(c *gin.Context) {
 	userID := c.GetUint(auth.CtxUserIDKey)
+
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "desc"
+	}
+	allowed := map[string]string{
+		"id":         "id",
+		"name":       "name",
+		"created_at": "created_at",
+		"updated_at": "updated_at",
+	}
+	query := ctrl.db.Where("owner_id = ?", userID)
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id DESC")
+	}
+
 	var templates []model.WatermarkTemplate
-	ctrl.db.Where("owner_id = ?", userID).Order("id DESC").Find(&templates)
+	query.Find(&templates)
 	c.JSON(http.StatusOK, templates)
 }
 

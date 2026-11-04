@@ -13,16 +13,16 @@
         <n-table :bordered="false" :single-line="false">
           <thead>
             <tr>
-              <th>ID</th>
-              <th>{{ $t('adminPolicies.policyName') }}</th>
-              <th>{{ $t('adminPolicies.driver') }}</th>
-              <th>{{ $t('adminPolicies.maxCapacity') }}</th>
-              <th>{{ $t('adminPolicies.maxSingleFileSize') }}</th>
-              <th>{{ $t('adminPolicies.usedSpace') }}</th>
+              <th style="width: 80px;"><SortableHeader title="ID" column="id" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminPolicies.policyName')" column="name" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminPolicies.driver')" column="driver" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminPolicies.maxCapacity')" column="max_capacity_bytes" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminPolicies.maxSingleFileSize')" column="max_single_file_size_mb" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminPolicies.usedSpace')" column="used_bytes" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th>{{ $t('adminPolicies.pathPrefix') }}</th>
               <th>{{ $t('adminPolicies.namingRule') }}</th>
               <th>{{ $t('adminPolicies.permittedRoles') }}</th>
-              <th>{{ $t('adminPolicies.isDefault') }}</th>
+              <th><SortableHeader :title="$t('adminPolicies.isDefault')" column="is_default" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th style="text-align: right;">{{ $t('common.actions') }}</th>
             </tr>
           </thead>
@@ -112,13 +112,13 @@
 
           <!-- Local -->
           <div v-if="policyForm.driver === 'local'" style="font-size: 13px; color: #888; line-height: 1.6;">
-            本地文件统一存储于服务端 data/storage 目录，通过下方保存与URL访问路径进行隔离与组织。
+            {{ $t('adminPolicies.driverLocalDesc') }}
           </div>
 
           <!-- Database -->
           <div v-else-if="policyForm.driver === 'database'">
             <div style="font-size: 13px; color: #888; line-height: 1.6;">
-              图片切片以二进制存储于数据库中，支持当前配置的 SQLite、MySQL 或 PostgreSQL，分片流式读写，内存开销恒定。
+              {{ $t('adminPolicies.driverDatabaseDesc') }}
             </div>
           </div>
 
@@ -277,7 +277,7 @@
                 :options="[
                   { label: 'jsDelivr', value: 'jsdelivr' },
                   { label: 'GitHub Raw', value: 'raw' },
-                  { label: '自定义 CDN', value: 'custom' }
+                  { label: $t('adminPolicies.customCdn'), value: 'custom' }
                 ]"
               />
             </n-form-item>
@@ -291,8 +291,8 @@
             <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 12px;">
               <div style="display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                  <div style="font-weight: 500; font-size: 13px;">快速授权</div>
-                  <div style="font-size: 12px; color: #888; margin-top: 2px;">通过微软官方设备代码验证，一键自动获取并填充授权凭证</div>
+                  <div style="font-weight: 500; font-size: 13px;">{{ $t('adminPolicies.onedriveQuickAuth') }}</div>
+                  <div style="font-size: 12px; color: #888; margin-top: 2px;">{{ $t('adminPolicies.onedriveQuickAuthDesc') }}</div>
                 </div>
                 <n-button type="primary" secondary size="small" :loading="startingOneDriveAuth" @click="handleStartOneDriveAuth">
                   {{ $t('adminPolicies.onedriveAuthBtn') }}
@@ -300,7 +300,7 @@
               </div>
               <div v-if="driverConfig.onedrive_refresh_token" style="font-size: 12px; color: #63e2b7; display: flex; align-items: center; gap: 4px; margin-top: 8px;">
                 <n-icon size="14"><CheckmarkCircleOutline /></n-icon>
-                <span>已具备授权凭证</span>
+                <span>{{ $t('adminPolicies.onedriveAuthorized') }}</span>
               </div>
             </div>
 
@@ -555,11 +555,21 @@ import { useMessage } from 'naive-ui'
 import { InformationCircleOutline, CheckmarkCircleOutline, OpenOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
+import SortableHeader from '../components/SortableHeader.vue'
 
 const message = useMessage()
 const { t } = useI18n()
 const policies = ref<any[]>([])
 const roles = ref<any[]>([])
+
+const sortBy = ref<string>('id')
+const sortOrder = ref<'asc' | 'desc' | null>('asc')
+
+const handleSort = (key: string, order: 'asc' | 'desc' | null) => {
+  sortBy.value = key
+  sortOrder.value = order
+  loadData()
+}
 
 const showModal = ref(false)
 const isEditing = ref(false)
@@ -712,8 +722,13 @@ const getRoleTags = (roleIds: number[]) => {
 
 const loadData = async () => {
   try {
+    const params: any = {}
+    if (sortBy.value && sortOrder.value) {
+      params.sort_by = sortBy.value
+      params.order = sortOrder.value
+    }
     const [pRes, rRes] = await Promise.all([
-      api.get('/admin/policies'),
+      api.get('/admin/policies', { params }),
       api.get('/admin/roles')
     ])
     policies.value = pRes.data || []

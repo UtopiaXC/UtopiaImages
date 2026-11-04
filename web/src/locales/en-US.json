@@ -28,7 +28,10 @@
     "none": "None",
     "noData": "No data available",
     "loadFailed": "Failed to load",
-    "updatedAt": "Updated At"
+    "updatedAt": "Updated At",
+    "sortBy": "Sort",
+    "asc": "Asc",
+    "desc": "Desc"
   },
   "nav": {
     "upload": "File Upload",
@@ -101,10 +104,13 @@
     "prevStep": "Previous",
     "nextStep": "Next",
     "finish": "Complete Setup",
+    "submit": "Complete Initialization",
     "success": "Setup completed successfully. Please login with your administrator account",
     "failed": "Setup failed",
     "validation": "Please fill in all required administrator credentials",
-    "email": "Email Address"
+    "email": "Email Address",
+    "nickname": "Nickname",
+    "emailPlaceholder": "admin@example.com"
   },
   "login": {
     "title": "Login",
@@ -201,6 +207,8 @@
     "template": "Watermark Template",
     "defaultTemplate": "Default Template",
     "alwaysOriginalTip": "The server unconditionally preserves original uncompressed files",
+    "convertToWebP": "Convert to WebP",
+    "keepOriginal": "Keep Original Backup",
     "watermarkTip": "Watermarks apply solely to public derived views. Originals are stored securely",
     "directLink": "Direct URL",
     "webpLink": "WebP Link",
@@ -233,6 +241,13 @@
     "preservePath": "Preserve Directory Structure",
     "stripTopDir": "Strip Top-Level Directory",
     "conflictAction": "Conflict Resolution",
+    "selectPolicyModalTitle": "Select Storage Policies",
+    "minPolicyNotice": "At least one storage policy must be selected",
+    "selectedCount": "{count} selected",
+    "failuresModalTitle": "Storage Policy Upload Warnings",
+    "failuresModalDesc": "Some files encountered issues when saving to specific storage policies:",
+    "failureReason": "Failure Reason",
+    "allPolicies": "Selected Policies",
     "conflictSkip": "Skip Existing Files",
     "conflictOverwrite": "Overwrite Existing Files",
     "startImport": "Start Import",
@@ -361,6 +376,18 @@
     "fileDeleted": "File deleted completely",
     "batchSyncPolicy": "Batch Sync Policy",
     "batchRemovePolicy": "Batch Remove Policy",
+    "batchAction": "Batch Actions",
+    "batchProperties": "Properties",
+    "hotlinkMode": "Hotlink Mode",
+    "deletePhysicalFileSimultaneously": "Delete physical files simultaneously",
+    "deletePhysicalTip": "Unchecking will only delete records in the system, keeping physical files on remote storage",
+    "remoteDeleteFailedTitle": "Remote Deletion Incomplete",
+    "confirmDeleteSystemRecordOnly": "Do you want to only delete system records?",
+    "deleteRecordOnly": "Delete Record Only",
+    "confirmForceDeleteDB": "Do you want to delete database records only?",
+    "forceDeleteDBButton": "Delete DB Records Only",
+    "batchDeleteConfirmButton": "Confirm Delete",
+    "startRemove": "Remove Replica",
     "batchSyncNotice": "Sync {count} selected files to target storage policies",
     "batchRemoveNotice": "Remove replica of selected policy from {count} files",
     "selectRemovePolicy": "Select Policy to Remove",
@@ -864,6 +891,12 @@
     "serviceAccountKey": "Service Account Key",
     "systemDefault": "System Default",
     "onedriveDeviceCode": "Device Code",
+    "onedriveQuickAuth": "Quick Authorization",
+    "onedriveQuickAuthDesc": "Automatically obtain and fill credentials via Microsoft official device code flow",
+    "onedriveAuthorized": "Authorized",
+    "driverLocalDesc": "Local files are stored in data/storage and isolated via path prefix.",
+    "driverDatabaseDesc": "Images are stored as binary chunks in database with steady memory usage.",
+    "customCdn": "Custom CDN",
     "capacity": "Capacity"
   },
   "adminStats": {
@@ -1134,6 +1167,18 @@
     "totalCount": "Total {count} watermarks"
   },
   "auth": {
+    "username": "Username",
+    "password": "Password",
     "usernameMinLength": "Username length must be greater than 3 characters"
+  },
+  "sort": {
+    "idDesc": "Newest Added",
+    "idAsc": "Oldest Added",
+    "createdDesc": "Newest Created",
+    "createdAsc": "Oldest Created",
+    "sizeDesc": "Largest Size",
+    "sizeAsc": "Smallest Size",
+    "nameAsc": "Name A-Z",
+    "nameDesc": "Name Z-A"
   }
 }

@@ -288,8 +288,29 @@ func (ctrl *AdminController) GetStats(c *gin.Context) {
 // -------------------------------------------------------------
 
 func (ctrl *AdminController) ListUsers(c *gin.Context) {
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "asc"
+	}
+	allowed := map[string]string{
+		"id":         "id",
+		"username":   "username",
+		"email":      "email",
+		"nickname":   "nickname",
+		"role_id":    "role_id",
+		"used_bytes": "used_bytes",
+		"file_count": "file_count",
+		"created_at": "created_at",
+	}
+	query := ctrl.db.Preload("Role")
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id ASC")
+	}
 	var users []model.User
-	ctrl.db.Preload("Role").Order("id ASC").Find(&users)
+	query.Find(&users)
 	c.JSON(http.StatusOK, users)
 }
 
@@ -597,8 +618,27 @@ type RoleDTO struct {
 }
 
 func (ctrl *AdminController) ListRoles(c *gin.Context) {
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "asc"
+	}
+	allowed := map[string]string{
+		"id":           "id",
+		"name":         "name",
+		"display_name": "display_name",
+		"quota_bytes":  "quota_bytes",
+		"created_at":   "created_at",
+	}
+	query := ctrl.db.Preload("Policies")
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id ASC")
+	}
+
 	var roles []model.Role
-	ctrl.db.Preload("Policies").Order("id ASC").Find(&roles)
+	query.Find(&roles)
 
 	dtos := make([]RoleDTO, 0, len(roles))
 	for _, r := range roles {
@@ -764,8 +804,28 @@ type PolicyDTO struct {
 }
 
 func (ctrl *AdminController) ListPolicies(c *gin.Context) {
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "asc"
+	}
+	allowed := map[string]string{
+		"id":                 "id",
+		"name":               "name",
+		"driver":             "driver",
+		"used_bytes":         "used_bytes",
+		"max_capacity_bytes": "max_capacity_bytes",
+		"created_at":         "created_at",
+	}
+	query := ctrl.db.Preload("Roles")
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id ASC")
+	}
+
 	var policies []model.StoragePolicy
-	ctrl.db.Preload("Roles").Order("id ASC").Find(&policies)
+	query.Find(&policies)
 
 	dtos := make([]PolicyDTO, 0, len(policies))
 	for _, p := range policies {
@@ -1210,8 +1270,34 @@ func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
 	var total int64
 	query.Count(&total)
 
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "desc"
+	}
+
+	fileSortableColumns := map[string]string{
+		"id":           "file_records.id",
+		"display_name": "file_records.display_name",
+		"size":         "file_records.size",
+		"width":        "file_records.width",
+		"height":       "file_records.height",
+		"mime_type":    "file_records.mime_type",
+		"created_at":   "file_records.created_at",
+		"updated_at":   "file_records.updated_at",
+	}
+
+	if sortBy == "total_calls" {
+		query = query.Joins("LEFT JOIN (SELECT file_id, sum(count) as total_pv FROM image_call_stats GROUP BY file_id) stat_calls ON stat_calls.file_id = file_records.id").
+			Order("COALESCE(stat_calls.total_pv, 0) " + strings.ToUpper(order) + ", file_records.id DESC")
+	} else if col, ok := fileSortableColumns[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("file_records.id DESC")
+	}
+
 	var files []model.FileRecord
-	query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
+	query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
 
 	userIDs := make([]uint, 0, len(files))
 	policyIDs := make([]uint, 0, len(files))
@@ -1459,8 +1545,24 @@ func (ctrl *AdminController) DeleteSiteFile(c *gin.Context) {
 		return
 	}
 
-	err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true)
+	deleteRemote := c.DefaultQuery("delete_remote", "true") != "false"
+	force := c.DefaultQuery("force", "false") == "true"
+
+	err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true, service.DeleteOptions{
+		DeleteRemote: deleteRemote,
+		ForceDB:      force,
+	})
 	if err != nil {
+		var rErr *service.RemoteDeleteError
+		if errors.As(err, &rErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":      "REMOTE_DELETE_FAILED",
+				"error":     "远程物理文件删除失败",
+				"detail":    rErr.Error(),
+				"can_force": true,
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -1470,18 +1572,46 @@ func (ctrl *AdminController) DeleteSiteFile(c *gin.Context) {
 
 func (ctrl *AdminController) BatchDeleteSiteFiles(c *gin.Context) {
 	var req struct {
-		IDs []uint `json:"ids" binding:"required"`
+		IDs          []uint `json:"ids" binding:"required"`
+		DeleteRemote *bool  `json:"delete_remote"`
+		Force        bool   `json:"force"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	deleteRemote := true
+	if req.DeleteRemote != nil {
+		deleteRemote = *req.DeleteRemote
+	}
+
 	deletedCount := 0
+	var remoteErrors []string
 	for _, id := range req.IDs {
-		if err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true); err == nil {
+		err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true, service.DeleteOptions{
+			DeleteRemote: deleteRemote,
+			ForceDB:      req.Force,
+		})
+		if err != nil {
+			var rErr *service.RemoteDeleteError
+			if errors.As(err, &rErr) {
+				remoteErrors = append(remoteErrors, fmt.Sprintf("文件 #%d: %s", id, rErr.Error()))
+			}
+		} else {
 			deletedCount++
 		}
+	}
+
+	if len(remoteErrors) > 0 && !req.Force {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":      "REMOTE_DELETE_FAILED",
+			"error":     "部分或全部远程物理文件删除失败，是否仅删除系统中的记录？",
+			"detail":    strings.Join(remoteErrors, "; "),
+			"deleted":   deletedCount,
+			"can_force": true,
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"deleted": deletedCount})
@@ -1502,8 +1632,28 @@ type AdminWatermarkDTO struct {
 }
 
 func (ctrl *AdminController) ListAllWatermarks(c *gin.Context) {
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "desc"
+	}
+	allowed := map[string]string{
+		"id":         "id",
+		"name":       "name",
+		"is_system":  "is_system",
+		"owner_id":   "owner_id",
+		"created_at": "created_at",
+		"updated_at": "updated_at",
+	}
+	query := ctrl.db.Model(&model.WatermarkTemplate{})
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id DESC")
+	}
+
 	var templates []model.WatermarkTemplate
-	ctrl.db.Order("id DESC").Find(&templates)
+	query.Find(&templates)
 
 	userIDs := make([]uint, 0)
 	for _, t := range templates {

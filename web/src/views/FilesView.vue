@@ -47,15 +47,29 @@
           </n-button>
         </div>
 
-        <!-- View Mode Selector -->
-        <div style="display: flex; align-items: center; gap: 6px;">
-          <span style="font-size: 13px; color: #888;">{{ $t('files.viewMode') }}:</span>
-          <n-select
-            v-model:value="viewMode"
-            :options="viewModeOptions"
-            size="small"
-            style="width: 120px;"
-          />
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <!-- Sort Selector -->
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span style="font-size: 13px; color: #888;">{{ $t('common.sortBy') }}:</span>
+            <n-select
+              v-model:value="sortByCombined"
+              :options="sortOptions"
+              size="small"
+              style="width: 160px;"
+              @update:value="handleCombinedSortChange"
+            />
+          </div>
+
+          <!-- View Mode Selector -->
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span style="font-size: 13px; color: #888;">{{ $t('files.viewMode') }}:</span>
+            <n-select
+              v-model:value="viewMode"
+              :options="viewModeOptions"
+              size="small"
+              style="width: 120px;"
+            />
+          </div>
         </div>
       </div>
 
@@ -96,48 +110,14 @@
         </div>
 
         <!-- Batch actions -->
-        <div v-if="selectedIds.length > 0" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-          <!-- Batch Watermark -->
-          <n-dropdown :options="batchWatermarkMenuOptions" @select="handleBatchWatermark">
-            <n-button size="small" type="warning" secondary>
-              {{ $t('files.batchWatermark') }}
-            </n-button>
-          </n-dropdown>
-
-          <!-- Batch Hotlink -->
-          <n-dropdown :options="batchHotlinkMenuOptions" @select="handleBatchHotlink">
-            <n-button size="small" type="info" secondary>
-              {{ $t('files.batchHotlink') }}
-            </n-button>
-          </n-dropdown>
-
-          <!-- Batch Public Mode -->
-          <n-dropdown :options="batchPublicMenuOptions" @select="handleBatchPublic">
-            <n-button size="small" type="success" secondary>
-              {{ $t('files.batchPublic') }}
-            </n-button>
-          </n-dropdown>
-
-          <!-- Batch Sync Policy -->
-          <n-button size="small" type="primary" secondary @click="showBatchSyncModal = true">
-            {{ $t('files.batchSyncPolicy') }}
-          </n-button>
-
-          <!-- Batch Remove Policy -->
-          <n-button size="small" secondary @click="showBatchRemoveModal = true">
-            {{ $t('files.batchRemovePolicy') }}
-          </n-button>
-
-          <!-- Batch Delete -->
-          <n-popconfirm @positive-click="handleBatchDelete">
-            <template #trigger>
-              <n-button size="small" type="error">
-                <span>{{ $t('files.batchDelete') }}</span>
-                <span style="margin-left: 6px;">· {{ selectedIds.length }}</span>
-              </n-button>
+        <div v-if="selectedIds.length > 0">
+          <n-button size="small" type="primary" secondary @click="showBatchOperationsModal = true">
+            <template #icon>
+              <n-icon><LayersOutline /></n-icon>
             </template>
-            {{ $t('files.confirmBatchDelete', { count: selectedIds.length }) }}
-          </n-popconfirm>
+            <span>{{ $t('files.batchAction') }}</span>
+            <span style="margin-left: 6px;">· {{ selectedIds.length }}</span>
+          </n-button>
         </div>
       </div>
     </div>
@@ -321,14 +301,14 @@
             <tr>
               <th style="width: 40px;"></th>
               <th style="width: 60px;">{{ $t('files.preview') }}</th>
-              <th>{{ $t('files.fileName') }}</th>
-              <th>{{ $t('files.fileSize') }}</th>
-              <th>{{ $t('files.dimensions') }}</th>
-              <th>{{ $t('files.mimeType') }}</th>
+              <th><SortableHeader :title="$t('files.fileName')" column="display_name" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('files.fileSize')" column="size" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('files.dimensions')" column="width" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('files.mimeType')" column="mime_type" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th>{{ $t('files.storageReplicas') }}</th>
               <th>{{ $t('files.watermarkSetting') }}</th>
-              <th>{{ $t('files.callStats') }}</th>
-              <th>{{ $t('common.createdAt') }}</th>
+              <th><SortableHeader :title="$t('files.callStats')" column="total_calls" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('common.createdAt')" column="created_at" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th style="text-align: right;">{{ $t('common.actions') }}</th>
             </tr>
           </thead>
@@ -691,13 +671,12 @@
             {{ $t('files.syncToPolicies') }}
           </div>
           <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-            <n-select
+            <PolicySelectButton
               v-model:value="syncTargetPolicyIds"
-              multiple
               :options="availableSyncPolicies"
+              :min="1"
               size="small"
               :placeholder="$t('files.selectTargetPolicy')"
-              style="flex: 1; min-width: 220px;"
             />
             <n-button
               type="primary"
@@ -713,83 +692,163 @@
       </div>
     </n-modal>
 
-    <!-- Batch Sync Policy Modal -->
+    <!-- Unified Batch Operations Modal (Requirement 6 & 5) -->
     <n-modal
-      v-model:show="showBatchSyncModal"
+      v-model:show="showBatchOperationsModal"
       preset="card"
-      :title="$t('files.batchSyncPolicy')"
-      style="width: 500px; max-width: 95vw; border-radius: 12px;"
+      :title="$t('files.batchAction') + ' · ' + $t('files.selectedCount', { count: selectedIds.length })"
+      style="width: 580px; max-width: 95vw; border-radius: 12px;"
     >
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <p style="margin: 0; color: #aaa; font-size: 13px;">
-          {{ $t('files.batchSyncNotice', { count: selectedIds.length }) }}
-        </p>
-        <n-select
-          v-model:value="batchSyncPolicyIds"
-          multiple
-          :options="allPolicyOptions"
-          size="small"
-          :placeholder="$t('files.selectTargetPolicy')"
-        />
-        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;">
-          <n-button @click="showBatchSyncModal = false">{{ $t('common.cancel') }}</n-button>
-          <n-button
-            type="primary"
-            :disabled="batchSyncPolicyIds.length === 0"
-            :loading="batchSyncing"
-            @click="handleBatchSyncPolicies"
-          >
-            {{ $t('files.startSync') }}
-          </n-button>
-        </div>
-      </div>
-    </n-modal>
+      <n-tabs type="line" animated>
+        <!-- Tab 1: Sync to Policy -->
+        <n-tab-pane name="sync" :tab="$t('files.batchSyncPolicy')">
+          <div style="display: flex; flex-direction: column; gap: 16px; padding: 8px 0;">
+            <p style="margin: 0; color: #aaa; font-size: 13px;">
+              {{ $t('files.batchSyncNotice', { count: selectedIds.length }) }}
+            </p>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13px; color: #888;">{{ $t('upload.storagePolicy') }}:</span>
+              <PolicySelectButton
+                v-model:value="batchSyncPolicyIds"
+                :options="allPolicyOptions"
+                :min="1"
+                size="small"
+              />
+            </div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+              <n-button
+                type="primary"
+                size="small"
+                :disabled="batchSyncPolicyIds.length === 0"
+                :loading="batchOperating"
+                @click="executeBatchSync"
+              >
+                {{ $t('files.startSync') }}
+              </n-button>
+            </div>
+          </div>
+        </n-tab-pane>
 
-    <!-- Batch Remove Policy Modal -->
-    <n-modal
-      v-model:show="showBatchRemoveModal"
-      preset="card"
-      :title="$t('files.batchRemovePolicy')"
-      style="width: 500px; max-width: 95vw; border-radius: 12px;"
-    >
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <p style="margin: 0; color: #e88080; font-size: 13px;">
-          {{ $t('files.batchRemoveNotice', { count: selectedIds.length }) }}
-        </p>
-        <n-select
-          v-model:value="batchRemovePolicyId"
-          :options="allPolicyOptions"
-          size="small"
-          :placeholder="$t('files.selectRemovePolicy')"
-        />
-        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;">
-          <n-button @click="showBatchRemoveModal = false">{{ $t('common.cancel') }}</n-button>
-          <n-button
-            type="error"
-            :disabled="!batchRemovePolicyId"
-            :loading="batchRemoving"
-            @click="handleBatchRemovePolicy"
-          >
-            {{ $t('common.delete') }}
-          </n-button>
-        </div>
-      </div>
+        <!-- Tab 2: Remove Policy Replica -->
+        <n-tab-pane name="remove" :tab="$t('files.batchRemovePolicy')">
+          <div style="display: flex; flex-direction: column; gap: 16px; padding: 8px 0;">
+            <n-alert type="warning" :show-icon="false" style="font-size: 12px;">
+              {{ $t('files.batchRemoveNotice', { count: selectedIds.length }) }}
+            </n-alert>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13px; color: #888;">{{ $t('upload.storagePolicy') }}:</span>
+              <n-select
+                v-model:value="batchRemovePolicyId"
+                :options="allPolicyOptions"
+                size="small"
+                style="flex: 1;"
+                :placeholder="$t('files.selectRemovePolicy')"
+              />
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <n-checkbox v-model:checked="batchDeleteRemote">
+                {{ $t('files.deletePhysicalFileSimultaneously') }}
+              </n-checkbox>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-icon size="14" style="color: #888; cursor: pointer; vertical-align: middle;"><InformationCircleOutline /></n-icon>
+                </template>
+                {{ $t('files.deletePhysicalTip') }}
+              </n-tooltip>
+            </div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+              <n-button
+                type="warning"
+                size="small"
+                :disabled="!batchRemovePolicyId"
+                :loading="batchOperating"
+                @click="executeBatchRemove"
+              >
+                {{ $t('files.startRemove') }}
+              </n-button>
+            </div>
+          </div>
+        </n-tab-pane>
+
+        <!-- Tab 3: Properties (Public, Hotlink, Watermark) -->
+        <n-tab-pane name="props" :tab="$t('files.batchProperties')">
+          <div style="display: flex; flex-direction: column; gap: 16px; padding: 8px 0;">
+            <n-form label-placement="left" label-width="90" size="small">
+              <n-form-item :label="$t('files.publicMode')">
+                <n-select v-model:value="batchPropsForm.public_mode" :options="batchPublicOptions" />
+              </n-form-item>
+              <n-form-item :label="$t('files.hotlinkMode')">
+                <n-select v-model:value="batchPropsForm.hotlink_mode" :options="batchHotlinkOptions" />
+              </n-form-item>
+              <n-form-item :label="$t('upload.watermark')">
+                <n-select v-model:value="batchPropsForm.watermark_mode" :options="batchWatermarkOptions" />
+              </n-form-item>
+              <n-form-item v-if="batchPropsForm.watermark_mode === 'on'" :label="$t('upload.template')">
+                <n-select v-model:value="batchPropsForm.watermark_template_id" :options="templateOptions" clearable />
+              </n-form-item>
+            </n-form>
+            <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+              <n-button
+                type="primary"
+                size="small"
+                :loading="batchOperating"
+                @click="executeBatchProps"
+              >
+                {{ $t('common.save') }}
+              </n-button>
+            </div>
+          </div>
+        </n-tab-pane>
+
+        <!-- Tab 4: Delete -->
+        <n-tab-pane name="delete" :tab="$t('files.batchDelete')">
+          <div style="display: flex; flex-direction: column; gap: 16px; padding: 8px 0;">
+            <n-alert type="error" :show-icon="false" style="font-size: 13px;">
+              {{ $t('files.confirmBatchDelete', { count: selectedIds.length }) }}
+            </n-alert>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <n-checkbox v-model:checked="batchDeleteRemote">
+                {{ $t('files.deletePhysicalFileSimultaneously') }}
+              </n-checkbox>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-icon size="14" style="color: #888; cursor: pointer; vertical-align: middle;"><InformationCircleOutline /></n-icon>
+                </template>
+                {{ $t('files.deletePhysicalTip') }}
+              </n-tooltip>
+            </div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+              <n-button
+                type="error"
+                size="small"
+                :loading="batchOperating"
+                @click="executeBatchDelete"
+              >
+                {{ $t('files.batchDeleteConfirmButton') }}
+              </n-button>
+            </div>
+          </div>
+        </n-tab-pane>
+      </n-tabs>
     </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { SearchOutline, FilterOutline } from '@vicons/ionicons5'
+import { SearchOutline, FilterOutline, LayersOutline, InformationCircleOutline } from '@vicons/ionicons5'
 import { api } from '../api/client'
 import FileLinksPanel from '../components/FileLinksPanel.vue'
 import ImageEditorModal from '../components/ImageEditorModal.vue'
 import FileFilterModal, { type AdvancedFilterPayload } from '../components/FileFilterModal.vue'
+import PolicySelectButton from '../components/PolicySelectButton.vue'
+import SortableHeader from '../components/SortableHeader.vue'
 import { formatFilterRuleLabel } from '../utils/filterLabel'
 
 const message = useMessage()
+const dialog = useDialog()
 const { t } = useI18n()
 
 const files = ref<any[]>([])
@@ -808,7 +867,6 @@ const getPolicyName = (rep: any) => {
   return `策略 #${rep.policy_id}`
 }
 
-
 const page = ref(1)
 const pageSize = ref(24)
 const total = ref(0)
@@ -821,6 +879,48 @@ const viewModeOptions = computed(() => [
   { label: t('files.viewGrid'), value: 'grid' },
   { label: t('files.viewList'), value: 'list' }
 ])
+
+// Sorting
+const sortBy = ref<string>('id')
+const sortOrder = ref<'asc' | 'desc' | null>('desc')
+const sortByCombined = ref<string>('id_desc')
+
+const sortOptions = computed(() => [
+  { label: t('sort.idDesc'), value: 'id_desc' },
+  { label: t('sort.idAsc'), value: 'id_asc' },
+  { label: t('sort.createdDesc'), value: 'created_at_desc' },
+  { label: t('sort.createdAsc'), value: 'created_at_asc' },
+  { label: t('sort.sizeDesc'), value: 'size_desc' },
+  { label: t('sort.sizeAsc'), value: 'size_asc' },
+  { label: t('sort.nameAsc'), value: 'display_name_asc' },
+  { label: t('sort.nameDesc'), value: 'display_name_desc' }
+])
+
+const handleSort = (key: string, order: 'asc' | 'desc' | null) => {
+  sortBy.value = key
+  sortOrder.value = order
+  if (order) {
+    sortByCombined.value = `${key}_${order}`
+  } else {
+    sortByCombined.value = ''
+  }
+  page.value = 1
+  loadFiles()
+}
+
+const handleCombinedSortChange = (val: string) => {
+  sortByCombined.value = val
+  if (!val) {
+    sortBy.value = 'id'
+    sortOrder.value = 'desc'
+  } else {
+    const lastUnderscore = val.lastIndexOf('_')
+    sortBy.value = val.slice(0, lastUnderscore)
+    sortOrder.value = val.slice(lastUnderscore + 1) as 'asc' | 'desc'
+  }
+  page.value = 1
+  loadFiles()
+}
 
 const policyOptions = computed(() =>
   policies.value.map((p: any) => ({
@@ -876,6 +976,10 @@ const handleSyncFileReplicas = async () => {
     })
     manageReplicasTarget.value.replicas = res.data.replicas || []
     syncTargetPolicyIds.value = []
+    const idx = files.value.findIndex((f: any) => f.id === manageReplicasTarget.value.id)
+    if (idx !== -1) {
+      files.value[idx].replicas = res.data.replicas || []
+    }
     message.success(t('files.syncSuccess'))
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     loadFiles()
@@ -886,9 +990,9 @@ const handleSyncFileReplicas = async () => {
   }
 }
 
-const removeFileReplica = async (fileId: number, policyId: number) => {
+const removeFileReplica = async (fileId: number, policyId: number, force = false, deleteRemote = true) => {
   try {
-    const res = await api.delete(`/files/${fileId}/policies/${policyId}`)
+    const res = await api.delete(`/files/${fileId}/policies/${policyId}?force=${force}&delete_remote=${deleteRemote}`)
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     if (res.data.deleted) {
       message.success(t('files.fileDeleted'))
@@ -904,47 +1008,82 @@ const removeFileReplica = async (fileId: number, policyId: number) => {
       loadFiles()
     }
   } catch (err: any) {
-    message.error(err.response?.data?.error || t('common.failed'))
+    if (err.response?.status === 409 && err.response?.data?.can_force) {
+      dialog.warning({
+        title: t('files.remoteDeleteFailedTitle'),
+        content: `${err.response.data.detail || err.response.data.error}。${t('files.confirmForceDeleteDB')}`,
+        positiveText: t('files.forceDeleteDBButton'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => {
+          removeFileReplica(fileId, policyId, true, false)
+        }
+      })
+    } else {
+      message.error(err.response?.data?.error || t('common.failed'))
+    }
   }
 }
 
-// Batch Sync Policies
-const showBatchSyncModal = ref(false)
+// Unified Batch Operations Modal
+const showBatchOperationsModal = ref(false)
 const batchSyncPolicyIds = ref<number[]>([])
-const batchSyncing = ref(false)
+const batchRemovePolicyId = ref<number | null>(null)
+const batchDeleteRemote = ref(true)
+const batchOperating = ref(false)
+const batchPropsForm = ref({
+  public_mode: 'inherit',
+  hotlink_mode: 'inherit',
+  watermark_mode: 'inherit',
+  watermark_template_id: null as number | null
+})
 
-const handleBatchSyncPolicies = async () => {
+const batchPublicOptions = computed(() => [
+  { label: t('files.publicInherit'), value: 'inherit' },
+  { label: t('files.publicOn'), value: 'public' },
+  { label: t('files.publicOff'), value: 'private' }
+])
+
+const batchHotlinkOptions = computed(() => [
+  { label: t('files.hotlinkInherit'), value: 'inherit' },
+  { label: t('files.hotlinkOn'), value: 'on' },
+  { label: t('files.hotlinkOff'), value: 'off' }
+])
+
+const batchWatermarkOptions = computed(() => [
+  { label: t('upload.watermarkInherit'), value: 'inherit' },
+  { label: t('upload.watermarkOn'), value: 'on' },
+  { label: t('upload.watermarkOff'), value: 'off' }
+])
+
+const executeBatchSync = async () => {
   if (selectedIds.value.length === 0 || batchSyncPolicyIds.value.length === 0) return
-  batchSyncing.value = true
+  batchOperating.value = true
   try {
     const res = await api.post('/files/batch-sync-policy', {
       file_ids: selectedIds.value,
       policy_ids: batchSyncPolicyIds.value
     })
     message.success(t('files.batchSyncSuccess', { count: res.data.synced || selectedIds.value.length }))
-    showBatchSyncModal.value = false
+    showBatchOperationsModal.value = false
     batchSyncPolicyIds.value = []
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     loadFiles()
   } catch (err: any) {
     message.error(err.response?.data?.error || t('common.failed'))
   } finally {
-    batchSyncing.value = false
+    batchOperating.value = false
   }
 }
 
-// Batch Remove Policy
-const showBatchRemoveModal = ref(false)
-const batchRemovePolicyId = ref<number | null>(null)
-const batchRemoving = ref(false)
-
-const handleBatchRemovePolicy = async () => {
+const executeBatchRemove = async (force = false) => {
   if (selectedIds.value.length === 0 || !batchRemovePolicyId.value) return
-  batchRemoving.value = true
+  batchOperating.value = true
   try {
     const res = await api.post('/files/batch-remove-policy', {
       file_ids: selectedIds.value,
-      policy_id: batchRemovePolicyId.value
+      policy_id: batchRemovePolicyId.value,
+      delete_remote: batchDeleteRemote.value,
+      force: force
     })
     const succ = res.data.success ?? res.data.removed ?? 0
     const fail = res.data.failed ?? 0
@@ -957,14 +1096,89 @@ const handleBatchRemovePolicy = async () => {
     } else {
       message.success(t('files.batchRemoveSuccess', { count: succ }))
     }
-    showBatchRemoveModal.value = false
+    showBatchOperationsModal.value = false
     batchRemovePolicyId.value = null
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     loadFiles()
   } catch (err: any) {
-    message.error(err.response?.data?.error || t('common.failed'))
+    if (err.response?.status === 409 && err.response?.data?.can_force) {
+      dialog.warning({
+        title: t('files.remoteDeleteFailedTitle'),
+        content: `${err.response.data.detail || err.response.data.error}。${t('files.confirmForceDeleteDB')}`,
+        positiveText: t('files.forceDeleteDBButton'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => {
+          executeBatchRemove(true)
+        }
+      })
+    } else {
+      message.error(err.response?.data?.error || t('common.failed'))
+    }
   } finally {
-    batchRemoving.value = false
+    batchOperating.value = false
+  }
+}
+
+const executeBatchProps = async () => {
+  if (selectedIds.value.length === 0) return
+  batchOperating.value = true
+  try {
+    const payload: any = {
+      ids: selectedIds.value
+    }
+    if (batchPropsForm.value.public_mode !== 'inherit') {
+      payload.public_mode = batchPropsForm.value.public_mode
+    }
+    if (batchPropsForm.value.hotlink_mode !== 'inherit') {
+      payload.hotlink_mode = batchPropsForm.value.hotlink_mode
+    }
+    if (batchPropsForm.value.watermark_mode !== 'inherit') {
+      payload.watermark_mode = batchPropsForm.value.watermark_mode
+      if (batchPropsForm.value.watermark_mode === 'on') {
+        payload.watermark_template_id = batchPropsForm.value.watermark_template_id
+      }
+    }
+    await api.post('/files/batch-update', payload)
+    message.success(t('files.batchUpdateSuccess'))
+    showBatchOperationsModal.value = false
+    loadFiles()
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('common.error'))
+  } finally {
+    batchOperating.value = false
+  }
+}
+
+const executeBatchDelete = async (force = false) => {
+  if (selectedIds.value.length === 0) return
+  batchOperating.value = true
+  try {
+    await api.post('/files/batch-delete', {
+      ids: selectedIds.value,
+      delete_remote: batchDeleteRemote.value,
+      force: force
+    })
+    message.success(t('files.deleteSuccess'))
+    window.dispatchEvent(new CustomEvent('refresh-quota'))
+    selectedIds.value = []
+    showBatchOperationsModal.value = false
+    loadFiles()
+  } catch (err: any) {
+    if (err.response?.status === 409 && err.response?.data?.can_force) {
+      dialog.warning({
+        title: t('files.remoteDeleteFailedTitle'),
+        content: `${err.response.data.detail || err.response.data.error}。${t('files.confirmForceDeleteDB')}`,
+        positiveText: t('files.forceDeleteDBButton'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => {
+          executeBatchDelete(true)
+        }
+      })
+    } else {
+      message.error(err.response?.data?.error || t('files.deleteFailed'))
+    }
+  } finally {
+    batchOperating.value = false
   }
 }
 
@@ -1011,24 +1225,6 @@ const clearAllFilters = () => {
   page.value = 1
   loadFiles()
 }
-
-const batchWatermarkMenuOptions = computed(() => [
-  { label: t('upload.watermarkOn'), key: 'on' },
-  { label: t('upload.watermarkOff'), key: 'off' },
-  { label: t('upload.watermarkInherit'), key: 'inherit' }
-])
-
-const batchHotlinkMenuOptions = computed(() => [
-  { label: t('files.hotlinkOn'), key: 'on' },
-  { label: t('files.hotlinkOff'), key: 'off' },
-  { label: t('files.hotlinkInherit'), key: 'inherit' }
-])
-
-const batchPublicMenuOptions = computed(() => [
-  { label: t('files.publicOn'), key: 'public' },
-  { label: t('files.publicOff'), key: 'private' },
-  { label: t('files.publicInherit'), key: 'inherit' }
-])
 
 const onFilterChange = () => {
   page.value = 1
@@ -1217,53 +1413,15 @@ const handleDeselectAll = () => {
   selectedIds.value = []
 }
 
-const handleBatchWatermark = async (mode: string) => {
-  if (selectedIds.value.length === 0) return
-  try {
-    await api.post('/files/batch-update', {
-      ids: selectedIds.value,
-      watermark_mode: mode
-    })
-    message.success(t('files.batchUpdateSuccess'))
-    loadFiles()
-  } catch (err: any) {
-    message.error(err.response?.data?.error || t('common.error'))
-  }
-}
-
-const handleBatchHotlink = async (mode: string) => {
-  if (selectedIds.value.length === 0) return
-  try {
-    await api.post('/files/batch-update', {
-      ids: selectedIds.value,
-      hotlink_mode: mode
-    })
-    message.success(t('files.batchUpdateSuccess'))
-    loadFiles()
-  } catch (err: any) {
-    message.error(err.response?.data?.error || t('common.error'))
-  }
-}
-
-const handleBatchPublic = async (mode: string) => {
-  if (selectedIds.value.length === 0) return
-  try {
-    await api.post('/files/batch-update', {
-      ids: selectedIds.value,
-      public_mode: mode
-    })
-    message.success(t('files.batchUpdateSuccess'))
-    loadFiles()
-  } catch (err: any) {
-    message.error(err.response?.data?.error || t('common.error'))
-  }
-}
-
 const loadFiles = async () => {
   try {
     const params: any = {
       page: page.value,
       page_size: pageSize.value
+    }
+    if (sortBy.value && sortOrder.value) {
+      params.sort_by = sortBy.value
+      params.order = sortOrder.value
     }
     if (search.value) params.search = search.value
     if (filterPayload.value && filterPayload.value.rules && filterPayload.value.rules.length > 0) {
@@ -1296,27 +1454,26 @@ const loadTemplates = async () => {
   } catch {}
 }
 
-const deleteFile = async (id: number) => {
+const deleteFile = async (id: number, force = false, deleteRemote = true) => {
   try {
-    await api.delete(`/files/${id}`)
+    await api.delete(`/files/${id}?force=${force}&delete_remote=${deleteRemote}`)
     message.success(t('files.deleteSuccess'))
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     loadFiles()
   } catch (err: any) {
-    message.error(err.response?.data?.error || t('files.deleteFailed'))
-  }
-}
-
-const handleBatchDelete = async () => {
-  if (selectedIds.value.length === 0) return
-  try {
-    await api.post('/files/batch-delete', { ids: selectedIds.value })
-    message.success(t('files.deleteSuccess'))
-    window.dispatchEvent(new CustomEvent('refresh-quota'))
-    selectedIds.value = []
-    loadFiles()
-  } catch (err: any) {
-    message.error(err.response?.data?.error || t('files.deleteFailed'))
+    if (err.response?.status === 409 && err.response?.data?.can_force) {
+      dialog.warning({
+        title: t('files.remoteDeleteFailedTitle'),
+        content: `${err.response.data.detail || err.response.data.error}。${t('files.confirmForceDeleteDB')}`,
+        positiveText: t('files.forceDeleteDBButton'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => {
+          deleteFile(id, true, false)
+        }
+      })
+    } else {
+      message.error(err.response?.data?.error || t('files.deleteFailed'))
+    }
   }
 }
 

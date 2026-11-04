@@ -258,14 +258,27 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	finalSize := actualSize
 	var validPolicies []model.StoragePolicy
 	var policyErrors []string
+	var failedPolicies []model.PolicyUploadFailure
 
 	for _, p := range candidatePolicies {
 		if p.MaxSingleFileSizeMB > 0 && finalSize > p.MaxSingleFileSizeMB*1024*1024 {
-			policyErrors = append(policyErrors, fmt.Sprintf("策略「%s」单文件大小超限（上限 %d MB）", p.Name, p.MaxSingleFileSizeMB))
+			errMsg := fmt.Sprintf("单文件大小超限（上限 %d MB）", p.MaxSingleFileSizeMB)
+			policyErrors = append(policyErrors, fmt.Sprintf("策略「%s」%s", p.Name, errMsg))
+			failedPolicies = append(failedPolicies, model.PolicyUploadFailure{
+				PolicyID:   p.ID,
+				PolicyName: p.Name,
+				Error:      errMsg,
+			})
 			continue
 		}
 		if p.MaxCapacityBytes > 0 && p.UsedBytes+finalSize > p.MaxCapacityBytes {
-			policyErrors = append(policyErrors, fmt.Sprintf("策略「%s」存储容量已满", p.Name))
+			errMsg := "存储容量已满"
+			policyErrors = append(policyErrors, fmt.Sprintf("策略「%s」%s", p.Name, errMsg))
+			failedPolicies = append(failedPolicies, model.PolicyUploadFailure{
+				PolicyID:   p.ID,
+				PolicyName: p.Name,
+				Error:      errMsg,
+			})
 			continue
 		}
 		validPolicies = append(validPolicies, p)
@@ -296,11 +309,21 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	for _, p := range validPolicies {
 		if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
 			lastErr = err
+			failedPolicies = append(failedPolicies, model.PolicyUploadFailure{
+				PolicyID:   p.ID,
+				PolicyName: p.Name,
+				Error:      "读取临时数据失败",
+			})
 			continue
 		}
 		drv, err := s.getDriver(ctx, p.ID)
 		if err != nil {
 			lastErr = fmt.Errorf("策略「%s」初始化失败: %w", p.Name, err)
+			failedPolicies = append(failedPolicies, model.PolicyUploadFailure{
+				PolicyID:   p.ID,
+				PolicyName: p.Name,
+				Error:      fmt.Sprintf("初始化驱动失败: %v", err),
+			})
 			continue
 		}
 		renderedName := s.renderNamingRule(p.NamingRule, originalFilename, finalExt, fileSha256)
@@ -310,6 +333,11 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		if err := drv.Put(ctx, storKey, tempFile, finalSize); err != nil {
 			slog.Warn("Failed to upload to storage policy", "policy_id", p.ID, "policy_name", p.Name, "error", err)
 			lastErr = fmt.Errorf("策略「%s」上传失败: %w", p.Name, err)
+			failedPolicies = append(failedPolicies, model.PolicyUploadFailure{
+				PolicyID:   p.ID,
+				PolicyName: p.Name,
+				Error:      fmt.Sprintf("上传失败: %v", err),
+			})
 			continue
 		}
 
@@ -423,6 +451,7 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 
 	user.UsedBytes += totalAddedBytes
 	fileRecord.Replicas = createdReplicas
+	fileRecord.FailedPolicies = failedPolicies
 	return fileRecord, nil
 }
 
@@ -529,7 +558,28 @@ func (s *UploadService) renderNamingRule(rule, origName, ext, sha string) string
 	return rule
 }
 
-func (s *UploadService) DeleteFile(ctx context.Context, fileID, userID uint, isAdmin bool) error {
+type DeleteOptions struct {
+	DeleteRemote bool
+	ForceDB      bool
+}
+
+type RemoteDeleteError struct {
+	Errors []string
+}
+
+func (e *RemoteDeleteError) Error() string {
+	return strings.Join(e.Errors, "; ")
+}
+
+func (s *UploadService) DeleteFile(ctx context.Context, fileID, userID uint, isAdmin bool, opts ...DeleteOptions) error {
+	opt := DeleteOptions{
+		DeleteRemote: true,
+		ForceDB:      false,
+	}
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
 	var file model.FileRecord
 	query := s.db.Where("id = ?", fileID)
 	if !isAdmin {
@@ -540,15 +590,25 @@ func (s *UploadService) DeleteFile(ctx context.Context, fileID, userID uint, isA
 	}
 
 	var replicas []model.FilePolicyReplica
-	s.db.Where("file_id = ?", file.ID).Find(&replicas)
+	s.db.Preload("Policy").Where("file_id = ?", file.ID).Find(&replicas)
 
 	policyDeductions := make(map[uint]int64)
 	var totalDeduction int64
+	var remoteErrors []string
 
 	for _, rep := range replicas {
-		if drv, err := s.getDriver(ctx, rep.PolicyID); err == nil {
-			if err := drv.Delete(ctx, rep.StorageKey); err != nil {
-				slog.Warn("Failed to delete physical file from replica", "policy_id", rep.PolicyID, "storage_key", rep.StorageKey, "error", err)
+		if opt.DeleteRemote {
+			if drv, err := s.getDriver(ctx, rep.PolicyID); err == nil {
+				if err := drv.Delete(ctx, rep.StorageKey); err != nil {
+					polName := rep.PolicyName
+					if polName == "" && rep.Policy != nil {
+						polName = rep.Policy.Name
+					}
+					slog.Warn("Failed to delete physical file from replica", "policy_id", rep.PolicyID, "storage_key", rep.StorageKey, "error", err)
+					remoteErrors = append(remoteErrors, fmt.Sprintf("策略「%s」删除物理文件失败: %v", polName, err))
+				}
+			} else {
+				remoteErrors = append(remoteErrors, fmt.Sprintf("策略驱动获取失败: %v", err))
 			}
 		}
 		policyDeductions[rep.PolicyID] += rep.Size
@@ -556,19 +616,31 @@ func (s *UploadService) DeleteFile(ctx context.Context, fileID, userID uint, isA
 	}
 
 	if len(replicas) == 0 {
-		if drv, err := s.getDriver(ctx, file.PolicyID); err == nil {
-			_ = drv.Delete(ctx, file.StorageKey)
+		if opt.DeleteRemote {
+			if drv, err := s.getDriver(ctx, file.PolicyID); err == nil {
+				if err := drv.Delete(ctx, file.StorageKey); err != nil {
+					remoteErrors = append(remoteErrors, fmt.Sprintf("主存储删除物理文件失败: %v", err))
+				}
+			}
 		}
 		totalDeduction = file.Size
 		policyDeductions[file.PolicyID] += file.Size
 	}
 
 	if file.SourceKey != "" {
-		if drv, err := s.getDriver(ctx, file.PolicyID); err == nil {
-			_ = drv.Delete(ctx, file.SourceKey)
+		if opt.DeleteRemote {
+			if drv, err := s.getDriver(ctx, file.PolicyID); err == nil {
+				if err := drv.Delete(ctx, file.SourceKey); err != nil {
+					remoteErrors = append(remoteErrors, fmt.Sprintf("源文件删除失败: %v", err))
+				}
+			}
 		}
 		totalDeduction += file.SourceSize
 		policyDeductions[file.PolicyID] += file.SourceSize
+	}
+
+	if len(remoteErrors) > 0 && !opt.ForceDB {
+		return &RemoteDeleteError{Errors: remoteErrors}
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -747,7 +819,15 @@ func (s *UploadService) SyncFileToPolicies(ctx context.Context, user *model.User
 }
 
 // RemoveFileFromPolicy removes a single replica from a specified storage policy
-func (s *UploadService) RemoveFileFromPolicy(ctx context.Context, user *model.User, fileID uint, policyID uint, isAdmin bool) error {
+func (s *UploadService) RemoveFileFromPolicy(ctx context.Context, user *model.User, fileID uint, policyID uint, isAdmin bool, opts ...DeleteOptions) error {
+	opt := DeleteOptions{
+		DeleteRemote: true,
+		ForceDB:      false,
+	}
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
 	var file model.FileRecord
 	query := s.db.Where("id = ?", fileID)
 	if !isAdmin {
@@ -778,9 +858,14 @@ func (s *UploadService) RemoveFileFromPolicy(ctx context.Context, user *model.Us
 		return nil
 	}
 
-	if drv, err := s.getDriver(ctx, policyID); err == nil {
-		if err := drv.Delete(ctx, targetReplica.StorageKey); err != nil {
-			slog.Warn("Failed to delete physical replica from storage driver", "policy_id", policyID, "storage_key", targetReplica.StorageKey, "error", err)
+	if opt.DeleteRemote {
+		if drv, err := s.getDriver(ctx, policyID); err == nil {
+			if err := drv.Delete(ctx, targetReplica.StorageKey); err != nil {
+				slog.Warn("Failed to delete physical replica from storage driver", "policy_id", policyID, "storage_key", targetReplica.StorageKey, "error", err)
+				if !opt.ForceDB {
+					return &RemoteDeleteError{Errors: []string{fmt.Sprintf("远程存储删除物理副本失败: %v", err)}}
+				}
+			}
 		}
 	}
 

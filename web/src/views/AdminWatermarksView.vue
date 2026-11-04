@@ -40,12 +40,12 @@
         <n-table :bordered="false" :single-line="false" size="small">
           <thead>
             <tr>
-              <th style="width: 60px;">ID</th>
-              <th style="min-width: 140px;">{{ $t('watermarks.name') }}</th>
-              <th style="width: 110px;">{{ $t('adminWatermarks.type') }}</th>
-              <th style="min-width: 120px;">{{ $t('adminWatermarks.owner') }}</th>
+              <th style="width: 80px;"><SortableHeader title="ID" column="id" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th style="min-width: 140px;"><SortableHeader :title="$t('watermarks.name')" column="name" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th style="width: 120px;"><SortableHeader :title="$t('adminWatermarks.type')" column="is_system" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th style="min-width: 130px;"><SortableHeader :title="$t('adminWatermarks.owner')" column="owner_id" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th style="min-width: 200px;">{{ $t('watermarks.content') }}</th>
-              <th style="width: 150px;">{{ $t('common.updatedAt') }}</th>
+              <th style="width: 160px;"><SortableHeader :title="$t('common.updatedAt')" column="updated_at" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th style="width: 200px; text-align: right;">{{ $t('common.actions') }}</th>
             </tr>
           </thead>
@@ -278,6 +278,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
+import SortableHeader from '../components/SortableHeader.vue'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -286,6 +287,15 @@ const watermarks = ref<any[]>([])
 const loading = ref(false)
 const searchQuery = ref('')
 const filterType = ref('all')
+
+const sortBy = ref<string>('id')
+const sortOrder = ref<'asc' | 'desc' | null>('desc')
+
+const handleSort = (key: string, order: 'asc' | 'desc' | null) => {
+  sortBy.value = key
+  sortOrder.value = order
+  loadWatermarks()
+}
 
 const typeFilterOptions = computed(() => [
   { label: t('common.all'), value: 'all' },
@@ -324,7 +334,12 @@ const filteredWatermarks = computed(() => {
 const loadWatermarks = async () => {
   loading.value = true
   try {
-    const res = await api.get('/admin/watermarks')
+    const params: any = {}
+    if (sortBy.value && sortOrder.value) {
+      params.sort_by = sortBy.value
+      params.order = sortOrder.value
+    }
+    const res = await api.get('/admin/watermarks', { params })
     watermarks.value = res.data || []
   } catch (err: any) {
     message.error(err.response?.data?.error || t('common.loadFailed'))

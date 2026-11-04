@@ -13,16 +13,12 @@
           <div class="upload-option-item">
             <span class="upload-option-label">{{ $t('upload.storagePolicy') }}</span>
             <span class="upload-option-colon">:</span>
-            <n-select
+            <PolicySelectButton
               v-model:value="selectedPolicyIds"
-              multiple
-              :options="policyOptions"
+              :policies="policiesList"
+              :min="1"
               size="small"
-              :loading="loadingPolicies"
               :placeholder="$t('upload.storagePolicy')"
-              class="upload-policy-select"
-              :render-tag="renderPolicyTag"
-              max-tag-count="responsive"
             />
           </div>
 
@@ -169,11 +165,11 @@
         </n-form-item>
 
         <n-form-item :label="$t('upload.storagePolicy')">
-          <n-select
+          <PolicySelectButton
             v-model:value="importOptions.policy_ids"
-            multiple
-            :options="policyOptions"
-            :loading="loadingPolicies"
+            :policies="policiesList"
+            :min="1"
+            size="small"
             :placeholder="$t('upload.storagePolicy')"
           />
         </n-form-item>
@@ -230,18 +226,58 @@
         </div>
       </template>
     </n-modal>
+
+    <!-- Batch Upload Policy Failures Modal -->
+    <n-modal
+      v-model:show="showUploadFailuresModal"
+      preset="card"
+      :title="$t('upload.failuresModalTitle')"
+      style="width: 650px; max-width: 95vw; border-radius: 12px;"
+    >
+      <n-alert type="warning" :show-icon="false" style="margin-bottom: 16px;">
+        {{ $t('upload.failuresModalDesc') }}
+      </n-alert>
+      <div class="table-responsive">
+        <n-table size="small" :bordered="false" :single-line="false">
+          <thead>
+            <tr>
+              <th>{{ $t('files.fileName') }}</th>
+              <th style="width: 140px;">{{ $t('upload.storagePolicy') }}</th>
+              <th>{{ $t('upload.failureReason') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(item, idx) in uploadFailures" :key="idx">
+              <td style="font-weight: 500; word-break: break-all;">{{ item.fileName }}</td>
+              <td>
+                <n-tag size="small" type="error">{{ item.policyName }}</n-tag>
+              </td>
+              <td style="color: #e88080; font-size: 13px; word-break: break-all;">{{ item.error }}</td>
+            </tr>
+          </tbody>
+        </n-table>
+      </div>
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end;">
+          <n-button type="primary" size="small" @click="showUploadFailuresModal = false; uploadFailures = []">
+            {{ $t('common.confirm') }}
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
-import { useMessage, NTag, type UploadCustomRequestOptions, type SelectRenderTag } from 'naive-ui'
+import { useMessage, NTag, type UploadCustomRequestOptions } from 'naive-ui'
 import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 import { uploadInChunks } from '../utils/chunkUploader'
 import FileLinksPanel from '../components/FileLinksPanel.vue'
 import ImageEditorModal from '../components/ImageEditorModal.vue'
+import PolicySelectButton from '../components/PolicySelectButton.vue'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -256,22 +292,6 @@ const publicModeOptions = computed(() => [
 const selectedTemplateId = ref<string | null>(null)
 const templateOptions = ref<any[]>([])
 const results = ref<any[]>([])
-
-const renderPolicyTag: SelectRenderTag = ({ option, handleClose }) => {
-  return h(
-    NTag,
-    {
-      closable: true,
-      onClose: (e: MouseEvent) => {
-        e.stopPropagation()
-        handleClose()
-      },
-      size: 'small',
-      round: true
-    },
-    { default: () => option.shortLabel || option.label }
-  )
-}
 
 const selectedPolicyIds = ref<number[]>([])
 const policyOptions = ref<any[]>([])
@@ -511,6 +531,38 @@ watch(showImportModal, (show) => {
   }
 })
 
+interface UploadFailureRecord {
+  fileName: string
+  policyName: string
+  error: string
+}
+
+const activeUploadCount = ref(0)
+const uploadFailures = ref<UploadFailureRecord[]>([])
+const showUploadFailuresModal = ref(false)
+let uploadEndCheckTimer: any = null
+
+const triggerUploadEndCheck = () => {
+  clearTimeout(uploadEndCheckTimer)
+  uploadEndCheckTimer = setTimeout(() => {
+    if (activeUploadCount.value <= 0 && uploadFailures.value.length > 0) {
+      showUploadFailuresModal.value = true
+    }
+  }, 300)
+}
+
+const checkFailuresInResponse = (data: any, fileName: string) => {
+  if (data?.failed_policies && Array.isArray(data.failed_policies) && data.failed_policies.length > 0) {
+    for (const fp of data.failed_policies) {
+      uploadFailures.value.push({
+        fileName,
+        policyName: fp.policy_name || `策略 #${fp.policy_id}`,
+        error: fp.error || t('common.failed')
+      })
+    }
+  }
+}
+
 const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomRequestOptions) => {
   const rawFile = file.file as File
   if (!rawFile) {
@@ -518,9 +570,12 @@ const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomReque
     return
   }
 
-  // If file > 20MB, use chunked upload with 20MB chunks
-  if (rawFile.size > 20 * 1024 * 1024) {
-    try {
+  activeUploadCount.value++
+  clearTimeout(uploadEndCheckTimer)
+
+  try {
+    // If file > 20MB, use chunked upload with 20MB chunks
+    if (rawFile.size > 20 * 1024 * 1024) {
       const data = await uploadInChunks({
         file: rawFile,
         uploadType: 'file',
@@ -531,40 +586,43 @@ const handleCustomUpload = async ({ file, onFinish, onError }: UploadCustomReque
         }
       })
       results.value.unshift(data)
+      checkFailuresInResponse(data, file.name)
       message.success(`${file.name} ${t('upload.uploadSuccess')}`)
       window.dispatchEvent(new CustomEvent('refresh-quota'))
       onFinish()
       return
-    } catch (err: any) {
-      message.error(err.response?.data?.error || err.message || `${file.name} ${t('upload.uploadFailed')}`)
-      onError()
-      return
     }
-  }
 
-  const formData = new FormData()
-  formData.append('file', rawFile)
-  formData.append('watermark_mode', watermarkMode.value)
-  formData.append('public_mode', publicMode.value)
-  if (selectedTemplateId.value) {
-    formData.append('watermark_template_id', selectedTemplateId.value)
-  }
-  for (const pid of selectedPolicyIds.value) {
-    formData.append('policy_ids[]', String(pid))
-  }
-  if (selectedPolicyIds.value.length > 0) {
-    formData.append('policy_id', String(selectedPolicyIds.value[0]))
-  }
+    const formData = new FormData()
+    formData.append('file', rawFile)
+    formData.append('watermark_mode', watermarkMode.value)
+    formData.append('public_mode', publicMode.value)
+    if (selectedTemplateId.value) {
+      formData.append('watermark_template_id', selectedTemplateId.value)
+    }
+    for (const pid of selectedPolicyIds.value) {
+      formData.append('policy_ids[]', String(pid))
+    }
+    if (selectedPolicyIds.value.length > 0) {
+      formData.append('policy_id', String(selectedPolicyIds.value[0]))
+    }
 
-  try {
     const res = await api.post('/upload', formData)
     results.value.unshift(res.data)
+    checkFailuresInResponse(res.data, file.name)
     message.success(`${file.name} ${t('upload.uploadSuccess')}`)
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     onFinish()
   } catch (err: any) {
-    message.error(err.response?.data?.error || `${file.name} ${t('upload.uploadFailed')}`)
+    uploadFailures.value.push({
+      fileName: file.name,
+      policyName: t('upload.allPolicies'),
+      error: err.response?.data?.error || err.message || t('upload.uploadFailed')
+    })
     onError()
+  } finally {
+    activeUploadCount.value--
+    triggerUploadEndCheck()
   }
 }
 
@@ -584,6 +642,9 @@ const handlePaste = (e: ClipboardEvent) => {
 }
 
 const uploadBlob = async (blob: File, name: string) => {
+  activeUploadCount.value++
+  clearTimeout(uploadEndCheckTimer)
+
   const formData = new FormData()
   formData.append('file', blob, name)
   formData.append('watermark_mode', watermarkMode.value)
@@ -600,10 +661,18 @@ const uploadBlob = async (blob: File, name: string) => {
   try {
     const res = await api.post('/upload', formData)
     results.value.unshift(res.data)
+    checkFailuresInResponse(res.data, name)
     message.success(t('upload.clipboardSuccess'))
     window.dispatchEvent(new CustomEvent('refresh-quota'))
   } catch (err: any) {
-    message.error(err.response?.data?.error || t('upload.clipboardFailed'))
+    uploadFailures.value.push({
+      fileName: name,
+      policyName: t('upload.allPolicies'),
+      error: err.response?.data?.error || t('upload.clipboardFailed')
+    })
+  } finally {
+    activeUploadCount.value--
+    triggerUploadEndCheck()
   }
 }
 

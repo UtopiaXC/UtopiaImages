@@ -28,7 +28,10 @@
     "none": "なし",
     "noData": "データがありません",
     "loadFailed": "読み込みに失敗しました",
-    "updatedAt": "更新日時"
+    "updatedAt": "更新日時",
+    "sortBy": "並び順",
+    "asc": "昇順",
+    "desc": "降順"
   },
   "nav": {
     "upload": "ファイルアップロード",
@@ -219,6 +222,13 @@
     "preservePath": "内部ディレクトリ構造を保持",
     "stripTopDir": "最上位ディレクトリを除去",
     "conflictAction": "ファイル名の競合ポリシー",
+    "selectPolicyModalTitle": "ストレージポリシー選択",
+    "minPolicyNotice": "少なくとも1つのポリシーを選択する必要があります",
+    "selectedCount": "{count} 件選択中",
+    "failuresModalTitle": "ポリシーアップロード警告",
+    "failuresModalDesc": "一部のポリシーへの保存に問題が発生しました：",
+    "failureReason": "失敗理由",
+    "allPolicies": "選択されたポリシー",
     "conflictSkip": "既存のファイルをスキップ",
     "conflictOverwrite": "既存のファイルを上書き",
     "startImport": "インポート開始",
@@ -366,6 +376,18 @@
     "fileDeleted": "ファイルが完全に削除されました",
     "batchSyncPolicy": "一括ポリシー同期",
     "batchRemovePolicy": "一括ポリシー削除",
+    "batchAction": "一括操作",
+    "batchProperties": "権限と設定",
+    "hotlinkMode": "直リンク防止モード",
+    "deletePhysicalFileSimultaneously": "実体ファイルも同時に削除する",
+    "deletePhysicalTip": "チェックを外すとシステム上のレコードのみが削除され、リモートストレージの実体ファイルは保持されます",
+    "remoteDeleteFailedTitle": "リモート削除未完了",
+    "confirmDeleteSystemRecordOnly": "システム上のレコードのみを削除しますか？",
+    "deleteRecordOnly": "レコードのみ削除",
+    "confirmForceDeleteDB": "システム内のレコードのみを削除しますか？",
+    "forceDeleteDBButton": "レコードのみ削除",
+    "batchDeleteConfirmButton": "完全削除を確認",
+    "startRemove": "レプリカを削除",
     "batchSyncNotice": "選択した {count} 件のファイルを指定ポリシーに同期バックアップします",
     "batchRemoveNotice": "選択した {count} 件のファイルから指定ポリシーのレプリカを削除します",
     "selectRemovePolicy": "削除するポリシーを選択",
@@ -813,6 +835,12 @@
     "serviceAccountKey": "サービスアカウントキー",
     "systemDefault": "システムデフォルト",
     "onedriveDeviceCode": "認証デバイスコード",
+    "onedriveQuickAuth": "クイック認証",
+    "onedriveQuickAuthDesc": "マイクロソフトの公式デバイスコード認証で認証情報を自動取得",
+    "onedriveAuthorized": "認証済み",
+    "driverLocalDesc": "ローカルファイルはサーバーの data/storage に保存され、パスプレフィックスで管理されます。",
+    "driverDatabaseDesc": "画像チャンクはデータベースにバイナリとして保存され、安定したメモリ使用量で動作します。",
+    "customCdn": "カスタム CDN",
     "capacity": "容量"
   },
   "adminStats": {
@@ -1139,6 +1167,18 @@
     "totalCount": "合計 {count} 件の透かし"
   },
   "auth": {
+    "username": "ユーザー名",
+    "password": "パスワード",
     "usernameMinLength": "ユーザー名は3文字以上である必要があります"
+  },
+  "sort": {
+    "idDesc": "最新追加",
+    "idAsc": "最古追加",
+    "createdDesc": "作成日時が新しい順",
+    "createdAsc": "作成日時が古い順",
+    "sizeDesc": "サイズが大きい順",
+    "sizeAsc": "サイズが小さい順",
+    "nameAsc": "名前昇順",
+    "nameDesc": "名前降順"
   }
 }

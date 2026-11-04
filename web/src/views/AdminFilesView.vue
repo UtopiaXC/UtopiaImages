@@ -55,19 +55,14 @@
 
         <!-- Batch Delete Action -->
         <div style="display: flex; gap: 10px; align-items: center;">
-          <n-popconfirm @positive-click="handleBatchDelete">
-            <template #trigger>
-              <n-button
-                type="error"
-                size="small"
-                :disabled="selectedIds.length === 0"
-                :loading="batchDeleting"
-              >
-                {{ $t('adminFiles.batchDelete') }} · {{ selectedIds.length }}
-              </n-button>
-            </template>
-            {{ $t('adminFiles.confirmBatchDelete', { count: selectedIds.length }) }}
-          </n-popconfirm>
+          <n-button
+            type="error"
+            size="small"
+            :disabled="selectedIds.length === 0"
+            @click="showBatchDeleteModal = true"
+          >
+            {{ $t('adminFiles.batchDelete') }} · {{ selectedIds.length }}
+          </n-button>
         </div>
 
         <!-- Active Filter Tags / Chips -->
@@ -104,14 +99,14 @@
                 />
               </th>
               <th style="width: 64px;">{{ $t('files.preview') }}</th>
-              <th>{{ $t('files.fileName') }}</th>
+              <th><SortableHeader :title="$t('files.fileName')" column="display_name" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th>{{ $t('adminFiles.uploader') }}</th>
-              <th>{{ $t('files.fileSize') }}</th>
-              <th>{{ $t('files.dimensions') }}</th>
-              <th>{{ $t('files.mimeType') }}</th>
-              <th>{{ $t('adminFiles.callStats') }}</th>
+              <th><SortableHeader :title="$t('files.fileSize')" column="size" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('files.dimensions')" column="width" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('files.mimeType')" column="mime_type" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+              <th><SortableHeader :title="$t('adminFiles.callStats')" column="total_calls" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th>{{ $t('adminFiles.tempLinks') }}</th>
-              <th>{{ $t('common.createdAt') }}</th>
+              <th><SortableHeader :title="$t('common.createdAt')" column="created_at" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
               <th style="text-align: right;">{{ $t('common.actions') }}</th>
             </tr>
           </thead>
@@ -380,11 +375,11 @@
                 <div>
                   <span style="font-weight: 500;">Token: <code>{{ tl.token }}</code></span>
                   <div style="color: #888; margin-top: 4px;">
-                    {{ $t('common.createdAt') }}: {{ formatDate(tl.created_at) }} · 过期时间: {{ formatDate(tl.expires_at) }}
+                    {{ $t('common.createdAt') }}: {{ formatDate(tl.created_at) }} · {{ $t('files.linkExpires') }}: {{ formatDate(tl.expires_at) }}
                   </div>
                 </div>
                 <n-tag :type="tl.is_revoked ? 'error' : 'success'" size="tiny">
-                  {{ tl.is_revoked ? '已吊销' : '有效' }}
+                  {{ tl.is_revoked ? $t('files.statusRevoked') : $t('files.statusActive') }}
                 </n-tag>
               </div>
             </n-card>
@@ -402,20 +397,53 @@
       @apply="onApplyFilter"
       @reset="onResetFilter"
     />
+
+    <!-- Batch Delete Modal -->
+    <n-modal
+      v-model:show="showBatchDeleteModal"
+      preset="card"
+      :title="$t('adminFiles.batchDelete') + ' · ' + $t('files.selectedCount', { count: selectedIds.length })"
+      style="width: 460px; max-width: 95vw; border-radius: 10px;"
+    >
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <n-alert type="error" :show-icon="false" style="font-size: 13px;">
+          {{ $t('adminFiles.confirmBatchDelete', { count: selectedIds.length }) }}
+        </n-alert>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <n-checkbox v-model:checked="batchDeleteRemote">
+            {{ $t('files.deletePhysicalFileSimultaneously') }}
+          </n-checkbox>
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-icon size="14" style="color: #888; cursor: pointer; vertical-align: middle;"><InformationCircleOutline /></n-icon>
+            </template>
+            {{ $t('files.deletePhysicalTip') }}
+          </n-tooltip>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
+          <n-button size="small" @click="showBatchDeleteModal = false">{{ $t('common.cancel') }}</n-button>
+          <n-button type="error" size="small" :loading="batchDeleting" @click="executeBatchDelete(false)">
+            {{ $t('common.delete') }}
+          </n-button>
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { SearchOutline, FilterOutline } from '@vicons/ionicons5'
+import { SearchOutline, FilterOutline, InformationCircleOutline } from '@vicons/ionicons5'
 import { api, getApiErrorMessage } from '../api/client'
 import FileLinksPanel from '../components/FileLinksPanel.vue'
 import FileFilterModal, { type AdvancedFilterPayload } from '../components/FileFilterModal.vue'
+import SortableHeader from '../components/SortableHeader.vue'
 import { formatFilterRuleLabel } from '../utils/filterLabel'
 
 const message = useMessage()
+const dialog = useDialog()
 const { t } = useI18n()
 
 const isBrowserOnline = () => {
@@ -493,8 +521,21 @@ const clearAllFilters = () => {
   loadFiles()
 }
 
-// Selections
+// Sorting
+const sortBy = ref<string>('id')
+const sortOrder = ref<'asc' | 'desc' | null>('desc')
+
+const handleSort = (key: string, order: 'asc' | 'desc' | null) => {
+  sortBy.value = key
+  sortOrder.value = order
+  page.value = 1
+  loadFiles()
+}
+
+// Selections & Batch Delete
 const selectedIds = ref<number[]>([])
+const showBatchDeleteModal = ref(false)
+const batchDeleteRemote = ref(true)
 
 // Details and preview
 const showPreviewModal = ref(false)
@@ -568,6 +609,10 @@ const loadFiles = async () => {
       page: page.value,
       page_size: pageSize.value
     }
+    if (sortBy.value && sortOrder.value) {
+      params.sort_by = sortBy.value
+      params.order = sortOrder.value
+    }
     if (search.value.trim()) params.search = search.value.trim()
     if (filterPayload.value.rules && filterPayload.value.rules.length > 0) {
       params.filter_rules = JSON.stringify(filterPayload.value)
@@ -601,31 +646,58 @@ const openDetails = async (id: number) => {
   }
 }
 
-const deleteFile = async (id: number) => {
+const deleteFile = async (id: number, force = false, deleteRemote = true) => {
   try {
-    await api.delete(`/admin/files/${id}`)
+    await api.delete(`/admin/files/${id}?force=${force}&delete_remote=${deleteRemote}`)
     message.success(t('adminFiles.deleteSuccess'))
     selectedIds.value = selectedIds.value.filter(i => i !== id)
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     loadFiles()
   } catch (err: any) {
-    message.error(getApiErrorMessage(err))
+    if (err.response?.status === 409 && err.response?.data?.can_force) {
+      dialog.warning({
+        title: t('files.remoteDeleteFailedTitle'),
+        content: `${err.response.data.detail || err.response.data.error}。${t('files.confirmForceDeleteDB')}`,
+        positiveText: t('files.forceDeleteDBButton'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => {
+          deleteFile(id, true, false)
+        }
+      })
+    } else {
+      message.error(getApiErrorMessage(err))
+    }
   }
 }
 
-const handleBatchDelete = async () => {
+const executeBatchDelete = async (force = false) => {
   if (selectedIds.value.length === 0) return
   batchDeleting.value = true
   try {
     const res = await api.post('/admin/files/batch-delete', {
-      ids: selectedIds.value
+      ids: selectedIds.value,
+      delete_remote: batchDeleteRemote.value,
+      force: force
     })
     message.success(t('adminFiles.batchDeleteSuccess', { count: res.data.deleted || selectedIds.value.length }))
     selectedIds.value = []
+    showBatchDeleteModal.value = false
     window.dispatchEvent(new CustomEvent('refresh-quota'))
     loadFiles()
   } catch (err: any) {
-    message.error(getApiErrorMessage(err))
+    if (err.response?.status === 409 && err.response?.data?.can_force) {
+      dialog.warning({
+        title: t('files.remoteDeleteFailedTitle'),
+        content: `${err.response.data.detail || err.response.data.error}。${t('files.confirmForceDeleteDB')}`,
+        positiveText: t('files.forceDeleteDBButton'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => {
+          executeBatchDelete(true)
+        }
+      })
+    } else {
+      message.error(getApiErrorMessage(err))
+    }
   } finally {
     batchDeleting.value = false
   }

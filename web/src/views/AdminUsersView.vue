@@ -13,13 +13,13 @@
         <n-table :bordered="false" :single-line="false">
         <thead>
           <tr>
-            <th>ID</th>
-            <th>{{ $t('adminUsers.urlNamespace') }}</th>
-            <th>{{ $t('adminUsers.nickname') }}</th>
-            <th>{{ $t('adminUsers.role') }}</th>
-            <th>{{ $t('adminUsers.quota') }}</th>
-            <th>{{ $t('common.status') }}</th>
-            <th>{{ $t('common.createdAt') }}</th>
+            <th style="width: 80px;"><SortableHeader title="ID" column="id" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+            <th><SortableHeader :title="$t('adminUsers.urlNamespace')" column="username" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+            <th><SortableHeader :title="$t('adminUsers.nickname')" column="nickname" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+            <th><SortableHeader :title="$t('adminUsers.role')" column="role_id" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+            <th><SortableHeader :title="$t('adminUsers.quota')" column="used_bytes" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+            <th><SortableHeader :title="$t('common.status')" column="status" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
+            <th><SortableHeader :title="$t('common.createdAt')" column="created_at" :current-sort-by="sortBy" :current-order="sortOrder" @sort="handleSort" /></th>
             <th style="text-align: right;">{{ $t('common.actions') }}</th>
           </tr>
         </thead>
@@ -174,11 +174,21 @@ import { ref, computed, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { api, getApiErrorMessage } from '../api/client'
+import SortableHeader from '../components/SortableHeader.vue'
 
 const message = useMessage()
 const { t } = useI18n()
 const users = ref<any[]>([])
 const roles = ref<any[]>([])
+
+const sortBy = ref<string>('id')
+const sortOrder = ref<'asc' | 'desc' | null>('asc')
+
+const handleSort = (key: string, order: 'asc' | 'desc' | null) => {
+  sortBy.value = key
+  sortOrder.value = order
+  loadData()
+}
 
 const showCreateModal = ref(false)
 const creating = ref(false)
@@ -220,8 +230,13 @@ const statusOptions = computed(() => [
 
 const loadData = async () => {
   try {
+    const params: any = {}
+    if (sortBy.value && sortOrder.value) {
+      params.sort_by = sortBy.value
+      params.order = sortOrder.value
+    }
     const [uRes, rRes] = await Promise.all([
-      api.get('/admin/users'),
+      api.get('/admin/users', { params }),
       api.get('/admin/roles')
     ])
     users.value = uRes.data || []

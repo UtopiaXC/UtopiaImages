@@ -28,7 +28,10 @@
     "none": "无",
     "noData": "暂无数据",
     "loadFailed": "加载失败",
-    "updatedAt": "更新时间"
+    "updatedAt": "更新时间",
+    "sortBy": "排序",
+    "asc": "升序",
+    "desc": "降序"
   },
   "nav": {
     "upload": "文件上传",
@@ -101,10 +104,13 @@
     "prevStep": "上一步",
     "nextStep": "下一步",
     "finish": "完成初始化并进入系统",
+    "submit": "完成初始化",
     "success": "系统初始化完成，请使用管理员账号登录",
     "failed": "初始化失败",
     "validation": "请填写完整的管理员信息",
-    "email": "电子邮箱"
+    "email": "电子邮箱",
+    "nickname": "用户昵称",
+    "emailPlaceholder": "admin@example.com"
   },
   "login": {
     "title": "登录",
@@ -201,6 +207,8 @@
     "template": "水印模板",
     "defaultTemplate": "默认模板",
     "alwaysOriginalTip": "服务器始终保留未修改的原格式文件",
+    "convertToWebP": "转换为 WebP 格式",
+    "keepOriginal": "保留原图备份",
     "watermarkTip": "水印设置仅影响对客公开访问的派生图，服务器始终安全保存原图",
     "directLink": "直链URL",
     "webpLink": "WebP链接",
@@ -233,6 +241,13 @@
     "preservePath": "保留内部目录结构",
     "stripTopDir": "去除顶级包裹目录",
     "conflictAction": "文件重名策略",
+    "selectPolicyModalTitle": "选择存储策略",
+    "minPolicyNotice": "至少需选择一个存储策略",
+    "selectedCount": "已选 {count} 项",
+    "failuresModalTitle": "策略上传异常提醒",
+    "failuresModalDesc": "部分图片在写入特定存储策略时遇到问题，具体失败详情如下：",
+    "failureReason": "失败原因",
+    "allPolicies": "所选策略",
     "conflictSkip": "跳过已存在文件",
     "conflictOverwrite": "覆盖已存在文件",
     "startImport": "开始导入归档",
@@ -361,6 +376,18 @@
     "fileDeleted": "文件已彻底删除",
     "batchSyncPolicy": "批量同步策略",
     "batchRemovePolicy": "批量移除策略",
+    "batchAction": "批量操作",
+    "batchProperties": "权限特性",
+    "hotlinkMode": "防盗链模式",
+    "deletePhysicalFileSimultaneously": "同时删除底层物理文件",
+    "deletePhysicalTip": "取消勾选将仅删除系统中的记录，保留云端或本地存储中的物理原图",
+    "remoteDeleteFailedTitle": "远程文件删除未完成",
+    "confirmDeleteSystemRecordOnly": "是否仅删除系统中的记录？",
+    "deleteRecordOnly": "仅删除记录",
+    "confirmForceDeleteDB": "是否仅删除系统中的记录？",
+    "forceDeleteDBButton": "仅删除记录",
+    "batchDeleteConfirmButton": "确认彻底删除",
+    "startRemove": "移除指定副本",
     "batchSyncNotice": "将选中的 {count} 个文件同步备份到指定存储策略",
     "batchRemoveNotice": "从选中的 {count} 个文件中移除指定的存储策略副本",
     "selectRemovePolicy": "选择要移除的策略",
@@ -864,6 +891,12 @@
     "serviceAccountKey": "服务账号密钥",
     "systemDefault": "系统默认",
     "onedriveDeviceCode": "授权设备代码",
+    "onedriveQuickAuth": "快速授权",
+    "onedriveQuickAuthDesc": "通过微软官方设备代码验证，一键自动获取并填充授权凭证",
+    "onedriveAuthorized": "已具备授权凭证",
+    "driverLocalDesc": "本地文件统一存储于服务端 data/storage 目录，通过下方保存与URL访问路径进行隔离与组织。",
+    "driverDatabaseDesc": "图片切片以二进制存储于数据库中，支持当前配置的 SQLite、MySQL 或 PostgreSQL，分片流式读写，内存开销恒定。",
+    "customCdn": "自定义 CDN",
     "capacity": "容量"
   },
   "adminStats": {
@@ -1134,6 +1167,18 @@
     "totalCount": "共 {count} 个水印"
   },
   "auth": {
+    "username": "用户名",
+    "password": "密码",
     "usernameMinLength": "用户名长度必须大于3个字符"
+  },
+  "sort": {
+    "idDesc": "最新添加",
+    "idAsc": "最早添加",
+    "createdDesc": "时间最新",
+    "createdAsc": "时间最早",
+    "sizeDesc": "体积最大",
+    "sizeAsc": "体积最小",
+    "nameAsc": "名称升序",
+    "nameDesc": "名称降序"
   }
 }

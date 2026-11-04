@@ -285,8 +285,9 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 	links := ctrl.buildFileLinks(record, currentBaseURL)
 
 	c.JSON(http.StatusOK, gin.H{
-		"file":  record,
-		"links": links,
+		"file":            record,
+		"links":           links,
+		"failed_policies": record.FailedPolicies,
 	})
 }
 
@@ -633,8 +634,34 @@ func (ctrl *FileController) ListFiles(c *gin.Context) {
 	var total int64
 	query.Count(&total)
 
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "desc"
+	}
+
+	fileSortableColumns := map[string]string{
+		"id":           "file_records.id",
+		"display_name": "file_records.display_name",
+		"size":         "file_records.size",
+		"width":        "file_records.width",
+		"height":       "file_records.height",
+		"mime_type":    "file_records.mime_type",
+		"created_at":   "file_records.created_at",
+		"updated_at":   "file_records.updated_at",
+	}
+
+	if sortBy == "total_calls" {
+		query = query.Joins("LEFT JOIN (SELECT file_id, sum(count) as total_pv FROM image_call_stats GROUP BY file_id) stat_calls ON stat_calls.file_id = file_records.id").
+			Order("COALESCE(stat_calls.total_pv, 0) " + strings.ToUpper(order) + ", file_records.id DESC")
+	} else if col, ok := fileSortableColumns[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("file_records.id DESC")
+	}
+
 	var files []model.FileRecord
-	query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
+	query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
 
 	if len(files) > 0 {
 		fileIDs := make([]uint, len(files))
@@ -861,8 +888,24 @@ func (ctrl *FileController) DeleteFile(c *gin.Context) {
 	user := uVal.(*model.User)
 	fileID := ParseUintSafe(c.Param("id"), 0)
 
-	err := ctrl.uploadService.DeleteFile(c.Request.Context(), fileID, user.ID, false)
+	deleteRemote := c.DefaultQuery("delete_remote", "true") != "false"
+	force := c.DefaultQuery("force", "false") == "true"
+
+	err := ctrl.uploadService.DeleteFile(c.Request.Context(), fileID, user.ID, false, service.DeleteOptions{
+		DeleteRemote: deleteRemote,
+		ForceDB:      force,
+	})
 	if err != nil {
+		var rErr *service.RemoteDeleteError
+		if errors.As(err, &rErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":      "REMOTE_DELETE_FAILED",
+				"error":     "远程物理文件删除失败",
+				"detail":    rErr.Error(),
+				"can_force": true,
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -875,18 +918,46 @@ func (ctrl *FileController) BatchDeleteFiles(c *gin.Context) {
 	user := uVal.(*model.User)
 
 	var req struct {
-		IDs []uint `json:"ids" binding:"required"`
+		IDs          []uint `json:"ids" binding:"required"`
+		DeleteRemote *bool  `json:"delete_remote"`
+		Force        bool   `json:"force"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	deleteRemote := true
+	if req.DeleteRemote != nil {
+		deleteRemote = *req.DeleteRemote
+	}
+
+	var remoteErrors []string
 	deletedCount := 0
 	for _, id := range req.IDs {
-		if err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, user.ID, false); err == nil {
+		err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, user.ID, false, service.DeleteOptions{
+			DeleteRemote: deleteRemote,
+			ForceDB:      req.Force,
+		})
+		if err != nil {
+			var rErr *service.RemoteDeleteError
+			if errors.As(err, &rErr) {
+				remoteErrors = append(remoteErrors, fmt.Sprintf("文件 #%d: %s", id, rErr.Error()))
+			}
+		} else {
 			deletedCount++
 		}
+	}
+
+	if len(remoteErrors) > 0 && !req.Force {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":      "REMOTE_DELETE_FAILED",
+			"error":     "部分或全部远程物理文件删除失败，是否仅删除系统中的记录？",
+			"detail":    strings.Join(remoteErrors, "; "),
+			"deleted":   deletedCount,
+			"can_force": true,
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"deleted": deletedCount})
@@ -1383,8 +1454,9 @@ func (ctrl *FileController) GuestUpload(c *gin.Context) {
 	links := ctrl.buildFileLinks(record, currentBaseURL)
 
 	c.JSON(http.StatusOK, gin.H{
-		"file":  record,
-		"links": links,
+		"file":            record,
+		"links":           links,
+		"failed_policies": record.FailedPolicies,
 	})
 }
 
@@ -1420,8 +1492,34 @@ func (ctrl *FileController) ListGuestFiles(c *gin.Context) {
 	var total int64
 	query.Count(&total)
 
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "desc"
+	}
+
+	fileSortableColumns := map[string]string{
+		"id":           "file_records.id",
+		"display_name": "file_records.display_name",
+		"size":         "file_records.size",
+		"width":        "file_records.width",
+		"height":       "file_records.height",
+		"mime_type":    "file_records.mime_type",
+		"created_at":   "file_records.created_at",
+		"updated_at":   "file_records.updated_at",
+	}
+
+	if sortBy == "total_calls" {
+		query = query.Joins("LEFT JOIN (SELECT file_id, sum(count) as total_pv FROM image_call_stats GROUP BY file_id) stat_calls ON stat_calls.file_id = file_records.id").
+			Order("COALESCE(stat_calls.total_pv, 0) " + strings.ToUpper(order) + ", file_records.id DESC")
+	} else if col, ok := fileSortableColumns[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("file_records.id DESC")
+	}
+
 	var files []model.FileRecord
-	query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
+	query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
 
 	currentBaseURL := ctrl.resolveBaseURL(c)
 	type GuestFileItem struct {
@@ -1638,20 +1736,31 @@ func (ctrl *FileController) SyncFilePolicy(c *gin.Context) {
 		return
 	}
 
-	replicas, err := ctrl.uploadService.SyncFileToPolicies(c.Request.Context(), user, fileID, req.PolicyIDs, isAdmin)
+	_, err := ctrl.uploadService.SyncFileToPolicies(c.Request.Context(), user, fileID, req.PolicyIDs, isAdmin)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	var file model.FileRecord
-	ctrl.db.First(&file, fileID)
+	if err := ctrl.db.First(&file, fileID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取文件信息失败"})
+		return
+	}
+
+	var replicas []*model.FilePolicyReplica
+	ctrl.db.Preload("Policy").Where("file_id = ?", file.ID).Find(&replicas)
+	for i := range replicas {
+		if replicas[i].Policy != nil {
+			replicas[i].PolicyName = replicas[i].Policy.Name
+		}
+	}
 	file.Replicas = replicas
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":  "策略同步完成",
 		"file":     file,
-		"replicas": replicas,
+		"replicas": file.Replicas,
 		"links":    ctrl.buildFileLinks(&file),
 	})
 }
@@ -1704,8 +1813,24 @@ func (ctrl *FileController) RemoveFilePolicy(c *gin.Context) {
 		return
 	}
 
-	err := ctrl.uploadService.RemoveFileFromPolicy(c.Request.Context(), user, fileID, policyID, isAdmin)
+	deleteRemote := c.DefaultQuery("delete_remote", "true") != "false"
+	force := c.DefaultQuery("force", "false") == "true"
+
+	err := ctrl.uploadService.RemoveFileFromPolicy(c.Request.Context(), user, fileID, policyID, isAdmin, service.DeleteOptions{
+		DeleteRemote: deleteRemote,
+		ForceDB:      force,
+	})
 	if err != nil {
+		var rErr *service.RemoteDeleteError
+		if errors.As(err, &rErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":      "REMOTE_DELETE_FAILED",
+				"error":     "远程物理副本删除失败",
+				"detail":    rErr.Error(),
+				"can_force": true,
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -1719,26 +1844,55 @@ func (ctrl *FileController) BatchRemoveFilePolicy(c *gin.Context) {
 	isAdmin := isUserAdmin(user)
 
 	var req struct {
-		FileIDs  []uint `json:"file_ids" binding:"required"`
-		PolicyID uint   `json:"policy_id" binding:"required"`
+		FileIDs      []uint `json:"file_ids" binding:"required"`
+		PolicyID     uint   `json:"policy_id" binding:"required"`
+		DeleteRemote *bool  `json:"delete_remote"`
+		Force        bool   `json:"force"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	deleteRemote := true
+	if req.DeleteRemote != nil {
+		deleteRemote = *req.DeleteRemote
+	}
+
 	successCount := 0
 	failedCount := 0
 	var errMessages []string
+	var remoteErrors []string
 
 	for _, fID := range req.FileIDs {
-		err := ctrl.uploadService.RemoveFileFromPolicy(c.Request.Context(), user, fID, req.PolicyID, isAdmin)
+		err := ctrl.uploadService.RemoveFileFromPolicy(c.Request.Context(), user, fID, req.PolicyID, isAdmin, service.DeleteOptions{
+			DeleteRemote: deleteRemote,
+			ForceDB:      req.Force,
+		})
 		if err != nil {
+			var rErr *service.RemoteDeleteError
+			if errors.As(err, &rErr) {
+				remoteErrors = append(remoteErrors, fmt.Sprintf("文件 #%d: %s", fID, rErr.Error()))
+			}
 			failedCount++
 			errMessages = append(errMessages, fmt.Sprintf("文件 #%d: %s", fID, err.Error()))
 		} else {
 			successCount++
 		}
+	}
+
+	if len(remoteErrors) > 0 && !req.Force {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":      "REMOTE_DELETE_FAILED",
+			"error":     "部分或全部远程物理副本删除失败，是否仅删除系统中的副本记录？",
+			"detail":    strings.Join(remoteErrors, "; "),
+			"can_force": true,
+			"total":     len(req.FileIDs),
+			"success":   successCount,
+			"failed":    failedCount,
+			"errors":    errMessages,
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{

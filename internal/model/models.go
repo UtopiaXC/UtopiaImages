@@ -134,32 +134,33 @@ type RecoveryCode struct {
 
 // FileRecord represents an uploaded file
 type FileRecord struct {
-	ID                    uint                 `gorm:"primaryKey" json:"id"`
-	UserID                uint                 `gorm:"index;not null" json:"user_id"`
-	PolicyID              uint                 `gorm:"index;not null" json:"policy_id"`
-	PublicPath            string               `gorm:"uniqueIndex;size:512;not null" json:"public_path"` // e.g. "uploads/2026/05/23/a.jpg"
-	StorageKey            string               `gorm:"size:512;not null" json:"storage_key"`             // key inside storage driver
-	DisplayName           string               `gorm:"size:255;not null" json:"display_name"`
-	MimeType              string               `gorm:"size:128;not null" json:"mime_type"`
-	Size                  int64                `gorm:"not null" json:"size"`
-	Width                 int                  `json:"width"`
-	Height                int                  `json:"height"`
-	Sha256                string               `gorm:"size:64;index" json:"sha256"`
-	IsImage               bool                 `gorm:"index" json:"is_image"`
-	SourceKey             string               `gorm:"size:512" json:"source_key,omitempty"` // if converted, key of original unconverted file
-	SourceSize            int64                `json:"source_size,omitempty"`
-	WatermarkMode         string               `gorm:"size:16;default:inherit" json:"watermark_mode"` // inherit / on / off
-	WatermarkTemplateID   *uint                `json:"watermark_template_id,omitempty"`
-	HotlinkMode           string               `gorm:"size:16;default:inherit" json:"hotlink_mode"` // inherit / on / off
-	HotlinkAllowedDomains string               `gorm:"type:text" json:"hotlink_allowed_domains"`
-	PublicMode            string               `gorm:"size:16;default:inherit" json:"public_mode"`
-	SignVersion           int64                `gorm:"default:1" json:"sign_version"`
-	TotalCalls            int64                `gorm:"-" json:"total_calls"`
-	TotalUV               int64                `gorm:"-" json:"total_uv"`
-	Replicas              []*FilePolicyReplica `gorm:"-" json:"replicas,omitempty"`
-	CreatedAt             time.Time            `json:"created_at"`
-	UpdatedAt             time.Time            `json:"updated_at"`
-	DeletedAt             gorm.DeletedAt       `gorm:"index" json:"-"`
+	ID                    uint                  `gorm:"primaryKey" json:"id"`
+	UserID                uint                  `gorm:"index;not null" json:"user_id"`
+	PolicyID              uint                  `gorm:"index;not null" json:"policy_id"`
+	PublicPath            string                `gorm:"uniqueIndex;size:512;not null" json:"public_path"` // e.g. "uploads/2026/05/23/a.jpg"
+	StorageKey            string                `gorm:"size:512;not null" json:"storage_key"`             // key inside storage driver
+	DisplayName           string                `gorm:"size:255;not null" json:"display_name"`
+	MimeType              string                `gorm:"size:128;not null" json:"mime_type"`
+	Size                  int64                 `gorm:"not null" json:"size"`
+	Width                 int                   `json:"width"`
+	Height                int                   `json:"height"`
+	Sha256                string                `gorm:"size:64;index" json:"sha256"`
+	IsImage               bool                  `gorm:"index" json:"is_image"`
+	SourceKey             string                `gorm:"size:512" json:"source_key,omitempty"` // if converted, key of original unconverted file
+	SourceSize            int64                 `json:"source_size,omitempty"`
+	WatermarkMode         string                `gorm:"size:16;default:inherit" json:"watermark_mode"` // inherit / on / off
+	WatermarkTemplateID   *uint                 `json:"watermark_template_id,omitempty"`
+	HotlinkMode           string                `gorm:"size:16;default:inherit" json:"hotlink_mode"` // inherit / on / off
+	HotlinkAllowedDomains string                `gorm:"type:text" json:"hotlink_allowed_domains"`
+	PublicMode            string                `gorm:"size:16;default:inherit" json:"public_mode"`
+	SignVersion           int64                 `gorm:"default:1" json:"sign_version"`
+	TotalCalls            int64                 `gorm:"-" json:"total_calls"`
+	TotalUV               int64                 `gorm:"-" json:"total_uv"`
+	Replicas              []*FilePolicyReplica  `gorm:"-" json:"replicas,omitempty"`
+	FailedPolicies        []PolicyUploadFailure `gorm:"-" json:"failed_policies,omitempty"`
+	CreatedAt             time.Time             `json:"created_at"`
+	UpdatedAt             time.Time             `json:"updated_at"`
+	DeletedAt             gorm.DeletedAt        `gorm:"index" json:"-"`
 }
 
 // FilePolicyReplica records physical replicas of a file across storage policies
@@ -176,6 +177,13 @@ type FilePolicyReplica struct {
 	ErrorMsg   string         `gorm:"size:512" json:"error_msg,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 	UpdatedAt  time.Time      `json:"updated_at"`
+}
+
+// PolicyUploadFailure records details when an upload fails to a specific storage policy
+type PolicyUploadFailure struct {
+	PolicyID   uint   `json:"policy_id"`
+	PolicyName string `json:"policy_name"`
+	Error      string `json:"error"`
 }
 
 // FileBlob stores binary chunks when using database storage driver
