@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"gorm.io/gorm"
 )
@@ -104,12 +105,51 @@ func NewAzureBlobStorageDriver(cfg AzureBlobConfig) (*AzureBlobStorageDriver, er
 }
 
 func (d *AzureBlobStorageDriver) resolveKey(key string) string {
-	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	cleanKey := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	if d.cfg.RootDir != "" {
+		cleanRoot := strings.Trim(path.Clean("/"+strings.Trim(d.cfg.RootDir, "/\\")), "/")
+		if cleanRoot != "" && cleanRoot != "." {
+			return cleanRoot + "/" + cleanKey
+		}
+	}
+	return cleanKey
 }
 
 func (d *AzureBlobStorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {
 	cleanKey := d.resolveKey(key)
-	_, err := d.client.UploadStream(ctx, d.cfg.ContainerName, cleanKey, r, nil)
+	contentType := "application/octet-stream"
+	var contentDisposition *string
+	ext := strings.ToLower(path.Ext(cleanKey))
+	switch ext {
+	case ".jpg", ".jpeg":
+		contentType = "image/jpeg"
+	case ".png":
+		contentType = "image/png"
+	case ".gif":
+		contentType = "image/gif"
+	case ".webp":
+		contentType = "image/webp"
+	case ".avif":
+		contentType = "image/avif"
+	case ".ico":
+		contentType = "image/x-icon"
+	case ".svg":
+		contentType = "image/svg+xml"
+		disp := "attachment"
+		contentDisposition = &disp
+	case ".html", ".htm":
+		contentType = "text/plain"
+		disp := "attachment"
+		contentDisposition = &disp
+	}
+
+	opts := &azblob.UploadStreamOptions{
+		HTTPHeaders: &blob.HTTPHeaders{
+			BlobContentType:        &contentType,
+			BlobContentDisposition: contentDisposition,
+		},
+	}
+	_, err := d.client.UploadStream(ctx, d.cfg.ContainerName, cleanKey, r, opts)
 	return err
 }
 

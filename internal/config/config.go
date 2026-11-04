@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,6 +61,7 @@ type CacheConfig struct {
 
 type SecurityConfig struct {
 	SecretKey          string        `yaml:"secret_key"`
+	SetupToken         string        `yaml:"setup_token"`
 	SessionTimeoutDays int           `yaml:"session_timeout_days"`
 	RememberMeDays     int           `yaml:"remember_me_days"`
 	MaxLoginAttempts   int           `yaml:"max_login_attempts"`
@@ -173,16 +175,44 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
+	fileSetupToken := cfg.Security.SetupToken
 	overrideWithEnv(cfg)
 
-	// Ensure secret_key is not the insecure default
-	if cfg.Security.SecretKey == "" || cfg.Security.SecretKey == "default-insecure-secret-key-change-me" {
+	// Ensure secret_key is not an insecure default or placeholder
+	isInsecureSecretKey := func(key string) bool {
+		k := strings.TrimSpace(key)
+		return k == "" ||
+			k == "default-insecure-secret-key-change-me" ||
+			k == "CHANGE_ME_TO_A_SECURE_RANDOM_STRING" ||
+			k == "CHANGE_ME" ||
+			len(k) < 16
+	}
+
+	configChanged := false
+
+	if isInsecureSecretKey(cfg.Security.SecretKey) {
 		randBytes := make([]byte, 32)
 		if _, err := rand.Read(randBytes); err == nil {
 			cfg.Security.SecretKey = hex.EncodeToString(randBytes)
-			if path != "" {
-				_ = SaveConfig(path, cfg)
-			}
+			configChanged = true
+		}
+	}
+
+	// SetupToken: if empty, generate a 16-byte random token
+	if strings.TrimSpace(cfg.Security.SetupToken) == "" {
+		tokBytes := make([]byte, 16)
+		if _, err := rand.Read(tokBytes); err == nil {
+			cfg.Security.SetupToken = hex.EncodeToString(tokBytes)
+			configChanged = true
+		}
+	} else if cfg.Security.SetupToken != fileSetupToken {
+		// Env variable SETUP_TOKEN or UIMG_SETUP_TOKEN overrode file configuration
+		configChanged = true
+	}
+
+	if configChanged && path != "" {
+		if err := SaveConfig(path, cfg); err != nil {
+			slog.Error("Failed to auto-update config file with generated/env credentials", "path", path, "error", err)
 		}
 	}
 
@@ -193,7 +223,7 @@ func LoadConfig(path string) (*Config, error) {
 func SaveConfig(path string, cfg *Config) error {
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return fmt.Errorf("failed to create config dir: %w", err)
 		}
 	}
@@ -203,13 +233,19 @@ func SaveConfig(path string, cfg *Config) error {
 		return fmt.Errorf("failed to marshal config to yaml: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
+	_ = os.Chmod(path, 0600)
 	return nil
 }
 
 func overrideWithEnv(cfg *Config) {
+	if v := os.Getenv("SETUP_TOKEN"); v != "" {
+		cfg.Security.SetupToken = strings.TrimSpace(v)
+	} else if v := os.Getenv("UIMG_SETUP_TOKEN"); v != "" {
+		cfg.Security.SetupToken = strings.TrimSpace(v)
+	}
 	if v := os.Getenv("UIMG_SERVER_PORT"); v != "" {
 		if port, err := strconv.Atoi(v); err == nil {
 			cfg.Server.Port = port
@@ -275,7 +311,11 @@ func EnsureDataDirectories(cfg *Config) {
 	}
 	for _, d := range dirs {
 		if d != "" && d != "." {
-			_ = os.MkdirAll(d, 0755)
+			perm := os.FileMode(0750)
+			if strings.HasPrefix(d, "data/config") || strings.HasPrefix(d, "data/db") {
+				perm = 0700
+			}
+			_ = os.MkdirAll(d, perm)
 		}
 	}
 }

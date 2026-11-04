@@ -50,6 +50,18 @@ func (fm *FontManager) GetFace(fontFamily string, fontSize int) (font.Face, erro
 
 func (fm *FontManager) resolveFont(family string) *sfnt.Font {
 	family = strings.ToLower(strings.TrimSpace(family))
+	switch family {
+	case "yahei", "msyh", "微软雅黑":
+		family = "yahei"
+	case "simhei", "黑体":
+		family = "simhei"
+	case "simsun", "宋体":
+		family = "simsun"
+	case "arial":
+		family = "arial"
+	default:
+		family = "default"
+	}
 
 	fontCacheLock.RLock()
 	if f, exists := parsedFonts[family]; exists {
@@ -61,7 +73,7 @@ func (fm *FontManager) resolveFont(family string) *sfnt.Font {
 	var candidatePaths []string
 
 	switch family {
-	case "yahei", "msyh", "微软雅黑":
+	case "yahei":
 		candidatePaths = []string{
 			`C:\Windows\Fonts\msyh.ttc`,
 			`C:\Windows\Fonts\msyh.ttf`,
@@ -74,7 +86,7 @@ func (fm *FontManager) resolveFont(family string) *sfnt.Font {
 			`/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc`,
 			`/usr/share/fonts/truetype/wqy/wqy-microhei.ttc`,
 		}
-	case "simhei", "黑体":
+	case "simhei":
 		candidatePaths = []string{
 			`C:\Windows\Fonts\simhei.ttf`,
 			`data/fonts/simhei.ttf`,
@@ -83,7 +95,7 @@ func (fm *FontManager) resolveFont(family string) *sfnt.Font {
 			`/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc`,
 			`/Library/Fonts/Arial Unicode.ttf`,
 		}
-	case "simsun", "宋体":
+	case "simsun":
 		candidatePaths = []string{
 			`C:\Windows\Fonts\simsun.ttc`,
 			`data/fonts/simsun.ttc`,

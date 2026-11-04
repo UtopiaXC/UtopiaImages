@@ -1,9 +1,13 @@
 package http
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,15 +32,89 @@ type AuthController struct {
 	configPath  string
 	onDBChange  func(*gorm.DB)
 	setupMu     sync.Mutex
+	setupToken  string
 }
 
 func NewAuthController(as *service.AuthService, db *gorm.DB, cfg *config.Config, configPath string) *AuthController {
+	setupTok := ""
+	if cfg != nil {
+		setupTok = strings.TrimSpace(cfg.Security.SetupToken)
+	}
+	if setupTok == "" {
+		setupTok = strings.TrimSpace(os.Getenv("SETUP_TOKEN"))
+		if setupTok == "" {
+			setupTok = strings.TrimSpace(os.Getenv("UIMG_SETUP_TOKEN"))
+		}
+	}
+	if setupTok == "" && as != nil && as.IsSetupRequired() {
+		tokBytes := make([]byte, 16)
+		if _, err := rand.Read(tokBytes); err == nil {
+			setupTok = hex.EncodeToString(tokBytes)
+		}
+	}
+	if as != nil && as.IsSetupRequired() && setupTok != "" {
+		slog.Warn("==================================================================")
+		slog.Warn("INITIAL SETUP TOKEN: " + setupTok)
+		slog.Warn("Please enter this Setup Token on the setup wizard page (/stp).")
+		slog.Warn("==================================================================")
+	}
 	return &AuthController{
 		authService: as,
 		db:          db,
 		cfg:         cfg,
 		configPath:  configPath,
+		setupToken:  setupTok,
 	}
+}
+
+func (ctrl *AuthController) verifySetupAccess(c *gin.Context, reqToken ...string) bool {
+	if !ctrl.authService.IsSetupRequired() {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化，禁止未授权访问"})
+		return false
+	}
+	if ctrl.setupToken == "" {
+		return true
+	}
+	token := c.GetHeader("X-Setup-Token")
+	if token == "" {
+		token = c.Query("setup_token")
+	}
+	if token == "" && len(reqToken) > 0 {
+		token = reqToken[0]
+	}
+	if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(ctrl.setupToken)) == 1 {
+		return true
+	}
+	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+		"error":                "系统未初始化，需要提供有效的初始化激活码 (Setup Token)",
+		"setup_token_required": true,
+	})
+	return false
+}
+
+func (ctrl *AuthController) VerifySetupToken(c *gin.Context) {
+	if !ctrl.authService.IsSetupRequired() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化"})
+		return
+	}
+	var req struct {
+		Token string `json:"token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入有效的初始化激活码"})
+		return
+	}
+	if ctrl.setupToken == "" || subtle.ConstantTimeCompare([]byte(req.Token), []byte(ctrl.setupToken)) == 1 {
+		c.JSON(http.StatusOK, gin.H{
+			"valid":   true,
+			"message": "Setup token verified successfully",
+		})
+		return
+	}
+	c.JSON(http.StatusForbidden, gin.H{
+		"valid": false,
+		"error": "初始化激活码错误，请核对服务端控制台输出、环境变量 SETUP_TOKEN 或 config.yaml",
+	})
 }
 
 func (ctrl *AuthController) SetOnDBChange(fn func(*gorm.DB)) {
@@ -61,23 +139,19 @@ func (ctrl *AuthController) resolveBaseURL(c *gin.Context) string {
 	if ctrl.cfg != nil {
 		fallback = ctrl.cfg.Server.BaseURL
 	}
-	u := ResolveBaseURL(c, ctrl.db, fallback)
+	u := ResolveTrustedMailBaseURL(c, ctrl.db, fallback)
 	if u != "" {
 		return u
 	}
-	detectedProto := "http"
-	if c.Request.TLS != nil || strings.EqualFold(c.Request.Header.Get("X-Forwarded-Proto"), "https") {
-		detectedProto = "https"
+	if fallback != "" {
+		return fallback
 	}
-	host := getRequestHost(c)
-	if host != "" {
-		return fmt.Sprintf("%s://%s", detectedProto, host)
-	}
-	return ""
+	return "http://localhost:2983"
 }
 
 func (ctrl *AuthController) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/setup/status", ctrl.GetSetupStatus)
+	rg.POST("/setup/verify-token", ctrl.VerifySetupToken)
 	rg.POST("/setup/test-db", ctrl.TestDatabaseConnection)
 	rg.POST("/setup/test-smtp", ctrl.TestSMTPConnection)
 	rg.POST("/setup", ctrl.SetupInitialAdmin)
@@ -131,19 +205,19 @@ func (ctrl *AuthController) GetSetupStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"setup_required":   required,
-		"site_name":        ctrl.cfg.Site.Name,
-		"site_description": ctrl.cfg.Site.Description,
-		"base_url":         effectiveBaseURL,
-		"detected_url":     detectedBaseURL,
-		"current_locale":   ctrl.cfg.Site.Locale,
-		"current_driver":   ctrl.cfg.Database.Driver,
+		"setup_required":       required,
+		"setup_token_required": required && ctrl.setupToken != "",
+		"site_name":            ctrl.cfg.Site.Name,
+		"site_description":     ctrl.cfg.Site.Description,
+		"base_url":             effectiveBaseURL,
+		"detected_url":         detectedBaseURL,
+		"current_locale":       ctrl.cfg.Site.Locale,
+		"current_driver":       ctrl.cfg.Database.Driver,
 	})
 }
 
 func (ctrl *AuthController) TestDatabaseConnection(c *gin.Context) {
-	if !ctrl.authService.IsSetupRequired() {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化，禁止未授权访问"})
+	if !ctrl.verifySetupAccess(c) {
 		return
 	}
 
@@ -205,7 +279,13 @@ func (ctrl *AuthController) TestDatabaseConnection(c *gin.Context) {
 	}
 
 	sqlDB, err := targetDB.DB()
-	if err != nil || sqlDB.Ping() != nil {
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无法获取数据库连接"})
+		return
+	}
+	defer sqlDB.Close()
+
+	if err := sqlDB.Ping(); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无法连接到数据库服务器，请检查主机名和端口"})
 		return
 	}
@@ -218,8 +298,7 @@ func (ctrl *AuthController) TestDatabaseConnection(c *gin.Context) {
 }
 
 func (ctrl *AuthController) TestSMTPConnection(c *gin.Context) {
-	if !ctrl.authService.IsSetupRequired() {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化，禁止未授权访问"})
+	if !ctrl.verifySetupAccess(c) {
 		return
 	}
 	var req struct {
@@ -261,13 +340,13 @@ func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
 	ctrl.setupMu.Lock()
 	defer ctrl.setupMu.Unlock()
 
-	if !ctrl.authService.IsSetupRequired() {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "系统已完成初始化，无法重复执行"})
+	if !ctrl.verifySetupAccess(c) {
 		return
 	}
 
 	var req struct {
-		Site struct {
+		SetupToken string `json:"setup_token"`
+		Site       struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 			BaseURL     string `json:"base_url"`
@@ -302,6 +381,10 @@ func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "输入数据格式不正确"})
+		return
+	}
+
+	if !ctrl.verifySetupAccess(c, req.SetupToken) {
 		return
 	}
 
@@ -435,7 +518,9 @@ func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
 	ctrl.db.Save(&model.Setting{Key: "smtp_user", Value: req.SMTP.User})
 	ctrl.db.Save(&model.Setting{Key: "smtp_encryption", Value: req.SMTP.Encryption})
 
-	// 5. Persist to yaml config file
+	// 5. Persist to yaml config file and clear setup token
+	ctrl.setupToken = ""
+	ctrl.cfg.Security.SetupToken = ""
 	if ctrl.configPath != "" {
 		_ = config.SaveConfig(ctrl.configPath, ctrl.cfg)
 	}
@@ -628,8 +713,8 @@ func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
 
 	user, token, errCode := ctrl.authService.RequestPasswordReset(ident)
 	if errCode != "" {
-		if errCode == common.ErrAuthUserNotFound {
-			// Prevent username/email enumeration
+		if errCode == common.ErrAuthUserNotFound || errCode == common.ErrAuthUserBanned || errCode == common.ErrAuthUserInactive {
+			// Prevent username/email enumeration and deny reset for banned/inactive users
 			c.JSON(http.StatusOK, gin.H{
 				"code":    "RESET_EMAIL_SENT",
 				"message": "Password reset email sent",
@@ -732,8 +817,8 @@ func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 	}
 
 	if errCode != "" {
-		if errCode == common.ErrAuthUserNotFound {
-			// Prevent user enumeration
+		if errCode == common.ErrAuthUserNotFound || errCode == common.ErrAuthUserBanned || errCode == common.ErrAuthUserInactive {
+			// Prevent user enumeration and deny reset for banned/inactive users
 			c.JSON(http.StatusOK, gin.H{
 				"code":    "2FA_RESET_EMAIL_SENT",
 				"message": "2FA reset email sent",
@@ -951,11 +1036,16 @@ func (ctrl *AuthController) SetupTOTP(c *gin.Context) {
 	}
 
 	encSecret, _ := ctrl.authService.TOTPManager().EncryptSecret(secret)
-	totpSec := model.TOTPSecret{
-		UserID:          user.ID,
-		SecretEncrypted: encSecret,
+	var existing model.TOTPSecret
+	if err := ctrl.authService.DB().Where("user_id = ?", user.ID).First(&existing).Error; err == nil && existing.ConfirmedAt != nil {
+		ctrl.authService.DB().Model(&existing).Update("pending_secret_encrypted", encSecret)
+	} else {
+		totpSec := model.TOTPSecret{
+			UserID:          user.ID,
+			SecretEncrypted: encSecret,
+		}
+		ctrl.authService.DB().Save(&totpSec)
 	}
-	ctrl.authService.DB().Save(&totpSec)
 
 	c.JSON(http.StatusOK, gin.H{
 		"secret":    secret,
@@ -981,14 +1071,25 @@ func (ctrl *AuthController) EnableTOTP(c *gin.Context) {
 		return
 	}
 
-	plainSecret, err := ctrl.authService.TOTPManager().DecryptSecret(sec.SecretEncrypted)
-	if err != nil || !ctrl.authService.TOTPManager().Validate(req.Code, plainSecret) {
+	encToVerify := sec.SecretEncrypted
+	isPending := false
+	if sec.PendingSecretEncrypted != "" {
+		encToVerify = sec.PendingSecretEncrypted
+		isPending = true
+	}
+
+	plainSecret, err := ctrl.authService.TOTPManager().DecryptSecret(encToVerify)
+	if err != nil || !ctrl.authService.TOTPManager().ValidateWithContext(fmt.Sprintf("uid:%d", user.ID), req.Code, plainSecret) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid verification code"})
 		return
 	}
 
 	now := time.Now()
 	sec.ConfirmedAt = &now
+	if isPending {
+		sec.SecretEncrypted = sec.PendingSecretEncrypted
+		sec.PendingSecretEncrypted = ""
+	}
 	ctrl.authService.DB().Save(&sec)
 	ctrl.authService.DB().Model(&model.User{}).Where("id = ?", user.ID).Update("require_2fa", true)
 
@@ -997,6 +1098,11 @@ func (ctrl *AuthController) EnableTOTP(c *gin.Context) {
 
 func (ctrl *AuthController) DisableTOTP(c *gin.Context) {
 	userID := c.GetUint(auth.CtxUserIDKey)
+	var sysReq2FA model.Setting
+	if err := ctrl.db.Where("key = 'require_2fa'").First(&sysReq2FA).Error; err == nil && sysReq2FA.Value == "true" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "系统已强制开启全局两步验证，无法关闭 TOTP"})
+		return
+	}
 	ctrl.authService.DB().Where("user_id = ?", userID).Delete(&model.TOTPSecret{})
 
 	var passkeyCount int64
@@ -1084,12 +1190,8 @@ func (ctrl *AuthController) FinishPasskeyLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Passkey verification failed: " + err.Error()})
 		return
 	}
-	if user.Status != "active" {
+	if user.Status == "disabled" || user.Status == "banned" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "User account is disabled or banned"})
-		return
-	}
-	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "User account is temporarily locked"})
 		return
 	}
 	rememberMe := c.Query("remember_me") == "true"
@@ -1141,12 +1243,8 @@ func (ctrl *AuthController) BeginMFAPasskey(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
 		return
 	}
-	if user.Status != "active" {
+	if user.Status == "disabled" || user.Status == "banned" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "User account is disabled or banned"})
-		return
-	}
-	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "User account is temporarily locked"})
 		return
 	}
 	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginLogin(user.Username, getRequestHost(c))
@@ -1198,12 +1296,8 @@ func (ctrl *AuthController) FinishMFAPasskey(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Passkey does not belong to the logging-in user"})
 		return
 	}
-	if user.Status != "active" {
+	if user.Status == "disabled" || user.Status == "banned" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "User account is disabled or banned"})
-		return
-	}
-	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "User account is temporarily locked"})
 		return
 	}
 
@@ -1296,15 +1390,26 @@ func (ctrl *AuthController) DeletePasskey(c *gin.Context) {
 	}
 	userID := c.GetUint(auth.CtxUserIDKey)
 	id := ParseUintSafe(c.Param("id"), 0)
-	if err := ctrl.authService.PasskeyManager().DeletePasskey(userID, id); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
 
 	var passkeyCount int64
 	ctrl.authService.DB().Model(&model.WebAuthnCredential{}).Where("user_id = ?", userID).Count(&passkeyCount)
 	var totpCount int64
 	ctrl.authService.DB().Model(&model.TOTPSecret{}).Where("user_id = ? AND confirmed_at IS NOT NULL", userID).Count(&totpCount)
+
+	var sysReq2FA model.Setting
+	if err := ctrl.db.Where("key = 'require_2fa'").First(&sysReq2FA).Error; err == nil && (sysReq2FA.Value == "true" || sysReq2FA.Value == "1") {
+		if passkeyCount <= 1 && totpCount == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "系统已强制开启全局两步验证，必须保留至少一种两步验证方式"})
+			return
+		}
+	}
+
+	if err := ctrl.authService.PasskeyManager().DeletePasskey(userID, id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctrl.authService.DB().Model(&model.WebAuthnCredential{}).Where("user_id = ?", userID).Count(&passkeyCount)
 	if passkeyCount == 0 && totpCount == 0 {
 		ctrl.authService.DB().Model(&model.User{}).Where("id = ?", userID).Update("require_2fa", false)
 	}
@@ -1375,16 +1480,18 @@ func (ctrl *AuthController) Setup2FATOTPSecret(c *gin.Context) {
 		return
 	}
 
-	// Persist pending encrypted secret
+	// Persist pending encrypted secret without overriding existing active secret
 	encSecret, err := ctrl.authService.TOTPManager().EncryptSecret(secret)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encrypt TOTP secret"})
 		return
 	}
-	totpRecord := model.TOTPSecret{
-		UserID:          user.ID,
-		SecretEncrypted: encSecret,
-		CreatedAt:       time.Now(),
+	var totpRecord model.TOTPSecret
+	ctrl.db.Where("user_id = ?", user.ID).First(&totpRecord)
+	totpRecord.UserID = user.ID
+	totpRecord.PendingSecretEncrypted = encSecret
+	if totpRecord.CreatedAt.IsZero() {
+		totpRecord.CreatedAt = time.Now()
 	}
 	ctrl.db.Save(&totpRecord)
 
@@ -1420,14 +1527,26 @@ func (ctrl *AuthController) Setup2FATOTPVerify(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No pending TOTP secret found"})
 		return
 	}
-	plainSecret, err := ctrl.authService.TOTPManager().DecryptSecret(secret.SecretEncrypted)
-	if err != nil || !ctrl.authService.TOTPManager().Validate(req.Code, plainSecret) {
+	encToTest := secret.PendingSecretEncrypted
+	if encToTest == "" {
+		encToTest = secret.SecretEncrypted
+	}
+	if encToTest == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No pending TOTP secret found"})
+		return
+	}
+	plainSecret, err := ctrl.authService.TOTPManager().DecryptSecret(encToTest)
+	if err != nil || !ctrl.authService.TOTPManager().ValidateWithContext(fmt.Sprintf("uid:%d", user.ID), req.Code, plainSecret) {
+		ctrl.authService.RecordSetupTokenFailure(req.SetupToken)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid verification code"})
 		return
 	}
 
 	now := time.Now()
-	ctrl.db.Model(&secret).Update("confirmed_at", &now)
+	secret.ConfirmedAt = &now
+	secret.SecretEncrypted = encToTest
+	secret.PendingSecretEncrypted = ""
+	ctrl.db.Save(&secret)
 	ctrl.db.Model(&user).Update("require_2fa", true)
 	ctrl.authService.RevokeSetupToken(req.SetupToken)
 
@@ -1440,6 +1559,7 @@ func (ctrl *AuthController) Setup2FATOTPVerify(c *gin.Context) {
 	if req.RememberMe {
 		maxAge = 30 * 86400
 	}
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", ctrl.isCookieSecure(c), true)
 	c.JSON(http.StatusOK, gin.H{
 		"token": rawToken,
@@ -1508,6 +1628,7 @@ func (ctrl *AuthController) Setup2FAPasskeyFinish(c *gin.Context) {
 	name := c.DefaultQuery("name", "Passkey")
 	_, err = ctrl.authService.PasskeyManager().FinishRegistration(sessionKey, name, parsedData)
 	if err != nil {
+		ctrl.authService.RecordSetupTokenFailure(setupToken)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Passkey registration failed: " + err.Error()})
 		return
 	}
@@ -1528,6 +1649,7 @@ func (ctrl *AuthController) Setup2FAPasskeyFinish(c *gin.Context) {
 	if rememberMe {
 		maxAge = 30 * 86400
 	}
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(auth.SessionCookieName, rawToken, maxAge, "/api", "", ctrl.isCookieSecure(c), true)
 	c.JSON(http.StatusOK, gin.H{
 		"token": rawToken,

@@ -127,7 +127,7 @@ func NewServer(cfg *config.Config, configPath string) (*Server, error) {
 	settingsController.SetUploadService(uploadService)
 
 	r := gin.New()
-	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
+	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"})
 	r.Use(gin.Recovery())
 	r.Use(appLogger.GinLoggerMiddleware())
 
@@ -341,10 +341,16 @@ func (s *Server) setupRoutes(
 			if contentType == "" {
 				contentType = "image/x-icon"
 			}
+			if strings.Contains(strings.ToLower(contentType), "svg") || strings.Contains(strings.ToLower(contentType), "xml") {
+				c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+				c.Header("X-Content-Type-Options", "nosniff")
+			}
 			c.Data(http.StatusOK, contentType, favBinarySetting.BinaryValue)
 			return
 		}
 
+		c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+		c.Header("X-Content-Type-Options", "nosniff")
 		c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", []byte(defaultFaviconSVG))
 	}
 

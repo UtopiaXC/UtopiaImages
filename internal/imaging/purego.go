@@ -23,12 +23,14 @@ import (
 )
 
 type PureGoProcessor struct {
-	sem chan struct{}
+	sem      chan struct{}
+	blindSem chan struct{}
 }
 
 func NewPureGoProcessor() *PureGoProcessor {
 	return &PureGoProcessor{
-		sem: make(chan struct{}, 4),
+		sem:      make(chan struct{}, 4),
+		blindSem: BlindWatermarkSem,
 	}
 }
 
@@ -199,6 +201,10 @@ func (p *PureGoProcessor) applyWatermark(base image.Image, wm *WatermarkConfig) 
 			blindText = wm.Text
 		}
 		if blindText != "" {
+			if p.blindSem != nil {
+				p.blindSem <- struct{}{}
+				defer func() { <-p.blindSem }()
+			}
 			dst = EmbedBlindWatermark(dst, blindText)
 		}
 	}

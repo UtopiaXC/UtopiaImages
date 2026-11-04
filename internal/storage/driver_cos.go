@@ -115,18 +115,46 @@ func NewCOSStorageDriver(cfg COSConfig) (*COSStorageDriver, error) {
 }
 
 func (d *COSStorageDriver) resolveKey(key string) string {
-	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	cleanKey := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	if d.cfg.RootDir != "" {
+		cleanRoot := strings.Trim(path.Clean("/"+strings.Trim(d.cfg.RootDir, "/\\")), "/")
+		if cleanRoot != "" && cleanRoot != "." {
+			return cleanRoot + "/" + cleanKey
+		}
+	}
+	return cleanKey
 }
 
 func (d *COSStorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {
 	cleanKey := d.resolveKey(key)
-	var opt *cos.ObjectPutOptions
+	opt := &cos.ObjectPutOptions{
+		ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{},
+	}
 	if size > 0 {
-		opt = &cos.ObjectPutOptions{
-			ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
-				ContentLength: size,
-			},
-		}
+		opt.ObjectPutHeaderOptions.ContentLength = size
+	}
+	ext := strings.ToLower(path.Ext(cleanKey))
+	switch ext {
+	case ".jpg", ".jpeg":
+		opt.ObjectPutHeaderOptions.ContentType = "image/jpeg"
+	case ".png":
+		opt.ObjectPutHeaderOptions.ContentType = "image/png"
+	case ".gif":
+		opt.ObjectPutHeaderOptions.ContentType = "image/gif"
+	case ".webp":
+		opt.ObjectPutHeaderOptions.ContentType = "image/webp"
+	case ".avif":
+		opt.ObjectPutHeaderOptions.ContentType = "image/avif"
+	case ".ico":
+		opt.ObjectPutHeaderOptions.ContentType = "image/x-icon"
+	case ".svg":
+		opt.ObjectPutHeaderOptions.ContentType = "image/svg+xml"
+		opt.ObjectPutHeaderOptions.ContentDisposition = "attachment"
+	case ".html", ".htm":
+		opt.ObjectPutHeaderOptions.ContentType = "text/plain"
+		opt.ObjectPutHeaderOptions.ContentDisposition = "attachment"
+	default:
+		opt.ObjectPutHeaderOptions.ContentType = "application/octet-stream"
 	}
 	_, err := d.client.Object.Put(ctx, cleanKey, r, opt)
 	return err

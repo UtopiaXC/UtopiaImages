@@ -110,7 +110,17 @@
     "fillRequired": "必要な項目を入力してください",
     "prevStep": "前のステップ",
     "nextStep": "次のステップ",
-    "finish": "初期化を完了してシステムを開始"
+    "finish": "初期化を完了してシステムを開始",
+    "tokenVerification": "初期化認証",
+    "tokenGuide": "Utopia Imagesへようこそ！初期設定を開始するにはセットアップトークンが必要です。",
+    "tokenTipsTitle": "トークンの取得方法：",
+    "tokenTipConsole": "1. サーバーログ：起動ログに 'INITIAL SETUP TOKEN: xxx' が出力されます；",
+    "tokenTipConfig": "2. 設定ファイル：data/config/config.yaml の 'setup_token' 項目を確認してください；",
+    "tokenTipDocker": "3. Docker：環境変数 SETUP_TOKEN で任意のトークンを指定できます。",
+    "tokenPlaceholder": "セットアップトークンを入力してください",
+    "verifyToken": "認証して設定を開始",
+    "tokenEmpty": "セットアップトークンを入力してください",
+    "tokenVerifySuccess": "トークン認証に成功しました"
   },
   "login": {
     "title": "ログイン",

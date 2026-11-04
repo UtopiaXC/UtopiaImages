@@ -36,10 +36,12 @@ jobs:
       - name: Resolve Version and Note
         id: resolve
         shell: bash
+        env:
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          if [ -n "${{ inputs.tag_name }}" ]; then
-            TAG="${{ inputs.tag_name }}"
+          if [ -n "$INPUT_TAG_NAME" ]; then
+            TAG="$INPUT_TAG_NAME"
           fi
           cleanVersion="${TAG#v}"
           cleanVersion="${cleanVersion%+*}"
@@ -199,8 +201,9 @@ jobs:
       - name: Resolve Release Note File
         id: release_note
         shell: bash
+        env:
+          NOTE_FILE: ${{ needs.version.outputs.note_file }}
         run: |
-          NOTE_FILE="${{ needs.version.outputs.note_file }}"
           if [ -n "$NOTE_FILE" ] && [ -f "$NOTE_FILE" ]; then
             echo "note_path=$NOTE_FILE" >> "$GITHUB_OUTPUT"
           else

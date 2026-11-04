@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
@@ -19,9 +21,59 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/UtopiaXC/UtopiaImages/internal/service"
 	"github.com/UtopiaXC/UtopiaImages/internal/storage"
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+type guestUploadBucket struct {
+	tokens    int
+	lastCheck time.Time
+}
+
+var (
+	guestUploadMu      sync.Mutex
+	guestUploadBuckets = make(map[string]*guestUploadBucket)
+)
+
+func allowGuestUpload(ip string) bool {
+	if ip == "" {
+		return true
+	}
+	guestUploadMu.Lock()
+	defer guestUploadMu.Unlock()
+
+	now := time.Now()
+	if len(guestUploadBuckets) > 2000 {
+		for k, b := range guestUploadBuckets {
+			if now.Sub(b.lastCheck) > 10*time.Minute {
+				delete(guestUploadBuckets, k)
+			}
+		}
+	}
+
+	b, ok := guestUploadBuckets[ip]
+	if !ok {
+		guestUploadBuckets[ip] = &guestUploadBucket{
+			tokens:    15,
+			lastCheck: now,
+		}
+		return true
+	}
+
+	elapsed := now.Sub(b.lastCheck).Seconds()
+	b.tokens += int(elapsed / 4) // 1 token every 4 seconds
+	if b.tokens > 15 {
+		b.tokens = 15
+	}
+	b.lastCheck = now
+
+	if b.tokens > 0 {
+		b.tokens--
+		return true
+	}
+	return false
+}
 
 type FileController struct {
 	db              *gorm.DB
@@ -169,7 +221,12 @@ func (ctrl *FileController) checkRoleUploadLimits(user *model.User, filename str
 		}
 	}
 
-	// 2. System single file size check
+	// 2. Role single file size check
+	if role.MaxSingleFileSizeMB > 0 && size > int64(role.MaxSingleFileSizeMB)*1024*1024 {
+		return fmt.Errorf("文件大小超过角色单文件上限: %d MB", role.MaxSingleFileSizeMB)
+	}
+
+	// 3. System single file size check
 	sysMaxMB := int64(0)
 	var s model.Setting
 	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&s).Error; err == nil {
@@ -273,6 +330,7 @@ func (ctrl *FileController) Upload(c *gin.Context) {
 		DisplayName:         displayName,
 		WatermarkMode:       watermarkMode,
 		WatermarkTemplateID: wmTemplateID,
+		PublicMode:          publicMode,
 	})
 
 	if err != nil {
@@ -303,6 +361,7 @@ type InitChunkUploadRequest struct {
 	WatermarkMode       string `json:"watermark_mode"`
 	WatermarkTemplateID *uint  `json:"watermark_template_id"`
 	HotlinkMode         string `json:"hotlink_mode"`
+	PublicMode          string `json:"public_mode"`
 	PreservePath        bool   `json:"preserve_path"`
 	StripTopDir         bool   `json:"strip_top_dir"`
 	ConflictAction      string `json:"conflict_action"`
@@ -327,8 +386,42 @@ func (ctrl *FileController) InitChunkUpload(c *gin.Context) {
 	if req.HotlinkMode == "" {
 		req.HotlinkMode = "inherit"
 	}
+	if req.PublicMode == "" {
+		req.PublicMode = "inherit"
+	}
+	if !isValidMode(req.PublicMode) {
+		req.PublicMode = "inherit"
+	}
 	if req.ConflictAction == "" {
 		req.ConflictAction = "skip"
+	}
+
+	if req.UploadType == "archive" {
+		if isApi, ok := c.Get(auth.CtxIsApiTokenKey); ok && isApi.(bool) {
+			if tokVal, tokExists := c.Get(auth.CtxApiTokenKey); tokExists {
+				apiToken := tokVal.(*model.ApiToken)
+				if !auth.HasTokenScope(apiToken.Scopes, "import.use") {
+					c.JSON(http.StatusForbidden, gin.H{"error": "API token lacks required scope: import.use"})
+					return
+				}
+			}
+		}
+	} else {
+		if err := ctrl.checkRoleUploadLimits(user, req.Filename, req.TotalSize); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.WatermarkTemplateID != nil && *req.WatermarkTemplateID > 0 {
+		var count int64
+		ctrl.db.Model(&model.WatermarkTemplate{}).
+			Where("id = ? AND (owner_id IS NULL OR owner_id = ?)", *req.WatermarkTemplateID, user.ID).
+			Count(&count)
+		if count == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark template ID or permission denied"})
+			return
+		}
 	}
 
 	pIDs := req.PolicyIDs
@@ -348,6 +441,7 @@ func (ctrl *FileController) InitChunkUpload(c *gin.Context) {
 		WatermarkMode:       req.WatermarkMode,
 		WatermarkTemplateID: req.WatermarkTemplateID,
 		HotlinkMode:         req.HotlinkMode,
+		PublicMode:          req.PublicMode,
 		PreservePath:        req.PreservePath,
 		StripTopDir:         req.StripTopDir,
 		ConflictAction:      req.ConflictAction,
@@ -366,6 +460,8 @@ func (ctrl *FileController) InitChunkUpload(c *gin.Context) {
 }
 
 func (ctrl *FileController) UploadChunkPart(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 100*1024*1024)
+
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
 
@@ -516,11 +612,12 @@ func (ctrl *FileController) buildFileLinks(file *model.FileRecord, customBaseURL
 	}
 
 	safeHTMLName := html.EscapeString(file.DisplayName)
+	safeHTMLURL := html.EscapeString(directURL)
 	safeMdName := strings.ReplaceAll(strings.ReplaceAll(file.DisplayName, "[", "\\["), "]", "\\]")
 	links := gin.H{
 		"url":       directURL,
 		"markdown":  fmt.Sprintf("![%s](%s)", safeMdName, directURL),
-		"html":      fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", directURL, safeHTMLName),
+		"html":      fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", safeHTMLURL, safeHTMLName),
 		"bbcode":    fmt.Sprintf("[img]%s[/img]", directURL),
 		"thumb_url": fmt.Sprintf("%s?s=thumb", directURL),
 	}
@@ -533,9 +630,10 @@ func (ctrl *FileController) buildFileLinks(file *model.FileRecord, customBaseURL
 		} else {
 			webpURL = fmt.Sprintf("/%s.webp", baseNoExt)
 		}
+		safeHTMLWebpURL := html.EscapeString(webpURL)
 		links["webp_url"] = webpURL
 		links["webp_markdown"] = fmt.Sprintf("![%s](%s)", safeMdName, webpURL)
-		links["webp_html"] = fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", webpURL, safeHTMLName)
+		links["webp_html"] = fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", safeHTMLWebpURL, safeHTMLName)
 		links["webp_bbcode"] = fmt.Sprintf("[img]%s[/img]", webpURL)
 	}
 
@@ -783,8 +881,12 @@ func (ctrl *FileController) GetFile(c *gin.Context) {
 	})
 }
 
-func isUserAdmin(user *model.User) bool {
+func isUserAdmin(c *gin.Context, user *model.User) bool {
 	if user == nil {
+		return false
+	}
+	if isApi, ok := c.Get(auth.CtxIsApiTokenKey); ok && isApi.(bool) {
+		// Personal Access Tokens (PAT) cannot perform administrative actions across other users' files
 		return false
 	}
 	return user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
@@ -1027,7 +1129,7 @@ func (ctrl *FileController) BatchUpdateFiles(c *gin.Context) {
 	}
 
 	query := ctrl.db.Model(&model.FileRecord{}).Where("id IN ?", req.IDs)
-	if !isUserAdmin(user) {
+	if !isUserAdmin(c, user) {
 		query = query.Where("user_id = ?", user.ID)
 	}
 
@@ -1040,7 +1142,7 @@ func (ctrl *FileController) DownloadRaw(c *gin.Context) {
 	user := uVal.(*model.User)
 	fileID := ParseUintSafe(c.Param("id"), 0)
 
-	ctrl.dispatchService.ServeRaw(c, fileID, user.ID, isUserAdmin(user))
+	ctrl.dispatchService.ServeRaw(c, fileID, user.ID, isUserAdmin(c, user))
 }
 
 func (ctrl *FileController) ImportArchive(c *gin.Context) {
@@ -1108,6 +1210,14 @@ func (ctrl *FileController) ImportArchive(c *gin.Context) {
 	if tidStr := c.PostForm("watermark_template_id"); tidStr != "" {
 		val := ParseUintSafe(tidStr, 0)
 		if val > 0 {
+			var count int64
+			ctrl.db.Model(&model.WatermarkTemplate{}).
+				Where("id = ? AND (owner_id IS NULL OR owner_id = ?)", val, user.ID).
+				Count(&count)
+			if count == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid watermark template ID or permission denied"})
+				return
+			}
 			wmTemplateID = &val
 		}
 	}
@@ -1140,7 +1250,7 @@ func (ctrl *FileController) CreateTempLink(c *gin.Context) {
 
 	var file model.FileRecord
 	query := ctrl.db.Where("id = ?", fileID)
-	if !isUserAdmin(user) {
+	if !isUserAdmin(c, user) {
 		query = query.Where("user_id = ?", user.ID)
 	}
 	if err := query.First(&file).Error; err != nil {
@@ -1163,6 +1273,9 @@ func (ctrl *FileController) CreateTempLink(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 	if req.ExpiresHours <= 0 {
 		req.ExpiresHours = 24
+	}
+	if req.ExpiresHours > 8760 {
+		req.ExpiresHours = 8760 // Max 1 year
 	}
 
 	token, err := auth.GenerateRandomToken(32)
@@ -1210,7 +1323,7 @@ func (ctrl *FileController) ListTempLinks(c *gin.Context) {
 
 	var file model.FileRecord
 	query := ctrl.db.Where("id = ?", fileID)
-	if !isUserAdmin(user) {
+	if !isUserAdmin(c, user) {
 		query = query.Where("user_id = ?", user.ID)
 	}
 	if err := query.First(&file).Error; err != nil {
@@ -1281,7 +1394,7 @@ func (ctrl *FileController) RevokeTempLink(c *gin.Context) {
 
 	var file model.FileRecord
 	query := ctrl.db.Where("id = ?", fileID)
-	if !isUserAdmin(user) {
+	if !isUserAdmin(c, user) {
 		query = query.Where("user_id = ?", user.ID)
 	}
 	if err := query.First(&file).Error; err != nil {
@@ -1308,7 +1421,7 @@ func (ctrl *FileController) RevokeAllTempLinks(c *gin.Context) {
 
 	var file model.FileRecord
 	query := ctrl.db.Where("id = ?", fileID)
-	if !isUserAdmin(user) {
+	if !isUserAdmin(c, user) {
 		query = query.Where("user_id = ?", user.ID)
 	}
 	if err := query.First(&file).Error; err != nil {
@@ -1327,7 +1440,11 @@ func (ctrl *FileController) RevokeAllTempLinks(c *gin.Context) {
 
 func (ctrl *FileController) EditFile(c *gin.Context) {
 	maxSize := ctrl.getMaxUploadSize()
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize*2)
+	if maxSize > 0 {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize*2)
+	} else {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 500*1024*1024)
+	}
 
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
@@ -1357,7 +1474,7 @@ func (ctrl *FileController) EditFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid base64 image data"})
 		return
 	}
-	if int64(len(rawBytes)) > maxSize {
+	if maxSize > 0 && int64(len(rawBytes)) > maxSize {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Image payload exceeds maximum allowed file size"})
 		return
 	}
@@ -1380,6 +1497,14 @@ func (ctrl *FileController) EditFile(c *gin.Context) {
 }
 
 func (ctrl *FileController) GuestUpload(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 52428800)
+
+	if !allowGuestUpload(c.ClientIP()) {
+		c.Header("Retry-After", "30")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "游客上传过于频繁，请稍后重试"})
+		return
+	}
+
 	var s model.Setting
 	ctrl.db.Where("key = 'enable_guest_upload'").First(&s)
 	if s.Value != "true" && s.Value != "1" {
@@ -1400,9 +1525,9 @@ func (ctrl *FileController) GuestUpload(c *gin.Context) {
 	}
 
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fileHeader.Filename), "."))
-	isImgExt := ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "gif" || ext == "webp" || ext == "heif" || ext == "heic" || ext == "bmp" || ext == "svg"
+	isImgExt := ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "gif" || ext == "webp" || ext == "heif" || ext == "heic" || ext == "bmp"
 	if !isImgExt {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "游客仅支持上传图片文件（jpg, png, gif, webp, heif 等）"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客仅支持上传常见图片文件（jpg, png, gif, webp, heif, bmp）"})
 		return
 	}
 
@@ -1417,6 +1542,19 @@ func (ctrl *FileController) GuestUpload(c *gin.Context) {
 		return
 	}
 	defer src.Close()
+
+	headerBuf := make([]byte, 512)
+	n, err := io.ReadFull(src, headerBuf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无法读取上传文件内容"})
+		return
+	}
+	detectedMime := mimetype.Detect(headerBuf[:n]).String()
+	if !strings.HasPrefix(detectedMime, "image/") || strings.Contains(detectedMime, "svg") || strings.Contains(detectedMime, "html") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客仅支持上传合法位图文件"})
+		return
+	}
+	combinedSrc := io.MultiReader(bytes.NewReader(headerBuf[:n]), src)
 
 	var policyID uint
 	var rolePolicy model.RolePolicy
@@ -1438,7 +1576,7 @@ func (ctrl *FileController) GuestUpload(c *gin.Context) {
 		}
 	}
 
-	record, err := ctrl.uploadService.Upload(c.Request.Context(), &guestUser, src, fileHeader.Filename, fileHeader.Size, service.UploadOptions{
+	record, err := ctrl.uploadService.Upload(c.Request.Context(), &guestUser, combinedSrc, fileHeader.Filename, fileHeader.Size, service.UploadOptions{
 		PolicyID:            policyID,
 		DisplayName:         fileHeader.Filename,
 		WatermarkMode:       wmMode,
@@ -1688,9 +1826,20 @@ func (ctrl *FileController) GetPublicFileDetails(c *gin.Context) {
 		return
 	}
 
+	var sSquare, sGuest model.Setting
+	ctrl.db.Where("key = 'enable_square'").First(&sSquare)
+	ctrl.db.Where("key = 'enable_guest_upload'").First(&sGuest)
+	enableSquare := sSquare.Value == "true" || sSquare.Value == "1"
+	enableGuest := sGuest.Value == "true" || sGuest.Value == "1"
+
 	var guestUser model.User
 	ctrl.db.Where("username = ?", "guest").First(&guestUser)
 	isGuestFile := guestUser.ID > 0 && file.UserID == guestUser.ID
+
+	if isGuestFile && !enableGuest {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Guest file access is currently disabled"})
+		return
+	}
 
 	isPublicFile := false
 	if file.IsImage {
@@ -1704,15 +1853,30 @@ func (ctrl *FileController) GetPublicFileDetails(c *gin.Context) {
 		}
 	}
 
-	if !isGuestFile && !isPublicFile {
+	if !isGuestFile && (!isPublicFile || !enableSquare) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
 	currentBaseURL := ctrl.resolveBaseURL(c)
 	links := ctrl.buildFileLinks(&file, currentBaseURL)
+
+	sanitizedFile := gin.H{
+		"id":           file.ID,
+		"display_name": file.DisplayName,
+		"public_path":  file.PublicPath,
+		"mime_type":    file.MimeType,
+		"size":         file.Size,
+		"width":        file.Width,
+		"height":       file.Height,
+		"sha256":       file.Sha256,
+		"is_image":     file.IsImage,
+		"created_at":   file.CreatedAt,
+		"updated_at":   file.UpdatedAt,
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"file":  file,
+		"file":  sanitizedFile,
 		"links": links,
 	})
 }
@@ -1720,7 +1884,7 @@ func (ctrl *FileController) GetPublicFileDetails(c *gin.Context) {
 func (ctrl *FileController) SyncFilePolicy(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
-	isAdmin := isUserAdmin(user)
+	isAdmin := isUserAdmin(c, user)
 
 	fileID := ParseUintSafe(c.Param("id"), 0)
 	if fileID == 0 {
@@ -1768,7 +1932,7 @@ func (ctrl *FileController) SyncFilePolicy(c *gin.Context) {
 func (ctrl *FileController) BatchSyncFilePolicy(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
-	isAdmin := isUserAdmin(user)
+	isAdmin := isUserAdmin(c, user)
 
 	var req struct {
 		FileIDs   []uint `json:"file_ids" binding:"required"`
@@ -1804,7 +1968,7 @@ func (ctrl *FileController) BatchSyncFilePolicy(c *gin.Context) {
 func (ctrl *FileController) RemoveFilePolicy(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
-	isAdmin := isUserAdmin(user)
+	isAdmin := isUserAdmin(c, user)
 
 	fileID := ParseUintSafe(c.Param("id"), 0)
 	policyID := ParseUintSafe(c.Param("policy_id"), 0)
@@ -1841,7 +2005,7 @@ func (ctrl *FileController) RemoveFilePolicy(c *gin.Context) {
 func (ctrl *FileController) BatchRemoveFilePolicy(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
-	isAdmin := isUserAdmin(user)
+	isAdmin := isUserAdmin(c, user)
 
 	var req struct {
 		FileIDs      []uint `json:"file_ids" binding:"required"`

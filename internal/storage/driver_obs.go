@@ -106,7 +106,14 @@ func NewOBSStorageDriver(cfg OBSConfig) (*OBSStorageDriver, error) {
 }
 
 func (d *OBSStorageDriver) resolveKey(key string) string {
-	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	cleanKey := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	if d.cfg.RootDir != "" {
+		cleanRoot := strings.Trim(path.Clean("/"+strings.Trim(d.cfg.RootDir, "/\\")), "/")
+		if cleanRoot != "" && cleanRoot != "." {
+			return cleanRoot + "/" + cleanKey
+		}
+	}
+	return cleanKey
 }
 
 func (d *OBSStorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {
@@ -118,6 +125,29 @@ func (d *OBSStorageDriver) Put(ctx context.Context, key string, r io.Reader, siz
 	}
 	if size > 0 {
 		input.ContentLength = size
+	}
+	ext := strings.ToLower(path.Ext(cleanKey))
+	switch ext {
+	case ".jpg", ".jpeg":
+		input.ContentType = "image/jpeg"
+	case ".png":
+		input.ContentType = "image/png"
+	case ".gif":
+		input.ContentType = "image/gif"
+	case ".webp":
+		input.ContentType = "image/webp"
+	case ".avif":
+		input.ContentType = "image/avif"
+	case ".ico":
+		input.ContentType = "image/x-icon"
+	case ".svg":
+		input.ContentType = "image/svg+xml"
+		input.ContentDisposition = "attachment"
+	case ".html", ".htm":
+		input.ContentType = "text/plain"
+		input.ContentDisposition = "attachment"
+	default:
+		input.ContentType = "application/octet-stream"
 	}
 	_, err := d.client.PutObject(input)
 	return err

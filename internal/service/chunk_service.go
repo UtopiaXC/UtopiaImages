@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -33,6 +34,7 @@ type ChunkUploadMeta struct {
 	WatermarkMode       string    `json:"watermark_mode"`
 	WatermarkTemplateID *uint     `json:"watermark_template_id"`
 	HotlinkMode         string    `json:"hotlink_mode"`
+	PublicMode          string    `json:"public_mode"`
 	PreservePath        bool      `json:"preserve_path"`
 	StripTopDir         bool      `json:"strip_top_dir"`
 	ConflictAction      string    `json:"conflict_action"`
@@ -47,12 +49,14 @@ type ArchiveImportResult struct {
 }
 
 type ChunkService struct {
-	db            *gorm.DB
-	cacheDir      string
-	uploadService *UploadService
-	importService *ImportService
-	lock          sync.Mutex
-	stopCleaner   chan struct{}
+	db               *gorm.DB
+	cacheDir         string
+	uploadService    *UploadService
+	importService    *ImportService
+	lock             sync.Mutex
+	activeAssemblyMu sync.Mutex
+	activeAssemblies map[string]bool
+	stopCleaner      chan struct{}
 }
 
 func NewChunkService(
@@ -69,11 +73,12 @@ func NewChunkService(
 	_ = os.MkdirAll(chunksDir, 0755)
 
 	svc := &ChunkService{
-		db:            db,
-		cacheDir:      cleanCache,
-		uploadService: uploadService,
-		importService: importService,
-		stopCleaner:   make(chan struct{}),
+		db:               db,
+		cacheDir:         cleanCache,
+		uploadService:    uploadService,
+		importService:    importService,
+		activeAssemblies: make(map[string]bool),
+		stopCleaner:      make(chan struct{}),
 	}
 
 	// Start background cleaner for abandoned chunks (older than 24h)
@@ -133,17 +138,43 @@ func (s *ChunkService) PruneExpiredChunks(maxAge time.Duration) {
 	}
 }
 
+func isValidUploadID(id string) bool {
+	id = strings.TrimSpace(id)
+	if len(id) < 8 || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *ChunkService) getUploadDir(uploadID string) string {
 	cleanID := filepath.Base(strings.TrimSpace(uploadID))
+	if !isValidUploadID(cleanID) {
+		return ""
+	}
 	return filepath.Join(s.cacheDir, "chunks", cleanID)
 }
 
 func (s *ChunkService) getMetaPath(uploadID string) string {
-	return filepath.Join(s.getUploadDir(uploadID), "meta.json")
+	dir := s.getUploadDir(uploadID)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "meta.json")
 }
 
 func (s *ChunkService) readMeta(uploadID string) (*ChunkUploadMeta, error) {
+	if !isValidUploadID(uploadID) {
+		return nil, errors.New("invalid upload_id")
+	}
 	metaPath := s.getMetaPath(uploadID)
+	if metaPath == "" {
+		return nil, errors.New("invalid upload_id")
+	}
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
 		return nil, fmt.Errorf("chunk upload task not found or expired: %w", err)
@@ -155,8 +186,44 @@ func (s *ChunkService) readMeta(uploadID string) (*ChunkUploadMeta, error) {
 	return &meta, nil
 }
 
+const (
+	MaxGlobalChunkCacheBytes = 10 * 1024 * 1024 * 1024 // 10 GB limit for in-progress chunk uploads
+)
+
+func (s *ChunkService) getGlobalChunksCacheSize() int64 {
+	chunksBase := filepath.Join(s.cacheDir, "chunks")
+	var totalSize int64
+	entries, err := os.ReadDir(chunksBase)
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if entry.IsDir() {
+			subEntries, err := os.ReadDir(filepath.Join(chunksBase, entry.Name()))
+			if err != nil {
+				continue
+			}
+			for _, sub := range subEntries {
+				if subInfo, err := sub.Info(); err == nil {
+					totalSize += subInfo.Size()
+				}
+			}
+		} else {
+			totalSize += info.Size()
+		}
+	}
+	return totalSize
+}
+
 func (s *ChunkService) saveMeta(meta *ChunkUploadMeta) error {
 	dir := s.getUploadDir(meta.UploadID)
+	if dir == "" {
+		return errors.New("invalid upload_id")
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create chunk directory in cache: %w", err)
 	}
@@ -165,7 +232,12 @@ func (s *ChunkService) saveMeta(meta *ChunkUploadMeta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.getMetaPath(meta.UploadID), data, 0644)
+	metaPath := s.getMetaPath(meta.UploadID)
+	tmpPath := metaPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, metaPath)
 }
 
 // InitChunkUpload initializes a new chunk upload task
@@ -173,11 +245,70 @@ func (s *ChunkService) InitChunkUpload(user *model.User, meta ChunkUploadMeta) (
 	if meta.TotalChunks <= 0 {
 		return nil, nil, fmt.Errorf("total_chunks must be greater than 0")
 	}
-	if meta.TotalSize < 0 {
-		return nil, nil, fmt.Errorf("total_size cannot be negative")
+	if meta.TotalChunks > 2000 {
+		return nil, nil, fmt.Errorf("total_chunks exceeds maximum allowed limit of 2000")
+	}
+	if meta.TotalSize <= 0 {
+		return nil, nil, fmt.Errorf("total_size must be greater than 0")
 	}
 	if meta.Filename == "" {
 		return nil, nil, fmt.Errorf("filename cannot be empty")
+	}
+
+	if meta.TotalChunks == 1 {
+		if meta.ChunkSize <= 0 {
+			meta.ChunkSize = meta.TotalSize
+		}
+		if meta.TotalSize > meta.ChunkSize {
+			return nil, nil, fmt.Errorf("total_size (%d) exceeds chunk_size (%d)", meta.TotalSize, meta.ChunkSize)
+		}
+	} else {
+		if meta.ChunkSize < 1024*1024 || meta.ChunkSize > 50*1024*1024 {
+			return nil, nil, fmt.Errorf("chunk_size must be between 1MB and 50MB (got %d bytes)", meta.ChunkSize)
+		}
+		if int64(meta.TotalChunks-1)*meta.ChunkSize >= meta.TotalSize || meta.TotalSize > int64(meta.TotalChunks)*meta.ChunkSize {
+			return nil, nil, fmt.Errorf("chunk parameters mathematically inconsistent: total_size (%d) not in range ((%d-1)*%d, %d*%d]",
+				meta.TotalSize, meta.TotalChunks, meta.ChunkSize, meta.TotalChunks, meta.ChunkSize)
+		}
+	}
+
+	// Check global cache limit
+	if s.getGlobalChunksCacheSize()+meta.TotalSize > MaxGlobalChunkCacheBytes {
+		return nil, nil, fmt.Errorf("chunk storage cache capacity exceeded (limit 10GB), please retry later")
+	}
+
+	// Validate role restrictions & user quota
+	var role model.Role
+	if user.Role != nil {
+		role = *user.Role
+	} else if s.db != nil {
+		s.db.Where("id = ?", user.RoleID).First(&role)
+	}
+
+	if role.MaxSingleFileSizeMB > 0 {
+		maxBytes := int64(role.MaxSingleFileSizeMB) * 1024 * 1024
+		if meta.TotalSize > maxBytes {
+			return nil, nil, fmt.Errorf("file size (%d bytes) exceeds role limit (%d bytes)", meta.TotalSize, maxBytes)
+		}
+	}
+	if role.QuotaBytes > 0 && user.UsedBytes+meta.TotalSize > role.QuotaBytes {
+		return nil, nil, fmt.Errorf("upload would exceed user storage quota")
+	}
+
+	// Limit active chunk uploads per user (max 10 active tasks)
+	chunksBase := filepath.Join(s.cacheDir, "chunks")
+	if entries, err := os.ReadDir(chunksBase); err == nil {
+		activeCount := 0
+		for _, e := range entries {
+			if e.IsDir() {
+				if m, err := s.readMeta(e.Name()); err == nil && m.UserID == user.ID {
+					activeCount++
+				}
+			}
+		}
+		if activeCount >= 10 {
+			return nil, nil, fmt.Errorf("active chunk upload tasks limit reached (max 10), please complete or cancel previous tasks")
+		}
 	}
 
 	// Generate random 16-byte hex upload_id
@@ -191,6 +322,9 @@ func (s *ChunkService) InitChunkUpload(user *model.User, meta ChunkUploadMeta) (
 	meta.UpdatedAt = time.Now()
 	if meta.UploadType == "" {
 		meta.UploadType = "file"
+	}
+	if meta.PublicMode == "" {
+		meta.PublicMode = "inherit"
 	}
 
 	if err := s.saveMeta(&meta); err != nil {
@@ -207,8 +341,7 @@ func (s *ChunkService) SaveChunkPart(user *model.User, uploadID string, chunkInd
 		return err
 	}
 
-	isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
-	if !isAdmin && meta.UserID != user.ID {
+	if meta.UserID != user.ID {
 		return fmt.Errorf("permission denied: upload task belongs to another user")
 	}
 
@@ -216,20 +349,51 @@ func (s *ChunkService) SaveChunkPart(user *model.User, uploadID string, chunkInd
 		return fmt.Errorf("chunk_index out of bounds (0 <= index < %d)", meta.TotalChunks)
 	}
 
-	chunkPath := filepath.Join(s.getUploadDir(uploadID), fmt.Sprintf("%05d.chunk", chunkIndex))
+	uploadDir := s.getUploadDir(uploadID)
+	chunkPath := filepath.Join(uploadDir, fmt.Sprintf("%05d.chunk", chunkIndex))
 	tmpChunkPath := chunkPath + ".tmp"
+
+	var expectedPartSize int64
+	if chunkIndex < meta.TotalChunks-1 {
+		expectedPartSize = meta.ChunkSize
+	} else {
+		expectedPartSize = meta.TotalSize - int64(meta.TotalChunks-1)*meta.ChunkSize
+	}
+	if expectedPartSize <= 0 {
+		return fmt.Errorf("invalid chunk configuration for index %d", chunkIndex)
+	}
+
+	// Cumulative size check in this upload directory
+	var currentDirBytes int64
+	if entries, err := os.ReadDir(uploadDir); err == nil {
+		for _, e := range entries {
+			if e.Name() != fmt.Sprintf("%05d.chunk", chunkIndex) && strings.HasSuffix(e.Name(), ".chunk") {
+				if info, err := e.Info(); err == nil {
+					currentDirBytes += info.Size()
+				}
+			}
+		}
+	}
+	if currentDirBytes+expectedPartSize > meta.TotalSize {
+		return fmt.Errorf("cumulative chunks size would exceed total file size (%d bytes)", meta.TotalSize)
+	}
 
 	f, err := os.OpenFile(tmpChunkPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create chunk file in cache: %w", err)
 	}
 
-	if _, err := io.Copy(f, r); err != nil {
-		_ = f.Close()
+	boundedReader := io.LimitReader(r, expectedPartSize+1)
+	written, err := io.Copy(f, boundedReader)
+	_ = f.Close()
+	if err != nil {
 		_ = os.Remove(tmpChunkPath)
 		return fmt.Errorf("failed to write chunk data: %w", err)
 	}
-	_ = f.Close()
+	if written != expectedPartSize {
+		_ = os.Remove(tmpChunkPath)
+		return fmt.Errorf("chunk part size mismatch: expected %d bytes, got %d bytes", expectedPartSize, written)
+	}
 
 	if err := os.Rename(tmpChunkPath, chunkPath); err != nil {
 		_ = os.Remove(tmpChunkPath)
@@ -247,8 +411,7 @@ func (s *ChunkService) GetChunkStatus(user *model.User, uploadID string) (*Chunk
 		return nil, nil, err
 	}
 
-	isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
-	if !isAdmin && meta.UserID != user.ID {
+	if meta.UserID != user.ID {
 		return nil, nil, fmt.Errorf("permission denied")
 	}
 
@@ -266,18 +429,31 @@ func (s *ChunkService) GetChunkStatus(user *model.User, uploadID string) (*Chunk
 
 // AbortChunkUpload cleans up cache directory and cancels task
 func (s *ChunkService) AbortChunkUpload(user *model.User, uploadID string) error {
+	if !isValidUploadID(uploadID) {
+		return errors.New("invalid upload_id")
+	}
 	meta, err := s.readMeta(uploadID)
-	if err == nil {
-		isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
-		if !isAdmin && meta.UserID != user.ID {
-			return fmt.Errorf("permission denied")
-		}
+	if err != nil {
+		return err
+	}
+	isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
+	if !isAdmin && meta.UserID != user.ID {
+		return fmt.Errorf("permission denied")
 	}
 
 	dir := s.getUploadDir(uploadID)
+	if dir == "" {
+		return errors.New("invalid upload directory")
+	}
+	chunksRoot := filepath.Clean(filepath.Join(s.cacheDir, "chunks"))
+	cleanDir := filepath.Clean(dir)
+	if cleanDir == chunksRoot || cleanDir == filepath.Clean(s.cacheDir) || !strings.HasPrefix(cleanDir, chunksRoot+string(filepath.Separator)) {
+		return errors.New("invalid chunk directory path")
+	}
+
 	assembledPath := filepath.Join(s.cacheDir, "chunks", uploadID+".assembled")
 
-	_ = os.RemoveAll(dir)
+	_ = os.RemoveAll(cleanDir)
 	_ = os.Remove(assembledPath)
 	slog.Info("Chunk upload task aborted, cache cleared", "upload_id", uploadID)
 	return nil
@@ -285,13 +461,26 @@ func (s *ChunkService) AbortChunkUpload(user *model.User, uploadID string) error
 
 // CompleteChunkUpload merges all chunks in cache, checks SHA-256, and dispatches to uploadService or importService
 func (s *ChunkService) CompleteChunkUpload(ctx context.Context, user *model.User, uploadID string) (*model.FileRecord, *ArchiveImportResult, error) {
+	s.activeAssemblyMu.Lock()
+	if s.activeAssemblies[uploadID] {
+		s.activeAssemblyMu.Unlock()
+		return nil, nil, fmt.Errorf("chunk upload assembly already in progress")
+	}
+	s.activeAssemblies[uploadID] = true
+	s.activeAssemblyMu.Unlock()
+
+	defer func() {
+		s.activeAssemblyMu.Lock()
+		delete(s.activeAssemblies, uploadID)
+		s.activeAssemblyMu.Unlock()
+	}()
+
 	meta, err := s.readMeta(uploadID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
-	if !isAdmin && meta.UserID != user.ID {
+	if meta.UserID != user.ID {
 		return nil, nil, fmt.Errorf("permission denied")
 	}
 
@@ -391,6 +580,8 @@ func (s *ChunkService) CompleteChunkUpload(ctx context.Context, user *model.User
 		DisplayName:         meta.Filename,
 		WatermarkMode:       meta.WatermarkMode,
 		WatermarkTemplateID: meta.WatermarkTemplateID,
+		HotlinkMode:         meta.HotlinkMode,
+		PublicMode:          meta.PublicMode,
 	})
 	if err != nil {
 		return nil, nil, err

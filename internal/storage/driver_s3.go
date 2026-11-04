@@ -137,18 +137,47 @@ func NewS3StorageDriver(cfg S3Config) (*S3StorageDriver, error) {
 }
 
 func (d *S3StorageDriver) resolveKey(key string) string {
-	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	cleaned := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	if d.cfg.RootDir != "" {
+		return path.Clean(d.cfg.RootDir + "/" + cleaned)
+	}
+	return cleaned
 }
 
 func (d *S3StorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {
+	resolvedKey := d.resolveKey(key)
 	input := &s3.PutObjectInput{
 		Bucket: aws.String(d.cfg.Bucket),
-		Key:    aws.String(d.resolveKey(key)),
+		Key:    aws.String(resolvedKey),
 		Body:   r,
 	}
 	if size > 0 {
 		input.ContentLength = aws.Int64(size)
 	}
+
+	ext := strings.ToLower(path.Ext(key))
+	contentType := "application/octet-stream"
+	switch ext {
+	case ".jpg", ".jpeg":
+		contentType = "image/jpeg"
+	case ".png":
+		contentType = "image/png"
+	case ".webp":
+		contentType = "image/webp"
+	case ".gif":
+		contentType = "image/gif"
+	case ".avif":
+		contentType = "image/avif"
+	case ".ico":
+		contentType = "image/x-icon"
+	case ".svg":
+		contentType = "image/svg+xml"
+		input.ContentDisposition = aws.String("attachment")
+	case ".html", ".htm":
+		contentType = "text/plain"
+		input.ContentDisposition = aws.String("attachment")
+	}
+	input.ContentType = aws.String(contentType)
 
 	_, err := d.client.PutObject(ctx, input)
 	return err

@@ -137,12 +137,41 @@ func NewOSSStorageDriver(cfg OSSConfig) (*OSSStorageDriver, error) {
 }
 
 func (d *OSSStorageDriver) resolveKey(key string) string {
-	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	cleanKey := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	if d.cfg.RootDir != "" {
+		cleanRoot := strings.Trim(path.Clean("/"+strings.Trim(d.cfg.RootDir, "/\\")), "/")
+		if cleanRoot != "" && cleanRoot != "." {
+			return cleanRoot + "/" + cleanKey
+		}
+	}
+	return cleanKey
 }
 
 func (d *OSSStorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {
 	cleanKey := d.resolveKey(key)
-	return d.bucket.PutObject(cleanKey, r)
+	var options []oss.Option
+	ext := strings.ToLower(path.Ext(cleanKey))
+	switch ext {
+	case ".jpg", ".jpeg":
+		options = append(options, oss.ContentType("image/jpeg"))
+	case ".png":
+		options = append(options, oss.ContentType("image/png"))
+	case ".gif":
+		options = append(options, oss.ContentType("image/gif"))
+	case ".webp":
+		options = append(options, oss.ContentType("image/webp"))
+	case ".avif":
+		options = append(options, oss.ContentType("image/avif"))
+	case ".ico":
+		options = append(options, oss.ContentType("image/x-icon"))
+	case ".svg":
+		options = append(options, oss.ContentType("image/svg+xml"), oss.ContentDisposition("attachment"))
+	case ".html", ".htm":
+		options = append(options, oss.ContentType("text/plain"), oss.ContentDisposition("attachment"))
+	default:
+		options = append(options, oss.ContentType("application/octet-stream"))
+	}
+	return d.bucket.PutObject(cleanKey, r, options...)
 }
 
 func (d *OSSStorageDriver) Get(ctx context.Context, key string) (io.ReadCloser, error) {

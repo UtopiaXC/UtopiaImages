@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +16,16 @@ import (
 
 func init() {
 	RegisterDriver("local", func(ctx context.Context, policy model.StoragePolicy, db *gorm.DB) (StorageDriver, error) {
-		return NewLocalStorageDriver("data/storage")
+		base := "data/storage"
+		if policy.Config != "" {
+			var cfg struct {
+				BasePath string `json:"base_path"`
+			}
+			if err := json.Unmarshal([]byte(policy.Config), &cfg); err == nil && strings.TrimSpace(cfg.BasePath) != "" {
+				base = strings.TrimSpace(cfg.BasePath)
+			}
+		}
+		return NewLocalStorageDriver(base)
 	})
 }
 
@@ -32,11 +42,20 @@ func NewLocalStorageDriver(basePath string) (*LocalStorageDriver, error) {
 	if cleanBase == "." {
 		cleanBase = "data/storage"
 	}
-	if !filepath.IsAbs(cleanBase) {
-		if cleanBase != "data" && !strings.HasPrefix(cleanBase, "data/") {
-			return nil, fmt.Errorf("local storage path must be within data directory: %s", cleanBase)
-		}
+
+	absBase, err := filepath.Abs(cleanBase)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
+	absData, err := filepath.Abs("data")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute data path: %w", err)
+	}
+	rel, err := filepath.Rel(absData, absBase)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return nil, fmt.Errorf("local storage path must be within data directory: %s", cleanBase)
+	}
+
 	if err := os.MkdirAll(cleanBase, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create storage directory %s: %w", cleanBase, err)
 	}

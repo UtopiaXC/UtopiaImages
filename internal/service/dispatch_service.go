@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/cache"
@@ -28,12 +30,28 @@ import (
 	glogger "gorm.io/gorm/logger"
 )
 
+type callStatRecord struct {
+	FileID    uint
+	Format    string
+	Size      string
+	RealIP    string
+	VisitorID string
+}
+
+type clientTransformBucket struct {
+	tokens    int
+	lastCheck time.Time
+}
+
 type DispatchService struct {
-	db            *gorm.DB
-	storage       storage.StorageDriver
-	driverManager *storage.PolicyDriverManager
-	processor     imaging.ImageProcessor
-	cache         *cache.DerivedCache
+	db               *gorm.DB
+	storage          storage.StorageDriver
+	driverManager    *storage.PolicyDriverManager
+	processor        imaging.ImageProcessor
+	cache            *cache.DerivedCache
+	statChan         chan callStatRecord
+	transformLimiter sync.Mutex
+	transformBuckets map[string]*clientTransformBucket
 }
 
 func NewDispatchService(
@@ -42,12 +60,108 @@ func NewDispatchService(
 	proc imaging.ImageProcessor,
 	dc *cache.DerivedCache,
 ) *DispatchService {
-	return &DispatchService{
-		db:        db,
-		storage:   st,
-		processor: proc,
-		cache:     dc,
+	ds := &DispatchService{
+		db:               db,
+		storage:          st,
+		processor:        proc,
+		cache:            dc,
+		statChan:         make(chan callStatRecord, 5000),
+		transformBuckets: make(map[string]*clientTransformBucket),
 	}
+	go ds.processStatsWorker()
+	return ds
+}
+
+func (s *DispatchService) processStatsWorker() {
+	for rec := range s.statChan {
+		func() {
+			defer func() { _ = recover() }()
+			if s.db == nil {
+				return
+			}
+			silentDB := s.db.Session(&gorm.Session{Logger: s.db.Logger.LogMode(glogger.Silent)})
+
+			// 1. Update or create ImageCallStat for PV
+			res := silentDB.Model(&model.ImageCallStat{}).
+				Where("file_id = ? AND format = ? AND size = ?", rec.FileID, rec.Format, rec.Size).
+				Update("count", gorm.Expr("count + 1"))
+			if res.Error == nil && res.RowsAffected == 0 {
+				stat := model.ImageCallStat{
+					FileID: rec.FileID,
+					Format: rec.Format,
+					Size:   rec.Size,
+					Count:  1,
+					UV:     0,
+				}
+				_ = silentDB.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "file_id"}, {Name: "format"}, {Name: "size"}},
+					DoUpdates: clause.Assignments(map[string]interface{}{"count": gorm.Expr("image_call_stats.count + 1")}),
+				}).Create(&stat).Error
+			}
+
+			// 2. Track unique visitor for UV
+			var exists int64
+			silentDB.Model(&model.ImageCallVisitor{}).
+				Where("file_id = ? AND format = ? AND size = ? AND visitor_id = ?", rec.FileID, rec.Format, rec.Size, rec.VisitorID).
+				Count(&exists)
+			if exists == 0 {
+				vis := model.ImageCallVisitor{
+					FileID:    rec.FileID,
+					Format:    rec.Format,
+					Size:      rec.Size,
+					VisitorID: rec.VisitorID,
+					IP:        rec.RealIP,
+				}
+				resVis := silentDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&vis)
+				if resVis.Error == nil && resVis.RowsAffected > 0 {
+					silentDB.Model(&model.ImageCallStat{}).
+						Where("file_id = ? AND format = ? AND size = ?", rec.FileID, rec.Format, rec.Size).
+						Update("uv", gorm.Expr("uv + 1"))
+				}
+			}
+		}()
+	}
+}
+
+func (s *DispatchService) allowTransformRequest(ip string) bool {
+	if ip == "" {
+		return true
+	}
+	s.transformLimiter.Lock()
+	defer s.transformLimiter.Unlock()
+
+	now := time.Now()
+	// Periodic cleanup if map grows too large
+	if len(s.transformBuckets) > 2000 {
+		for k, b := range s.transformBuckets {
+			if now.Sub(b.lastCheck) > 5*time.Minute {
+				delete(s.transformBuckets, k)
+			}
+		}
+	}
+
+	bucket, ok := s.transformBuckets[ip]
+	if !ok {
+		s.transformBuckets[ip] = &clientTransformBucket{
+			tokens:    30, // max burst
+			lastCheck: now,
+		}
+		return true
+	}
+
+	// Refill 2 tokens per second (up to 30)
+	elapsed := now.Sub(bucket.lastCheck).Seconds()
+	bucket.tokens += int(elapsed * 2)
+	if bucket.tokens > 30 {
+		bucket.tokens = 30
+	}
+	bucket.lastCheck = now
+
+	if bucket.tokens > 0 {
+		bucket.tokens--
+		return true
+	}
+	return false
 }
 
 func (s *DispatchService) SetDB(db *gorm.DB) {
@@ -63,31 +177,51 @@ func (s *DispatchService) abortWithError(c *gin.Context, code int) {
 	c.AbortWithStatus(code)
 }
 
+func isRemoteTrustedProxy(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	remote := c.Request.RemoteAddr
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
 // GetRealClientIP extracts the real client IP considering CDNs and proxies.
 func GetRealClientIP(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""
 	}
-	headers := []string{
-		"CF-Connecting-IP",
-		"True-Client-IP",
-		"X-Real-IP",
-		"Ali-CDN-Real-IP",
-		"Cdn-Src-Ip",
-		"X-Client-IP",
-		"Fastly-Client-IP",
-	}
-	for _, h := range headers {
-		if val := strings.TrimSpace(c.GetHeader(h)); val != "" {
-			return val
+	if isRemoteTrustedProxy(c) {
+		headers := []string{
+			"CF-Connecting-IP",
+			"True-Client-IP",
+			"X-Real-IP",
+			"Ali-CDN-Real-IP",
+			"Cdn-Src-Ip",
+			"X-Client-IP",
+			"Fastly-Client-IP",
 		}
-	}
-	if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			first := strings.TrimSpace(parts[0])
-			if first != "" {
-				return first
+		for _, h := range headers {
+			if val := strings.TrimSpace(c.GetHeader(h)); val != "" {
+				if parsed := net.ParseIP(val); parsed != nil {
+					return parsed.String()
+				}
+			}
+		}
+		if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if len(parts) > 0 {
+				first := strings.TrimSpace(parts[0])
+				if parsed := net.ParseIP(first); parsed != nil {
+					return parsed.String()
+				}
 			}
 		}
 	}
@@ -202,13 +336,32 @@ func (s *DispatchService) handleFileRequest(c *gin.Context, rawPath string, isRa
 	c.Header("Content-Security-Policy", "sandbox")
 	c.Header("Access-Control-Allow-Origin", "*")
 
-	// 5. Check format conversion permission
-	if requestedFormat != "" && !s.isFormatConversionEnabled() {
-		origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
-		if requestedFormat != origExt {
-			s.abortWithError(c, http.StatusNotFound)
-			return
+	// 5. Parse and validate requested format
+	validFormats := map[string]bool{
+		"jpg": true, "jpeg": true, "png": true, "webp": true, "gif": true, "bmp": true, "tiff": true,
+	}
+	if fmtQuery := c.Query("fmt"); fmtQuery != "" {
+		cleanFmt := strings.ToLower(strings.TrimPrefix(fmtQuery, "."))
+		if validFormats[cleanFmt] {
+			requestedFormat = cleanFmt
 		}
+	}
+	if formatQuery := c.Query("format"); formatQuery != "" {
+		cleanFmt := strings.ToLower(strings.TrimPrefix(formatQuery, "."))
+		if validFormats[cleanFmt] {
+			requestedFormat = cleanFmt
+		}
+	}
+
+	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
+	if requestedFormat != "" && requestedFormat != origExt && !s.isFormatConversionEnabled() {
+		s.abortWithError(c, http.StatusNotFound)
+		return
+	}
+
+	targetFormat := origExt
+	if requestedFormat != "" && validFormats[requestedFormat] {
+		targetFormat = requestedFormat
 	}
 
 	// 6. Check if dynamic processing is requested
@@ -232,18 +385,6 @@ func (s *DispatchService) handleFileRequest(c *gin.Context, rawPath string, isRa
 		case "thumb", "thumbnail":
 			reqW = 200
 		}
-	}
-	if fmtQuery := c.Query("fmt"); fmtQuery != "" {
-		requestedFormat = strings.ToLower(fmtQuery)
-	}
-	if formatQuery := c.Query("format"); formatQuery != "" {
-		requestedFormat = strings.ToLower(formatQuery)
-	}
-
-	origExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.PublicPath), "."))
-	targetFormat := origExt
-	if requestedFormat != "" {
-		targetFormat = requestedFormat
 	}
 
 	targetSizeLabel := "original"
@@ -366,10 +507,16 @@ func (s *DispatchService) recordCallStat(fileID uint, format, size string, c *gi
 		return
 	}
 	format = strings.ToLower(strings.TrimSpace(format))
+	if len(format) > 16 {
+		format = format[:16]
+	}
 	if format == "" {
 		format = "original"
 	}
 	size = strings.ToLower(strings.TrimSpace(size))
+	if len(size) > 32 {
+		size = size[:32]
+	}
 	if size == "" {
 		size = "original"
 	}
@@ -377,52 +524,17 @@ func (s *DispatchService) recordCallStat(fileID uint, format, size string, c *gi
 	realIP := GetRealClientIP(c)
 	visitorID := GenerateVisitorID(c)
 
-	go func() {
-		defer func() {
-			_ = recover()
-		}()
-
-		silentDB := s.db.Session(&gorm.Session{Logger: s.db.Logger.LogMode(glogger.Silent)})
-
-		// 1. Update or create ImageCallStat for PV
-		res := s.db.Model(&model.ImageCallStat{}).
-			Where("file_id = ? AND format = ? AND size = ?", fileID, format, size).
-			Update("count", gorm.Expr("count + 1"))
-		if res.Error == nil && res.RowsAffected == 0 {
-			stat := model.ImageCallStat{
-				FileID: fileID,
-				Format: format,
-				Size:   size,
-				Count:  1,
-				UV:     0,
-			}
-			_ = silentDB.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "file_id"}, {Name: "format"}, {Name: "size"}},
-				DoUpdates: clause.Assignments(map[string]interface{}{"count": gorm.Expr("image_call_stats.count + 1")}),
-			}).Create(&stat).Error
-		}
-
-		// 2. Track unique visitor for UV
-		var exists int64
-		s.db.Model(&model.ImageCallVisitor{}).
-			Where("file_id = ? AND format = ? AND size = ? AND visitor_id = ?", fileID, format, size, visitorID).
-			Count(&exists)
-		if exists == 0 {
-			vis := model.ImageCallVisitor{
-				FileID:    fileID,
-				Format:    format,
-				Size:      size,
-				VisitorID: visitorID,
-				IP:        realIP,
-			}
-			resVis := silentDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&vis)
-			if resVis.Error == nil && resVis.RowsAffected > 0 {
-				s.db.Model(&model.ImageCallStat{}).
-					Where("file_id = ? AND format = ? AND size = ?", fileID, format, size).
-					Update("uv", gorm.Expr("uv + 1"))
-			}
-		}
-	}()
+	select {
+	case s.statChan <- callStatRecord{
+		FileID:    fileID,
+		Format:    format,
+		Size:      size,
+		RealIP:    realIP,
+		VisitorID: visitorID,
+	}:
+	default:
+		// Queue is full under extreme load, drop telemetry to prevent memory exhaustion and db lock
+	}
 }
 
 func shortHash(h string) string {
@@ -553,6 +665,9 @@ func (s *DispatchService) serveDirect(c *gin.Context, file model.FileRecord, pre
 	} else if origExt == "svg" && (mimeType == "" || mimeType == "application/octet-stream") {
 		mimeType = "image/svg+xml"
 	}
+	if origExt == "svg" || origExt == "html" || origExt == "htm" {
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(file.PublicPath)))
+	}
 	c.Header("Content-Type", mimeType)
 	if isRawRedirect {
 		c.Header("Cache-Control", "public, max-age=2592000, must-revalidate")
@@ -625,21 +740,21 @@ func (s *DispatchService) serveProcessed(
 	} else {
 		targetW = reqW
 		targetH = reqH
-		// Quantize custom dimensions to steps of 32 and clamp to 8192 to prevent cache exhaustion
+		// Quantize custom dimensions to steps of 64 and clamp to 4096 to prevent cache exhaustion
 		if targetW > 0 {
-			targetW = ((targetW + 15) / 32) * 32
+			targetW = ((targetW + 31) / 64) * 64
 			if targetW < 32 {
 				targetW = 32
-			} else if targetW > 8192 {
-				targetW = 8192
+			} else if targetW > 4096 {
+				targetW = 4096
 			}
 		}
 		if targetH > 0 {
-			targetH = ((targetH + 15) / 32) * 32
+			targetH = ((targetH + 31) / 64) * 64
 			if targetH < 32 {
 				targetH = 32
-			} else if targetH > 8192 {
-				targetH = 8192
+			} else if targetH > 4096 {
+				targetH = 4096
 			}
 		}
 	}
@@ -654,6 +769,22 @@ func (s *DispatchService) serveProcessed(
 
 	needsTransform := (targetW > 0 || targetH > 0) || (targetFormat != origExt)
 
+	// Step 0: Fast 304 Not Modified pre-check if no watermark needed
+	if !watermark {
+		etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-nowm\"", shortHash(file.Sha256), file.SignVersion, targetFormat, targetW, targetH, targetQuality)
+		if isRawRedirect {
+			c.Header("Cache-Control", "public, max-age=2592000, must-revalidate")
+		} else {
+			c.Header("Cache-Control", "public, no-cache, must-revalidate")
+		}
+		c.Header("ETag", etag)
+		c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
+		if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+	}
+
 	// Step 1: Resolve Base Image (with dynamic format conversion / resize cached)
 	var baseBytes []byte
 	var baseMime string
@@ -664,10 +795,20 @@ func (s *DispatchService) serveProcessed(
 		baseCacheExt := "." + targetFormat
 
 		if cachedPath, hit := s.cache.Get(baseCacheKey, baseCacheExt); hit {
+			if !watermark {
+				c.Header("Content-Type", mimeFromFormat(targetFormat))
+				http.ServeFile(c.Writer, c.Request, cachedPath)
+				return
+			}
 			baseBytes, err = os.ReadFile(cachedPath)
 		}
 
 		if len(baseBytes) == 0 || err != nil {
+			if !s.allowTransformRequest(GetRealClientIP(c)) {
+				c.Header("Retry-After", "10")
+				c.AbortWithStatus(http.StatusTooManyRequests)
+				return
+			}
 			baseBytes, baseMime, err = s.cache.ComputeSingleFlight(baseCacheKey, func() ([]byte, string, error) {
 				_, r, err := s.getFileStream(context.Background(), &file, preferredReplica)
 				if err != nil {
@@ -684,24 +825,36 @@ func (s *DispatchService) serveProcessed(
 					Format:  targetFormat,
 					Quality: targetQuality,
 				}
-				return s.processor.Process(r, opts)
+				return s.processor.Process(io.LimitReader(r, 100*1024*1024), opts)
 			})
 			if err != nil {
-				slog.Warn("Image transform failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-				s.serveDirect(c, file, preferredReplica, isRawRedirect)
+				slog.Error("Image transform failed", "path", file.PublicPath, "error", err)
+				c.AbortWithStatus(http.StatusInternalServerError)
 				return
 			}
 			s.cache.Put(baseCacheKey, baseCacheExt, baseBytes)
 		}
-	} else {
-		// Read unconverted original directly
+	} else if !watermark {
+		// Serve unconverted original directly via streaming without buffering 100MB in RAM
 		_, r, err := s.getFileStream(context.Background(), &file, preferredReplica)
 		if err != nil || r == nil {
 			c.AbortWithStatus(http.StatusInternalServerError)
 			return
 		}
 		defer r.Close()
-		baseBytes, err = io.ReadAll(r)
+		c.Header("Content-Type", file.MimeType)
+		c.Header("Content-Length", strconv.FormatInt(file.Size, 10))
+		_, _ = io.Copy(c.Writer, r)
+		return
+	} else {
+		// Watermark is needed, buffer original
+		_, r, err := s.getFileStream(context.Background(), &file, preferredReplica)
+		if err != nil || r == nil {
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+		defer r.Close()
+		baseBytes, err = io.ReadAll(io.LimitReader(r, 100*1024*1024))
 		if err != nil {
 			c.AbortWithStatus(http.StatusInternalServerError)
 			return
@@ -715,18 +868,6 @@ func (s *DispatchService) serveProcessed(
 
 	// If no watermark needed: serve base image directly
 	if !watermark {
-		etag := fmt.Sprintf("\"%s-%d-f%s-w%d-h%d-q%d-nowm\"", shortHash(file.Sha256), file.SignVersion, targetFormat, targetW, targetH, targetQuality)
-		if isRawRedirect {
-			c.Header("Cache-Control", "public, max-age=2592000, must-revalidate")
-		} else {
-			c.Header("Cache-Control", "public, no-cache, must-revalidate")
-		}
-		c.Header("ETag", etag)
-		c.Header("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
-		if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
-			c.Status(http.StatusNotModified)
-			return
-		}
 		c.Header("Content-Type", baseMime)
 		c.Data(http.StatusOK, baseMime, baseBytes)
 		return
@@ -773,7 +914,7 @@ func (s *DispatchService) serveProcessed(
 
 	if tmplID != nil {
 		var tmpl model.WatermarkTemplate
-		if err := s.db.Where("id = ?", *tmplID).First(&tmpl).Error; err == nil && tmpl.Layers != "" {
+		if err := s.db.Where("id = ? AND (owner_id = ? OR is_system = ? OR owner_id IS NULL)", *tmplID, file.UserID, true).First(&tmpl).Error; err == nil && tmpl.Layers != "" {
 			_ = json.Unmarshal([]byte(tmpl.Layers), wmConfig)
 			wmConfig.Enabled = true
 		}
@@ -788,6 +929,11 @@ func (s *DispatchService) serveProcessed(
 	isDynamic := strings.Contains(wmConfig.Text, "{") && strings.Contains(wmConfig.Text, "}")
 
 	if isDynamic {
+		if !s.allowTransformRequest(GetRealClientIP(c)) {
+			c.Header("Retry-After", "10")
+			c.AbortWithStatus(http.StatusTooManyRequests)
+			return
+		}
 		// REQUIREMENT 6: Dynamic watermarks MUST NOT be cached on disk!
 		wmConfig.Text = s.renderDynamicWatermarkText(wmConfig.Text, &file, c)
 
@@ -797,8 +943,8 @@ func (s *DispatchService) serveProcessed(
 			Watermark: wmConfig,
 		})
 		if err != nil {
-			slog.Warn("Dynamic watermark processing failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-			s.serveDirect(c, file, preferredReplica, isRawRedirect)
+			slog.Error("Dynamic watermark processing failed", "path", file.PublicPath, "error", err)
+			c.AbortWithStatus(http.StatusInternalServerError)
 			return
 		}
 
@@ -841,8 +987,8 @@ func (s *DispatchService) serveProcessed(
 		})
 	})
 	if err != nil {
-		slog.Warn("Static watermark processing failed, falling back to direct serving", "path", file.PublicPath, "error", err)
-		s.serveDirect(c, file, preferredReplica, isRawRedirect)
+		slog.Error("Static watermark processing failed", "path", file.PublicPath, "error", err)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
@@ -975,16 +1121,18 @@ func (s *DispatchService) checkReferer(c *gin.Context, file *model.FileRecord) b
 
 	refHost := strings.ToLower(u.Hostname())
 	currentHost := strings.ToLower(c.Request.Host)
-	if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
-		currentHost = strings.ToLower(xfh)
-	}
-	if idx := strings.Index(currentHost, ":"); idx != -1 {
-		currentHost = currentHost[:idx]
+	if h, _, err := net.SplitHostPort(currentHost); err == nil {
+		currentHost = h
 	}
 
-	// Always allow requests from the same host, localhost, or base_url
-	if refHost == currentHost || refHost == "localhost" || refHost == "127.0.0.1" {
-		return true
+	// Determine if currentHost is a trusted/configured host (or LAN/localhost)
+	isCurrentHostTrusted := false
+	if currentHost == "localhost" || currentHost == "127.0.0.1" || currentHost == "::1" {
+		isCurrentHostTrusted = true
+	} else if ip := net.ParseIP(currentHost); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() {
+			isCurrentHostTrusted = true
+		}
 	}
 
 	var baseUrlSetting model.Setting
@@ -996,14 +1144,27 @@ func (s *DispatchService) checkReferer(c *gin.Context, file *model.FileRecord) b
 			if !strings.Contains(rawURL, "://") {
 				rawURL = "https://" + rawURL
 			}
-			if bu, err := url.Parse(rawURL); err == nil && strings.ToLower(bu.Hostname()) == refHost {
-				return true
+			if bu, err := url.Parse(rawURL); err == nil {
+				h := strings.ToLower(bu.Hostname())
+				if h == currentHost {
+					isCurrentHostTrusted = true
+				}
+				if h == refHost {
+					return true
+				}
 			}
 		}
 	}
 
 	// Check configured allowed domains whitelist
 	for _, rule := range allowedRules {
+		rule = strings.ToLower(strings.TrimSpace(rule))
+		if rule == "" {
+			continue
+		}
+		if rule == currentHost || (strings.HasPrefix(rule, "*.") && strings.HasSuffix(currentHost, rule[1:])) {
+			isCurrentHostTrusted = true
+		}
 		if strings.HasPrefix(rule, "*.") {
 			domain := strings.TrimPrefix(rule, "*.")
 			if refHost == domain || strings.HasSuffix(refHost, "."+domain) {
@@ -1016,18 +1177,29 @@ func (s *DispatchService) checkReferer(c *gin.Context, file *model.FileRecord) b
 		}
 	}
 
+	// Only allow requests from the same host if currentHost is trusted or no restrictive rules configured
+	if refHost == currentHost && (isCurrentHostTrusted || (baseUrlSetting.Value == "" && len(allowedRules) == 0)) {
+		return true
+	}
+
 	return false
 }
 
 func parseDomainRules(val string) []string {
+	if len(val) > 8192 {
+		val = val[:8192]
+	}
 	var rules []string
 	fields := strings.FieldsFunc(val, func(r rune) bool {
 		return r == ',' || r == '\n' || r == '\r' || r == ';' || r == ' '
 	})
 	for _, f := range fields {
 		f = strings.ToLower(strings.TrimSpace(f))
-		if f != "" {
+		if f != "" && len(f) <= 255 {
 			rules = append(rules, f)
+			if len(rules) >= 500 {
+				break
+			}
 		}
 	}
 	return rules

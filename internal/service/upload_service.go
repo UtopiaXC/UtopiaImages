@@ -79,6 +79,7 @@ type UploadOptions struct {
 	DisplayName         string
 	WatermarkMode       string // inherit / on / off
 	WatermarkTemplateID *uint
+	HotlinkMode         string // inherit / on / off
 	PublicMode          string // inherit / public / private
 }
 
@@ -133,6 +134,12 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		s.db.Where("id = ?", user.RoleID).First(&role)
 	}
 	maxAllowedBytes := maxSingleFileSize
+	if role.MaxSingleFileSizeMB > 0 {
+		roleMaxBytes := int64(role.MaxSingleFileSizeMB) * 1024 * 1024
+		if maxAllowedBytes <= 0 || roleMaxBytes < maxAllowedBytes {
+			maxAllowedBytes = roleMaxBytes
+		}
+	}
 	if maxAllowedBytes <= 0 {
 		maxAllowedBytes = 100 * 1024 * 1024 * 1024 // 100GB safety ceiling when unlimited
 	}
@@ -179,6 +186,9 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	if maxSingleFileSize > 0 && actualSize > maxSingleFileSize {
 		return nil, fmt.Errorf("file size %d exceeds allowed limit of %d bytes", actualSize, maxSingleFileSize)
 	}
+	if role.MaxSingleFileSizeMB > 0 && actualSize > int64(role.MaxSingleFileSizeMB)*1024*1024 {
+		return nil, fmt.Errorf("file size %d exceeds role single file limit of %d MB", actualSize, role.MaxSingleFileSizeMB)
+	}
 	if role.QuotaBytes > 0 && user.UsedBytes+actualSize > role.QuotaBytes {
 		return nil, fmt.Errorf("user storage quota exceeded: current %d + upload %d > limit %d",
 			user.UsedBytes, actualSize, role.QuotaBytes)
@@ -204,13 +214,8 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 			s.db.Table("role_policies").
 				Where("role_id = ? AND policy_id IN ?", user.RoleID, requestedIDs).
 				Pluck("policy_id", &permittedIDs)
-			var unresIDs []uint
-			s.db.Table("storage_policies").
-				Where("id IN ? AND id NOT IN (SELECT policy_id FROM role_policies)", requestedIDs).
-				Pluck("id", &unresIDs)
-			allPermitted := append(permittedIDs, unresIDs...)
-			if len(allPermitted) > 0 {
-				s.db.Where("id IN ?", allPermitted).Find(&candidatePolicies)
+			if len(permittedIDs) > 0 {
+				s.db.Where("id IN ?", permittedIDs).Find(&candidatePolicies)
 			}
 		}
 		if len(candidatePolicies) == 0 {
@@ -240,13 +245,17 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 			}
 		}
 		if len(candidatePolicies) == 0 {
-			var p model.StoragePolicy
-			s.db.Where("is_default = 1").First(&p)
-			if p.ID == 0 {
-				s.db.First(&p)
-			}
-			if p.ID > 0 {
-				candidatePolicies = append(candidatePolicies, p)
+			if isAdmin {
+				var p model.StoragePolicy
+				s.db.Where("is_default = 1").First(&p)
+				if p.ID == 0 {
+					s.db.First(&p)
+				}
+				if p.ID > 0 {
+					candidatePolicies = append(candidatePolicies, p)
+				}
+			} else {
+				return nil, errors.New("当前角色未分配任何存储策略，请联系管理员分配")
 			}
 		}
 	}
@@ -371,6 +380,9 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 	if opts.PublicMode == "" {
 		opts.PublicMode = "inherit"
 	}
+	if opts.HotlinkMode == "" {
+		opts.HotlinkMode = "inherit"
+	}
 
 	primary := successes[0]
 	fileRecord := &model.FileRecord{
@@ -389,6 +401,7 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		SourceSize:          0,
 		WatermarkMode:       opts.WatermarkMode,
 		WatermarkTemplateID: opts.WatermarkTemplateID,
+		HotlinkMode:         opts.HotlinkMode,
 		PublicMode:          opts.PublicMode,
 		CreatedAt:           time.Now(),
 		UpdatedAt:           time.Now(),
@@ -429,15 +442,34 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 			}
 			createdReplicas = append(createdReplicas, replica)
 
-			if err := tx.Model(&model.StoragePolicy{}).Where("id = ?", succ.policy.ID).Update("used_bytes", gorm.Expr("used_bytes + ?", finalSize)).Error; err != nil {
-				return err
+			polUpdate := tx.Model(&model.StoragePolicy{}).Where("id = ?", succ.policy.ID)
+			if succ.policy.MaxCapacityBytes > 0 {
+				polUpdate = polUpdate.Where("used_bytes + ? <= ?", finalSize, succ.policy.MaxCapacityBytes)
+			}
+			resPol := polUpdate.Update("used_bytes", gorm.Expr("used_bytes + ?", finalSize))
+			if resPol.Error != nil {
+				return resPol.Error
+			}
+			if succ.policy.MaxCapacityBytes > 0 && resPol.RowsAffected == 0 {
+				return fmt.Errorf("storage policy '%s' capacity exceeded", succ.policy.Name)
 			}
 		}
 
-		return tx.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		userUpdate := tx.Model(&model.User{}).Where("id = ?", user.ID)
+		if role.QuotaBytes > 0 {
+			userUpdate = userUpdate.Where("used_bytes + ? <= ?", totalAddedBytes, role.QuotaBytes)
+		}
+		resUser := userUpdate.Updates(map[string]any{
 			"used_bytes": gorm.Expr("used_bytes + ?", totalAddedBytes),
 			"file_count": gorm.Expr("file_count + 1"),
-		}).Error
+		})
+		if resUser.Error != nil {
+			return resUser.Error
+		}
+		if resUser.RowsAffected == 0 {
+			return errors.New("user storage quota exceeded")
+		}
+		return nil
 	})
 
 	if err != nil {
@@ -644,10 +676,14 @@ func (s *UploadService) DeleteFile(ctx context.Context, fileID, userID uint, isA
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("file_id = ?", file.ID).Delete(&model.FilePolicyReplica{}).Error; err != nil {
-			return err
+		res := tx.Unscoped().Delete(&file)
+		if res.Error != nil {
+			return res.Error
 		}
-		if err := tx.Unscoped().Delete(&file).Error; err != nil {
+		if res.RowsAffected == 0 {
+			return errors.New("file not found or already deleted")
+		}
+		if err := tx.Where("file_id = ?", file.ID).Delete(&model.FilePolicyReplica{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&model.User{}).Where("id = ?", file.UserID).Updates(map[string]any{
@@ -755,6 +791,18 @@ func (s *UploadService) SyncFileToPolicies(ctx context.Context, user *model.User
 		return nil, fmt.Errorf("failed to buffer source file: %w", err)
 	}
 
+	var fileOwner model.User
+	if file.UserID == user.ID {
+		fileOwner = *user
+	} else {
+		if err := s.db.Preload("Role").Where("id = ?", file.UserID).First(&fileOwner).Error; err != nil {
+			fileOwner = *user
+		}
+	}
+	if fileOwner.Role != nil && fileOwner.Role.QuotaBytes > 0 && fileOwner.UsedBytes+int64(len(validPolicies))*file.Size > fileOwner.Role.QuotaBytes {
+		return nil, fmt.Errorf("user storage quota exceeded")
+	}
+
 	ext := strings.TrimPrefix(filepath.Ext(file.PublicPath), ".")
 	var createdReplicas []*model.FilePolicyReplica
 	var totalSuccessBytes int64
@@ -769,7 +817,7 @@ func (s *UploadService) SyncFileToPolicies(ctx context.Context, user *model.User
 		}
 
 		renderedName := s.renderNamingRule(p.NamingRule, file.DisplayName, ext, file.Sha256)
-		pubPath := s.buildPublicPath(user, p, renderedName)
+		pubPath := s.buildPublicPath(&fileOwner, p, renderedName)
 		storKey := pubPath
 
 		if err := drv.Put(ctx, storKey, tmpF, file.Size); err != nil {
@@ -792,13 +840,41 @@ func (s *UploadService) SyncFileToPolicies(ctx context.Context, user *model.User
 		}
 
 		err = s.db.Transaction(func(tx *gorm.DB) error {
+			if fileOwner.Role != nil && fileOwner.Role.QuotaBytes > 0 {
+				var curUser model.User
+				if err := tx.Select("used_bytes").Where("id = ?", file.UserID).First(&curUser).Error; err != nil {
+					return err
+				}
+				if curUser.UsedBytes+file.Size > fileOwner.Role.QuotaBytes {
+					return errors.New("user storage quota exceeded")
+				}
+			}
 			if err := tx.Create(replica).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&model.StoragePolicy{}).Where("id = ?", p.ID).Update("used_bytes", gorm.Expr("used_bytes + ?", file.Size)).Error; err != nil {
-				return err
+			polUp := tx.Model(&model.StoragePolicy{}).Where("id = ?", p.ID)
+			if p.MaxCapacityBytes > 0 {
+				polUp = polUp.Where("used_bytes + ? <= ?", file.Size, p.MaxCapacityBytes)
 			}
-			return tx.Model(&model.User{}).Where("id = ?", file.UserID).Update("used_bytes", gorm.Expr("used_bytes + ?", file.Size)).Error
+			resPol := polUp.Update("used_bytes", gorm.Expr("used_bytes + ?", file.Size))
+			if resPol.Error != nil {
+				return resPol.Error
+			}
+			if p.MaxCapacityBytes > 0 && resPol.RowsAffected == 0 {
+				return fmt.Errorf("storage policy '%s' capacity exceeded", p.Name)
+			}
+			userUp := tx.Model(&model.User{}).Where("id = ?", file.UserID)
+			if fileOwner.Role != nil && fileOwner.Role.QuotaBytes > 0 {
+				userUp = userUp.Where("used_bytes + ? <= ?", file.Size, fileOwner.Role.QuotaBytes)
+			}
+			resU := userUp.Update("used_bytes", gorm.Expr("used_bytes + ?", file.Size))
+			if resU.Error != nil {
+				return resU.Error
+			}
+			if resU.RowsAffected == 0 {
+				return errors.New("user storage quota exceeded")
+			}
+			return nil
 		})
 
 		if err != nil {
@@ -837,46 +913,44 @@ func (s *UploadService) RemoveFileFromPolicy(ctx context.Context, user *model.Us
 		return errors.New("file not found")
 	}
 
-	var replicas []model.FilePolicyReplica
-	s.db.Where("file_id = ?", file.ID).Find(&replicas)
-
-	if len(replicas) <= 1 {
-		return errors.New("该存储副本为文件唯一备份，不可移除。如需销毁文件请使用删除操作")
-	}
-
-	var targetReplica *model.FilePolicyReplica
-	var otherReplica *model.FilePolicyReplica
-	for i := range replicas {
-		if replicas[i].PolicyID == policyID {
-			targetReplica = &replicas[i]
-		} else if otherReplica == nil {
-			otherReplica = &replicas[i]
-		}
-	}
-
-	if targetReplica == nil {
+	var targetReplica model.FilePolicyReplica
+	if err := s.db.Where("file_id = ? AND policy_id = ?", file.ID, policyID).First(&targetReplica).Error; err != nil {
 		return nil
 	}
 
-	if opt.DeleteRemote {
-		if drv, err := s.getDriver(ctx, policyID); err == nil {
-			if err := drv.Delete(ctx, targetReplica.StorageKey); err != nil {
-				slog.Warn("Failed to delete physical replica from storage driver", "policy_id", policyID, "storage_key", targetReplica.StorageKey, "error", err)
-				if !opt.ForceDB {
-					return &RemoteDeleteError{Errors: []string{fmt.Sprintf("远程存储删除物理副本失败: %v", err)}}
-				}
+	storageKeyToDelete := targetReplica.StorageKey
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var currentReplicas []model.FilePolicyReplica
+		if err := tx.Where("file_id = ?", file.ID).Find(&currentReplicas).Error; err != nil {
+			return err
+		}
+
+		if len(currentReplicas) <= 1 {
+			return errors.New("该存储副本为文件唯一备份，不可移除。如需销毁文件请使用删除操作")
+		}
+
+		var repToDelete *model.FilePolicyReplica
+		var otherReplica *model.FilePolicyReplica
+		for i := range currentReplicas {
+			if currentReplicas[i].PolicyID == policyID {
+				repToDelete = &currentReplicas[i]
+			} else if otherReplica == nil {
+				otherReplica = &currentReplicas[i]
 			}
 		}
-	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(targetReplica).Error; err != nil {
+		if repToDelete == nil {
+			return nil
+		}
+
+		if err := tx.Delete(repToDelete).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&model.User{}).Where("id = ?", file.UserID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes >= ? THEN used_bytes - ? ELSE 0 END", targetReplica.Size, targetReplica.Size)).Error; err != nil {
+		if err := tx.Model(&model.User{}).Where("id = ?", file.UserID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes >= ? THEN used_bytes - ? ELSE 0 END", repToDelete.Size, repToDelete.Size)).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&model.StoragePolicy{}).Where("id = ?", policyID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes >= ? THEN used_bytes - ? ELSE 0 END", targetReplica.Size, targetReplica.Size)).Error; err != nil {
+		if err := tx.Model(&model.StoragePolicy{}).Where("id = ?", policyID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes >= ? THEN used_bytes - ? ELSE 0 END", repToDelete.Size, repToDelete.Size)).Error; err != nil {
 			return err
 		}
 
@@ -889,6 +963,22 @@ func (s *UploadService) RemoveFileFromPolicy(ctx context.Context, user *model.Us
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	if opt.DeleteRemote && storageKeyToDelete != "" {
+		if drv, err := s.getDriver(ctx, policyID); err == nil {
+			if err := drv.Delete(ctx, storageKeyToDelete); err != nil {
+				slog.Warn("Failed to delete physical replica from storage driver", "policy_id", policyID, "storage_key", storageKeyToDelete, "error", err)
+				if !opt.ForceDB {
+					return &RemoteDeleteError{Errors: []string{fmt.Sprintf("远程存储删除物理副本失败: %v", err)}}
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fileID uint, imgBytes []byte, mode string, newDisplayName string) (*model.FileRecord, error) {
@@ -904,10 +994,10 @@ func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fi
 
 	// Compute dimensions and sha256
 	imgCfg, _, err := image.DecodeConfig(bytes.NewReader(imgBytes))
-	w, h := imgCfg.Width, imgCfg.Height
 	if err != nil {
-		w, h = file.Width, file.Height
+		return nil, fmt.Errorf("invalid image content: %w", err)
 	}
+	w, h := imgCfg.Width, imgCfg.Height
 
 	hash := sha256.Sum256(imgBytes)
 	newSha256 := hex.EncodeToString(hash[:])
@@ -926,34 +1016,76 @@ func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fi
 			DisplayName:         copyName,
 			WatermarkMode:       file.WatermarkMode,
 			WatermarkTemplateID: file.WatermarkTemplateID,
+			HotlinkMode:         file.HotlinkMode,
+			PublicMode:          file.PublicMode,
 		})
 	}
 
 	// Overwrite original
 	sizeDiff := newSize - file.Size
 
-	// Check user storage quota limit
-	var role model.Role
-	if user.Role != nil {
-		role = *user.Role
+	var fileOwner model.User
+	if file.UserID == user.ID {
+		fileOwner = *user
 	} else {
-		s.db.Where("id = ?", user.RoleID).First(&role)
+		if err := s.db.Preload("Role").Where("id = ?", file.UserID).First(&fileOwner).Error; err != nil {
+			fileOwner = *user
+		}
 	}
-	if sizeDiff > 0 && role.QuotaBytes > 0 && user.UsedBytes+sizeDiff > role.QuotaBytes {
+	var role model.Role
+	if fileOwner.Role != nil {
+		role = *fileOwner.Role
+	} else {
+		s.db.Where("id = ?", fileOwner.RoleID).First(&role)
+	}
+	if role.MaxSingleFileSizeMB > 0 && newSize > int64(role.MaxSingleFileSizeMB)*1024*1024 {
+		return nil, fmt.Errorf("edited image size exceeds role single file limit (%d MB)", role.MaxSingleFileSizeMB)
+	}
+	if sizeDiff > 0 && role.QuotaBytes > 0 && fileOwner.UsedBytes+sizeDiff > role.QuotaBytes {
 		return nil, fmt.Errorf("user storage quota exceeded: requires %d bytes, available %d bytes",
-			sizeDiff, role.QuotaBytes-user.UsedBytes)
+			sizeDiff, role.QuotaBytes-fileOwner.UsedBytes)
 	}
 
-	// Check storage policy capacity limit
-	var policy model.StoragePolicy
-	if err := s.db.Where("id = ?", file.PolicyID).First(&policy).Error; err == nil {
-		if sizeDiff > 0 && policy.MaxCapacityBytes > 0 && policy.UsedBytes+sizeDiff > policy.MaxCapacityBytes {
-			return nil, fmt.Errorf("storage policy '%s' capacity exceeded", policy.Name)
+	// Check storage policy capacity limit for all existing ready replicas
+	var replicas []model.FilePolicyReplica
+	s.db.Where("file_id = ? AND status = 'ready'", file.ID).Find(&replicas)
+	replicaPolicyIDs := make(map[uint]bool)
+	replicaPolicyIDs[file.PolicyID] = true
+	for _, rep := range replicas {
+		replicaPolicyIDs[rep.PolicyID] = true
+	}
+
+	if sizeDiff > 0 {
+		for pid := range replicaPolicyIDs {
+			var p model.StoragePolicy
+			if err := s.db.Where("id = ?", pid).First(&p).Error; err == nil {
+				if p.MaxCapacityBytes > 0 && p.UsedBytes+sizeDiff > p.MaxCapacityBytes {
+					return nil, fmt.Errorf("storage policy '%s' capacity exceeded", p.Name)
+				}
+			}
 		}
 	}
 
-	if err := s.storage.Put(ctx, file.StorageKey, bytes.NewReader(imgBytes), newSize); err != nil {
+	drv, err := s.getDriver(ctx, file.PolicyID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get storage driver: %w", err)
+	}
+
+	if err := drv.Put(ctx, file.StorageKey, bytes.NewReader(imgBytes), newSize); err != nil {
 		return nil, fmt.Errorf("failed to save edited image: %w", err)
+	}
+
+	// Update any other replicas with new content
+	for _, rep := range replicas {
+		if rep.PolicyID != file.PolicyID {
+			if rDrv, err := s.getDriver(ctx, rep.PolicyID); err == nil {
+				if err := rDrv.Put(ctx, rep.StorageKey, bytes.NewReader(imgBytes), newSize); err != nil {
+					slog.Warn("Failed to update replica during file edit", "replica_id", rep.ID, "policy_id", rep.PolicyID, "error", err)
+					_ = s.db.Model(&rep).Updates(map[string]any{"status": "failed", "error_msg": err.Error()})
+					delete(replicaPolicyIDs, rep.PolicyID)
+				}
+			}
+		}
 	}
 
 	// Detect actual MIME type
@@ -978,26 +1110,33 @@ func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fi
 					return errors.New("user storage quota exceeded")
 				}
 			}
-			if policy.MaxCapacityBytes > 0 {
-				var currentPolicy model.StoragePolicy
-				if err := tx.Select("used_bytes").Where("id = ?", file.PolicyID).First(&currentPolicy).Error; err != nil {
-					return err
-				}
-				if currentPolicy.UsedBytes+sizeDiff > policy.MaxCapacityBytes {
-					return fmt.Errorf("storage policy '%s' capacity exceeded", policy.Name)
-				}
-			}
 		}
 
 		if err := tx.Save(&file).Error; err != nil {
 			return err
 		}
+		_ = tx.Model(&model.FilePolicyReplica{}).
+			Where("file_id = ? AND status = 'ready'", file.ID).
+			Updates(map[string]any{"size": newSize, "updated_at": time.Now()})
 		if sizeDiff != 0 {
 			if err := tx.Model(&model.User{}).Where("id = ?", file.UserID).Update("used_bytes", gorm.Expr("used_bytes + ?", sizeDiff)).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&model.StoragePolicy{}).Where("id = ?", file.PolicyID).Update("used_bytes", gorm.Expr("used_bytes + ?", sizeDiff)).Error; err != nil {
-				return err
+			for pid := range replicaPolicyIDs {
+				polUp := tx.Model(&model.StoragePolicy{}).Where("id = ?", pid)
+				if sizeDiff > 0 {
+					var pol model.StoragePolicy
+					if err := tx.Where("id = ?", pid).First(&pol).Error; err == nil && pol.MaxCapacityBytes > 0 {
+						polUp = polUp.Where("used_bytes + ? <= ?", sizeDiff, pol.MaxCapacityBytes)
+					}
+				}
+				resPol := polUp.Update("used_bytes", gorm.Expr("CASE WHEN used_bytes + ? >= 0 THEN used_bytes + ? ELSE 0 END", sizeDiff, sizeDiff))
+				if resPol.Error != nil {
+					return resPol.Error
+				}
+				if sizeDiff > 0 && resPol.RowsAffected == 0 {
+					return fmt.Errorf("storage policy capacity exceeded")
+				}
 			}
 		}
 		return nil
@@ -1006,6 +1145,8 @@ func (s *UploadService) SaveEditedFile(ctx context.Context, user *model.User, fi
 		return nil, err
 	}
 
-	user.UsedBytes += sizeDiff
+	if file.UserID == user.ID {
+		user.UsedBytes += sizeDiff
+	}
 	return &file, nil
 }

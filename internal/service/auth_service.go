@@ -23,6 +23,7 @@ import (
 type setupTokenEntry struct {
 	UserID    uint
 	ExpiresAt time.Time
+	Attempts  int
 }
 
 type mfaTokenEntry struct {
@@ -214,16 +215,38 @@ func (s *AuthService) GenerateSetupToken(userID uint) string {
 }
 
 func (s *AuthService) VerifySetupToken(token string) (uint, error) {
+	return s.PeekSetupToken(token)
+}
+
+func (s *AuthService) PeekSetupToken(token string) (uint, error) {
 	if token == "" {
 		return 0, errors.New("missing setup token")
 	}
-	s.setupLock.RLock()
+	s.setupLock.Lock()
+	defer s.setupLock.Unlock()
 	entry, ok := s.setupTokens[token]
-	s.setupLock.RUnlock()
 	if !ok || time.Now().After(entry.ExpiresAt) {
 		return 0, errors.New("setup token expired or invalid")
 	}
 	return entry.UserID, nil
+}
+
+func (s *AuthService) RecordSetupTokenFailure(token string) {
+	if token == "" {
+		return
+	}
+	s.setupLock.Lock()
+	defer s.setupLock.Unlock()
+	entry, ok := s.setupTokens[token]
+	if !ok {
+		return
+	}
+	entry.Attempts++
+	if entry.Attempts >= 5 {
+		delete(s.setupTokens, token)
+	} else {
+		s.setupTokens[token] = entry
+	}
 }
 
 func (s *AuthService) RevokeSetupToken(token string) {
@@ -236,8 +259,11 @@ func (s *AuthService) RevokeSetupToken(token string) {
 func (s *AuthService) Login(account, password, clientIP, userAgent string, captchaSolution string, rememberMe bool) (*LoginResult, string) {
 	trackerKey := fmt.Sprintf("%s:%s", clientIP, account)
 
-	// 1. Progressive backoff delay to thwart automated attacks
+	// 1. Progressive backoff delay to thwart automated attacks (capped to avoid goroutine starvation)
 	if delay := s.tracker.GetDelay(trackerKey); delay > 0 {
+		if delay > 2*time.Second {
+			delay = 2 * time.Second
+		}
 		time.Sleep(delay)
 	}
 
@@ -252,27 +278,36 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 		return &LoginResult{RequiresCaptcha: true}, common.ErrAuthInvalidCredentials
 	}
 
-	// 3. Check if user is permanently banned by administrator (Requirement 10)
+	// 3. Check if user is permanently banned or disabled by administrator
 	if user.Status == "banned" {
 		return nil, common.ErrAuthUserBanned
 	}
+	if user.Status == "disabled" {
+		return nil, common.ErrAuthUserInactive
+	}
 
-	// 3.5 Check if user account is not yet activated (Requirement 5)
+	// 3.5 Check if user account is not yet activated
 	if user.Status == "inactive" || user.Status == "pending" {
 		return nil, common.ErrAuthUserInactive
 	}
 
-	// 4. Check if currently frozen/locked out (Requirement 10)
-	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
-		if user.FailedLoginAttempts >= 15 {
+	// Unfreeze temporary lockout only if LockoutUntil is set and expired
+	if user.Status == "frozen" {
+		if user.LockoutUntil != nil && time.Now().After(*user.LockoutUntil) {
+			s.db.Model(&user).Update("status", "active")
+			user.Status = "active"
+		} else if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
+			if user.FailedLoginAttempts >= 10 {
+				return nil, common.ErrAuthUserFrozen10M
+			}
+			return nil, common.ErrAuthUserFrozen3M
+		} else {
+			// Manually frozen by administrator (LockoutUntil is nil)
 			return nil, common.ErrAuthUserFrozen30D
-		} else if user.FailedLoginAttempts >= 10 {
-			return nil, common.ErrAuthUserFrozen10M
 		}
-		return nil, common.ErrAuthUserFrozen3M
 	}
 
-	// 5. Check if CAPTCHA is required (Immediately after 1 failure, per requirement 10)
+	// 5. Check if CAPTCHA is required (Immediately after 1 failure)
 	if user.FailedLoginAttempts >= 1 || s.tracker.RequiresCaptcha(trackerKey) {
 		if !s.VerifyCaptcha(captchaSolution, clientIP) {
 			return &LoginResult{RequiresCaptcha: true}, common.ErrAuthCaptchaRequired
@@ -289,20 +324,13 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 		var errCode string
 		updates := map[string]any{"failed_login_attempts": user.FailedLoginAttempts}
 
-		if user.FailedLoginAttempts >= 15 {
-			until := now.Add(30 * 24 * time.Hour)
+		if user.FailedLoginAttempts >= 10 {
+			until := now.Add(15 * time.Minute)
 			updates["lockout_until"] = &until
-			updates["status"] = "frozen"
-			errCode = common.ErrAuthUserFrozen30D
-		} else if user.FailedLoginAttempts >= 10 {
-			until := now.Add(10 * time.Minute)
-			updates["lockout_until"] = &until
-			updates["status"] = "frozen"
 			errCode = common.ErrAuthUserFrozen10M
 		} else if user.FailedLoginAttempts >= 5 {
 			until := now.Add(3 * time.Minute)
 			updates["lockout_until"] = &until
-			updates["status"] = "frozen"
 			errCode = common.ErrAuthUserFrozen3M
 		} else {
 			errCode = common.ErrAuthInvalidCredentials
@@ -345,16 +373,11 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 		}, ""
 	}
 
-	// 8. Success: reset attempt counter & lockout, set active if was frozen
+	// 8. Success: reset attempt counter & lockout
 	s.tracker.RecordSuccess(trackerKey)
-	status := user.Status
-	if status == "frozen" {
-		status = "active"
-	}
 	s.db.Model(&user).Updates(map[string]any{
 		"failed_login_attempts": 0,
 		"lockout_until":         nil,
-		"status":                status,
 	})
 
 	rawToken, _, err := s.sessionManager.CreateSession(user.ID, clientIP, userAgent, rememberMe)
@@ -411,7 +434,7 @@ func (s *AuthService) Register(username, email, password, nickname string) (*mod
 		}
 	}
 	var assignedRole model.Role
-	if err := s.db.First(&assignedRole, roleID).Error; err != nil || assignedRole.Name == "guest" {
+	if err := s.db.First(&assignedRole, roleID).Error; err != nil || assignedRole.Name == "guest" || assignedRole.Name == "admin" || assignedRole.ID == 1 {
 		roleID = 2
 	}
 
@@ -466,13 +489,30 @@ func (s *AuthService) ActivateAccount(tokenStr string) string {
 		return common.ErrActivationTokenInvalid
 	}
 
-	// Update user status to active
-	if err := s.db.Model(&model.User{}).Where("id = ?", tokenRecord.UserID).Update("status", "active").Error; err != nil {
-		return common.ErrDatabaseError
+	var user model.User
+	if err := s.db.First(&user, tokenRecord.UserID).Error; err != nil {
+		return common.ErrActivationTokenInvalid
+	}
+	if user.Status == "banned" || user.Status == "disabled" || user.Status == "frozen" {
+		return common.ErrAuthUserBanned
 	}
 
-	// Mark token used
-	s.db.Model(&tokenRecord).Update("used", true)
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.PasswordResetToken{}).
+			Where("id = ? AND used = ?", tokenRecord.ID, false).
+			Update("used", true)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errors.New("already used")
+		}
+		return tx.Model(&model.User{}).Where("id = ?", tokenRecord.UserID).Update("status", "active").Error
+	})
+	if err != nil {
+		return common.ErrActivationTokenInvalid
+	}
+
 	slog.Info("User account successfully activated", "user_id", tokenRecord.UserID)
 	return ""
 }
@@ -488,6 +528,13 @@ func (s *AuthService) RequestPasswordReset(accountOrEmail string) (*model.User, 
 	lowerAccount := strings.ToLower(accountOrEmail)
 	if err := s.db.Where("LOWER(email) = ? OR LOWER(username) = ?", lowerAccount, lowerAccount).First(&user).Error; err != nil {
 		return nil, "", common.ErrAuthUserNotFound
+	}
+
+	if user.Status == "banned" {
+		return nil, "", common.ErrAuthUserBanned
+	}
+	if user.Status == "disabled" {
+		return nil, "", common.ErrAuthUserInactive
 	}
 
 	if user.Email == nil || *user.Email == "" {
@@ -525,6 +572,13 @@ func (s *AuthService) Request2FAResetByID(userID uint) (*model.User, string, str
 		return nil, "", common.ErrAuthUserNotFound
 	}
 
+	if user.Status == "banned" {
+		return nil, "", common.ErrAuthUserBanned
+	}
+	if user.Status == "disabled" {
+		return nil, "", common.ErrAuthUserInactive
+	}
+
 	if user.Email == nil || *user.Email == "" {
 		return nil, "", common.ErrAuthUserNotFound
 	}
@@ -559,6 +613,13 @@ func (s *AuthService) Request2FAReset(accountOrEmail string) (*model.User, strin
 	lowerAccount := strings.ToLower(accountOrEmail)
 	if err := s.db.Where("LOWER(email) = ? OR LOWER(username) = ?", lowerAccount, lowerAccount).First(&user).Error; err != nil {
 		return nil, "", common.ErrAuthUserNotFound
+	}
+
+	if user.Status == "banned" {
+		return nil, "", common.ErrAuthUserBanned
+	}
+	if user.Status == "disabled" {
+		return nil, "", common.ErrAuthUserInactive
 	}
 
 	if user.Email == nil || *user.Email == "" {
@@ -600,29 +661,64 @@ func (s *AuthService) Reset2FAWithToken(tokenStr string) string {
 	if err := s.db.Where("id = ?", tokenRecord.UserID).First(&user).Error; err != nil {
 		return common.ErrAuthUserNotFound
 	}
+	if user.Status == "banned" {
+		return common.ErrAuthUserBanned
+	}
+	if user.Status == "disabled" {
+		return common.ErrAuthUserInactive
+	}
+	if user.Status == "frozen" && user.LockoutUntil == nil {
+		return common.ErrAuthUserFrozen30D
+	}
 
-	// Delete TOTP Secret
-	s.db.Where("user_id = ?", user.ID).Delete(&model.TOTPSecret{})
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.PasswordResetToken{}).
+			Where("id = ? AND used = ?", tokenRecord.ID, false).
+			Update("used", true)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errors.New("already used")
+		}
 
-	// Delete WebAuthn Passkeys
-	s.db.Where("user_id = ?", user.ID).Delete(&model.WebAuthnCredential{})
+		// Delete TOTP Secret
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.TOTPSecret{}).Error; err != nil {
+			return err
+		}
 
-	// Delete Recovery Codes
-	s.db.Where("user_id = ?", user.ID).Delete(&model.RecoveryCode{})
+		// Delete WebAuthn Passkeys
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.WebAuthnCredential{}).Error; err != nil {
+			return err
+		}
 
-	// Disable Require2FA on user and bump token version
-	s.db.Model(&user).Updates(map[string]any{
-		"require_2fa":   false,
-		"token_version": gorm.Expr("token_version + 1"),
+		// Delete Recovery Codes
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.RecoveryCode{}).Error; err != nil {
+			return err
+		}
+
+		// Revoke all sessions and API tokens
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.Session{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.ApiToken{}).Error; err != nil {
+			return err
+		}
+
+		// Disable Require2FA on user and bump token version
+		return tx.Model(&user).Updates(map[string]any{
+			"require_2fa":   false,
+			"token_version": gorm.Expr("token_version + 1"),
+		}).Error
 	})
+	if err != nil {
+		return common.ErrResetTokenInvalid
+	}
 
 	// Revoke all existing sessions for this user
 	_ = s.sessionManager.RevokeAllUserSessions(user.ID)
 
-	// Mark token as used
-	s.db.Model(&tokenRecord).Update("used", true)
 	slog.Info("2FA successfully reset via email token", "username", user.Username)
-
 	return ""
 }
 
@@ -645,28 +741,61 @@ func (s *AuthService) ResetPasswordWithToken(tokenStr, newPassword string) strin
 	if err := s.db.Where("id = ?", tokenRecord.UserID).First(&user).Error; err != nil {
 		return common.ErrAuthUserNotFound
 	}
+	if user.Status == "banned" {
+		return common.ErrAuthUserBanned
+	}
+	if user.Status == "disabled" {
+		return common.ErrAuthUserInactive
+	}
+	if user.Status == "frozen" && user.LockoutUntil == nil {
+		return common.ErrAuthUserFrozen30D
+	}
 
 	hash, err := auth.HashPassword(newPassword)
 	if err != nil {
 		return common.ErrInternalServerError
 	}
 
-	// Update user password and clear any frozen / lockout state (Requirement 10)
-	s.db.Model(&user).Updates(map[string]any{
+	updates := map[string]any{
 		"password_hash":         hash,
 		"token_version":         gorm.Expr("token_version + 1"),
 		"failed_login_attempts": 0,
 		"lockout_until":         nil,
-		"status":                "active",
+	}
+	if user.Status == "frozen" && user.LockoutUntil != nil {
+		updates["status"] = "active"
+	} else if user.Status == "inactive" || user.Status == "pending" {
+		updates["status"] = "active"
+	}
+
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.PasswordResetToken{}).
+			Where("id = ? AND used = ?", tokenRecord.ID, false).
+			Update("used", true)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errors.New("already used")
+		}
+
+		if err := tx.Model(&user).Updates(updates).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.Session{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("user_id = ?", user.ID).Delete(&model.ApiToken{}).Error
 	})
+	if err != nil {
+		return common.ErrResetTokenInvalid
+	}
 
 	// Revoke all active sessions on password reset
 	_ = s.sessionManager.RevokeAllUserSessions(user.ID)
 
-	// Mark token as used
-	s.db.Model(&tokenRecord).Update("used", true)
 	slog.Info("Password reset completed via token", "username", user.Username)
-
 	return ""
 }
 
@@ -723,14 +852,18 @@ func (s *AuthService) VerifyMFAAndLogin(mfaToken, code, clientIP, userAgent stri
 		return "", errors.New("2FA not configured")
 	}
 
-	plainSecret, err := s.totpManager.DecryptSecret(sec.SecretEncrypted)
+	plainSecret, newEnc, upgraded, err := s.totpManager.DecryptSecretWithUpgrade(sec.SecretEncrypted)
 	if err != nil {
 		return "", errors.New("failed to decrypt 2FA secret")
 	}
 
-	if !s.totpManager.Validate(code, plainSecret) {
+	if !s.totpManager.ValidateWithContext(fmt.Sprintf("uid:%d", userID), code, plainSecret) {
 		s.tracker.RecordFailure(trackerKey)
 		return "", errors.New("invalid 2FA code")
+	}
+
+	if upgraded && newEnc != "" {
+		s.db.Model(&sec).Update("secret_encrypted", newEnc)
 	}
 
 	// 3. Success: revoke MFA token and reset attempts tracker
@@ -738,6 +871,12 @@ func (s *AuthService) VerifyMFAAndLogin(mfaToken, code, clientIP, userAgent stri
 	delete(s.mfaTokens, mfaToken)
 	s.mfaLock.Unlock()
 	s.tracker.RecordSuccess(trackerKey)
+
+	// Reset attempts and lockout
+	s.db.Model(&user).Updates(map[string]any{
+		"failed_login_attempts": 0,
+		"lockout_until":         nil,
+	})
 
 	rawToken, _, err := s.sessionManager.CreateSession(userID, clientIP, userAgent, rememberMe)
 	return rawToken, err
@@ -866,6 +1005,11 @@ func (s *AuthService) ChangeUsername(userID uint, newUsername string) error {
 				if err := tx.Model(&model.FileRecord{}).Where("id = ?", f.ID).Updates(map[string]any{
 					"public_path":  newPublicPath,
 					"sign_version": gorm.Expr("sign_version + 1"),
+				}).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&model.FilePolicyReplica{}).Where("file_id = ? AND public_path = ?", f.ID, f.PublicPath).Updates(map[string]any{
+					"public_path": newPublicPath,
 				}).Error; err != nil {
 					return err
 				}

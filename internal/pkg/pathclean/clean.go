@@ -5,12 +5,16 @@ import (
 	"strings"
 )
 
-// CleanPath cleans an incoming URL or storage path to prevent directory traversal
+// CleanPath cleans an incoming URL or storage path to prevent directory traversal and injection
 func CleanPath(p string) string {
 	// Normalize backslashes to slashes
 	p = strings.ReplaceAll(p, "\\", "/")
 	// Remove null bytes
 	p = strings.ReplaceAll(p, "\x00", "")
+	// Filter characters that can break query strings, fragments, HTML/XML injection
+	for _, bad := range []string{"?", "#", "\"", "'", "<", ">", ")", "("} {
+		p = strings.ReplaceAll(p, bad, "")
+	}
 	// Clean using standard path.Clean
 	cleaned := path.Clean("/" + p)
 	// Trim leading slash

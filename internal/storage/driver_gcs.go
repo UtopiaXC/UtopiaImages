@@ -88,12 +88,42 @@ func NewGCSStorageDriver(ctx context.Context, cfg GCSConfig) (*GCSStorageDriver,
 }
 
 func (d *GCSStorageDriver) resolveKey(key string) string {
-	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	cleanKey := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	if d.cfg.RootDir != "" {
+		cleanRoot := strings.Trim(path.Clean("/"+strings.Trim(d.cfg.RootDir, "/\\")), "/")
+		if cleanRoot != "" && cleanRoot != "." {
+			return cleanRoot + "/" + cleanKey
+		}
+	}
+	return cleanKey
 }
 
 func (d *GCSStorageDriver) Put(ctx context.Context, key string, r io.Reader, size int64) error {
 	cleanKey := d.resolveKey(key)
 	wc := d.client.Bucket(d.cfg.Bucket).Object(cleanKey).NewWriter(ctx)
+	ext := strings.ToLower(path.Ext(cleanKey))
+	switch ext {
+	case ".jpg", ".jpeg":
+		wc.ContentType = "image/jpeg"
+	case ".png":
+		wc.ContentType = "image/png"
+	case ".gif":
+		wc.ContentType = "image/gif"
+	case ".webp":
+		wc.ContentType = "image/webp"
+	case ".avif":
+		wc.ContentType = "image/avif"
+	case ".ico":
+		wc.ContentType = "image/x-icon"
+	case ".svg":
+		wc.ContentType = "image/svg+xml"
+		wc.ContentDisposition = "attachment"
+	case ".html", ".htm":
+		wc.ContentType = "text/plain"
+		wc.ContentDisposition = "attachment"
+	default:
+		wc.ContentType = "application/octet-stream"
+	}
 	if _, err := io.Copy(wc, r); err != nil {
 		_ = wc.Close()
 		return err

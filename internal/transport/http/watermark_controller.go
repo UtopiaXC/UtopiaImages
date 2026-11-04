@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,12 +14,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	_ "golang.org/x/image/webp"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
 	"github.com/UtopiaXC/UtopiaImages/internal/cache"
+	"github.com/UtopiaXC/UtopiaImages/internal/common"
 	"github.com/UtopiaXC/UtopiaImages/internal/imaging"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
 	"github.com/gin-gonic/gin"
@@ -43,9 +46,52 @@ func (ctrl *WatermarkController) SetDB(db *gorm.DB) {
 	ctrl.db = db
 }
 
+type previewRateBucket struct {
+	tokens    int
+	lastCheck time.Time
+}
+
+var (
+	previewLimiterMu  sync.Mutex
+	previewLimiterMap = make(map[string]*previewRateBucket)
+)
+
+func allowPreviewRequest(key string) bool {
+	previewLimiterMu.Lock()
+	defer previewLimiterMu.Unlock()
+
+	now := time.Now()
+	if len(previewLimiterMap) > 1000 {
+		for k, b := range previewLimiterMap {
+			if now.Sub(b.lastCheck) > 5*time.Minute {
+				delete(previewLimiterMap, k)
+			}
+		}
+	}
+	b, ok := previewLimiterMap[key]
+	if !ok {
+		previewLimiterMap[key] = &previewRateBucket{
+			tokens:    30,
+			lastCheck: now,
+		}
+		return true
+	}
+	elapsed := now.Sub(b.lastCheck).Seconds()
+	b.tokens += int(elapsed * 1) // 1 token per second
+	if b.tokens > 30 {
+		b.tokens = 30
+	}
+	b.lastCheck = now
+	if b.tokens > 0 {
+		b.tokens--
+		return true
+	}
+	return false
+}
+
 func (ctrl *WatermarkController) RegisterRoutes(rg *gin.RouterGroup) {
 	wm := rg.Group("/watermarks")
-	wm.Use(auth.RequireAuth())
+	wm.Use(auth.RequireAuth(), auth.RequirePermission("watermark.use"))
 	{
 		wm.GET("", ctrl.ListWatermarks)
 		wm.GET("/system", ctrl.ListSystemWatermarks)
@@ -101,6 +147,14 @@ func (ctrl *WatermarkController) CreateWatermark(c *gin.Context) {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark template name cannot be empty"})
+		return
+	}
+	if len(req.Layers) > 65536 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark layers configuration is too large"})
+		return
+	}
+	if !json.Valid([]byte(req.Layers)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark layers must be valid JSON"})
 		return
 	}
 
@@ -166,6 +220,14 @@ func (ctrl *WatermarkController) UpdateWatermark(c *gin.Context) {
 		updates["name"] = req.Name
 	}
 	if req.Layers != "" {
+		if len(req.Layers) > 65536 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark layers configuration is too large"})
+			return
+		}
+		if !json.Valid([]byte(req.Layers)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Watermark layers must be valid JSON"})
+			return
+		}
 		updates["layers"] = req.Layers
 	}
 
@@ -219,6 +281,28 @@ func (ctrl *WatermarkController) PreviewWatermark(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	clientKey := c.ClientIP()
+	if uVal, exists := c.Get(auth.CtxUserKey); exists && uVal != nil {
+		if user, ok := uVal.(*model.User); ok {
+			clientKey = fmt.Sprintf("u_%d", user.ID)
+		}
+	}
+	if !allowPreviewRequest(clientKey) {
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "水印预览请求过于频繁，请稍后重试"})
+		return
+	}
+
+	if req.EnableBlindWatermark != nil && *req.EnableBlindWatermark {
+		select {
+		case imaging.BlindWatermarkSem <- struct{}{}:
+			defer func() { <-imaging.BlindWatermarkSem }()
+		default:
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "系统正忙，盲水印任务并发已达上限，请稍后重试"})
+			return
+		}
 	}
 
 	if req.Type == "" {
@@ -311,7 +395,7 @@ func (ctrl *WatermarkController) PreviewWatermark(c *gin.Context) {
 	})
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Preview generation failed: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Preview generation failed: " + common.SanitizeError(err)})
 		return
 	}
 
@@ -326,6 +410,14 @@ func imgToJpegBytes(img image.Image) []byte {
 }
 
 func (ctrl *WatermarkController) ExtractBlindWatermark(c *gin.Context) {
+	select {
+	case imaging.BlindWatermarkSem <- struct{}{}:
+		defer func() { <-imaging.BlindWatermarkSem }()
+	default:
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "系统正忙，已有盲水印提取任务在执行，请稍后重试"})
+		return
+	}
+
 	// 1. Limit request body to 25MB to prevent upload memory exhaustion
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 25*1024*1024)
 
@@ -348,8 +440,8 @@ func (ctrl *WatermarkController) ExtractBlindWatermark(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无法解析图片格式: " + err.Error()})
 		return
 	}
-	if cfg.Width > 16384 || cfg.Height > 16384 || int64(cfg.Width)*int64(cfg.Height) > 80000000 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "图片尺寸过大（最大支持 8000 万像素），防止内存过载"})
+	if cfg.Width > 4096 || cfg.Height > 4096 || int64(cfg.Width)*int64(cfg.Height) > 20000000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "图片尺寸过大（最大支持 2000 万像素），防止内存过载"})
 		return
 	}
 

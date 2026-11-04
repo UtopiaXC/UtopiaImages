@@ -3,7 +3,6 @@ package service
 import (
 	"archive/tar"
 	"archive/zip"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -53,7 +52,7 @@ type ImportOptions struct {
 const (
 	MaxArchiveTotalBytes = 100 * 1024 * 1024 * 1024 // 100 GB max uncompressed archive size
 	MaxArchiveSingleFile = 10 * 1024 * 1024 * 1024  // 10 GB max per single file
-	MaxArchiveFileCount  = 500000                   // Max 500,000 files in archive
+	MaxArchiveFileCount  = 10000                    // Max 10,000 files in archive to prevent CPU/DoS exhaustion
 )
 
 func (s *ImportService) resolvePolicy(user *model.User, policyID uint) (model.StoragePolicy, error) {
@@ -103,6 +102,10 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 	if hotlinkMode == "" {
 		hotlinkMode = "inherit"
 	}
+	validActions := map[string]bool{"skip": true, "overwrite": true, "rename": true}
+	if !validActions[opts.ConflictAction] {
+		opts.ConflictAction = "skip"
+	}
 
 	if opts.WatermarkTemplateID != nil && *opts.WatermarkTemplateID > 0 {
 		var count int64
@@ -113,6 +116,8 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 			opts.WatermarkTemplateID = nil
 		}
 	}
+
+	var totalExtractedBytes int64
 
 	processItem := func(itemPath string, itemSize int64, itemReader io.Reader) error {
 		total++
@@ -150,18 +155,30 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 				return nil
 			}
 
-			isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
-			if !isAdmin && existingFile.UserID != user.ID {
-				slog.Warn("Import overwrite skipped: cross-user permission denied", "path", publicPath, "owner", existingFile.UserID, "operator", user.ID)
-				skipped++
-				return nil
+			if opts.ConflictAction == "rename" || opts.ConflictAction == "" {
+				extWithDot := filepath.Ext(publicPath)
+				baseWithoutExt := strings.TrimSuffix(publicPath, extWithDot)
+				for idx := 1; idx < 1000; idx++ {
+					candPath := fmt.Sprintf("%s_%d%s", baseWithoutExt, idx, extWithDot)
+					var dummy model.FileRecord
+					if err := s.db.Unscoped().Where("public_path = ?", candPath).First(&dummy).Error; err != nil {
+						publicPath = candPath
+						hasExisting = false
+						break
+					}
+				}
+				if hasExisting {
+					skipped++
+					return nil
+				}
+			} else {
+				isAdmin := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
+				if !isAdmin && existingFile.UserID != user.ID {
+					slog.Warn("Import overwrite skipped: cross-user permission denied", "path", publicPath, "owner", existingFile.UserID, "operator", user.ID)
+					skipped++
+					return nil
+				}
 			}
-		}
-
-		// Calculate storage size difference
-		var sizeDelta int64 = itemSize
-		if hasExisting && opts.ConflictAction == "overwrite" {
-			sizeDelta = itemSize - existingFile.Size
 		}
 
 		targetQuotaUserID := user.ID
@@ -169,7 +186,91 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 			targetQuotaUserID = existingFile.UserID
 		}
 
-		// Enforce user storage quota
+		// Enforce role allowed formats
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(cleanedPath), "."))
+		if user.Role != nil && strings.TrimSpace(user.Role.AllowedFormats) != "" && strings.TrimSpace(user.Role.AllowedFormats) != "*" {
+			allowedList := strings.Split(user.Role.AllowedFormats, ",")
+			matched := false
+			for _, a := range allowedList {
+				if strings.ToLower(strings.TrimSpace(a)) == ext {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				slog.Warn("Import skipped: format not allowed by role", "ext", ext, "allowed", user.Role.AllowedFormats)
+				skipped++
+				return nil
+			}
+		}
+
+		// Enforce storage policy & role single file limit & guard against bombs
+		maxItemLimit := int64(52428800) // 50MB default
+		if policy.MaxSingleFileSizeMB > 0 {
+			maxItemLimit = policy.MaxSingleFileSizeMB * 1024 * 1024
+		}
+		if user.Role != nil && user.Role.MaxSingleFileSizeMB > 0 {
+			roleLimit := int64(user.Role.MaxSingleFileSizeMB) * 1024 * 1024
+			if maxItemLimit == 0 || roleLimit < maxItemLimit {
+				maxItemLimit = roleLimit
+			}
+		}
+		if itemSize > maxItemLimit {
+			slog.Warn("Import skipped: file size exceeds policy/role limit", "path", publicPath, "size", itemSize)
+			skipped++
+			return nil
+		}
+
+		cr := &countingReader{reader: itemReader}
+		limitedReader := io.LimitReader(cr, maxItemLimit+1)
+
+		tmpF, err := os.CreateTemp("", "uimg-import-*")
+		if err != nil {
+			slog.Error("Failed to create temp file for import item", "error", err)
+			skipped++
+			return nil
+		}
+		tmpPath := tmpF.Name()
+		defer func() {
+			_ = tmpF.Close()
+			_ = os.Remove(tmpPath)
+		}()
+
+		hasher := sha256.New()
+		tee := io.TeeReader(limitedReader, hasher)
+		headBuf := make([]byte, 2048)
+		n, _ := io.ReadFull(tee, headBuf)
+		headBuf = headBuf[:n]
+		mime := mimetype.Detect(headBuf).String()
+		isImg := strings.HasPrefix(mime, "image/") && !strings.Contains(mime, "svg")
+
+		if _, err := tmpF.Write(headBuf); err != nil {
+			skipped++
+			return nil
+		}
+		if _, err := io.Copy(tmpF, tee); err != nil {
+			skipped++
+			return nil
+		}
+
+		finalItemSize := cr.count
+		if finalItemSize > maxItemLimit {
+			slog.Warn("Import skipped: decompressed file exceeded limit", "path", publicPath, "read", finalItemSize, "limit", maxItemLimit)
+			skipped++
+			return nil
+		}
+
+		totalExtractedBytes += finalItemSize
+		if totalExtractedBytes > MaxArchiveTotalBytes {
+			return fmt.Errorf("archive extracted total size exceeded limit (%d bytes)", MaxArchiveTotalBytes)
+		}
+
+		var sizeDelta int64 = finalItemSize
+		if hasExisting && opts.ConflictAction == "overwrite" {
+			sizeDelta = finalItemSize - existingFile.Size
+		}
+
+		// Enforce user storage quota and policy capacity BEFORE putting into driver
 		if sizeDelta > 0 {
 			var quotaUser model.User
 			if targetQuotaUserID == user.ID {
@@ -188,32 +289,12 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 				skipped++
 				return nil
 			}
+			if policy.MaxCapacityBytes > 0 && policy.UsedBytes+sizeDelta > policy.MaxCapacityBytes {
+				slog.Warn("Import skipped: storage policy capacity exceeded", "path", publicPath, "policy", policy.Name)
+				skipped++
+				return nil
+			}
 		}
-
-		// Enforce storage policy single file limit
-		if policy.MaxSingleFileSizeMB > 0 && itemSize > policy.MaxSingleFileSizeMB*1024*1024 {
-			slog.Warn("Import skipped: file size exceeds policy limit", "path", publicPath, "size", itemSize, "limit_mb", policy.MaxSingleFileSizeMB)
-			skipped++
-			return nil
-		}
-
-		// Enforce storage policy capacity
-		if sizeDelta > 0 && policy.MaxCapacityBytes > 0 && policy.UsedBytes+sizeDelta > policy.MaxCapacityBytes {
-			slog.Warn("Import skipped: storage policy capacity exceeded", "path", publicPath, "policy", policy.Name)
-			skipped++
-			return nil
-		}
-
-		// Stream to storage while computing SHA256 (Constant O(1) memory)
-		headBuf := make([]byte, 2048)
-		n, _ := io.ReadFull(itemReader, headBuf)
-		headBuf = headBuf[:n]
-		mime := mimetype.Detect(headBuf).String()
-		isImg := strings.HasPrefix(mime, "image/") && !strings.Contains(mime, "svg")
-
-		fullStream := io.MultiReader(bytes.NewReader(headBuf), itemReader)
-		hasher := sha256.New()
-		teeStream := io.TeeReader(fullStream, hasher)
 
 		drv, err := s.upload.getDriver(ctx, policy.ID)
 		if err != nil {
@@ -222,15 +303,19 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 			return nil
 		}
 
+		if _, err := tmpF.Seek(0, io.SeekStart); err != nil {
+			skipped++
+			return nil
+		}
+
 		storageKey := publicPath
-		if err := drv.Put(ctx, storageKey, teeStream, itemSize); err != nil {
+		if err := drv.Put(ctx, storageKey, tmpF, finalItemSize); err != nil {
 			slog.Error("Failed to store imported archive file", "path", publicPath, "error", err)
 			skipped++
 			return nil
 		}
 
 		sha256Hex := hex.EncodeToString(hasher.Sum(nil))
-		finalItemSize := itemSize
 		if finalItemSize <= 0 {
 			if st, err := drv.Stat(ctx, storageKey); err == nil {
 				finalItemSize = st.Size
@@ -281,6 +366,7 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 		if hasExisting && opts.ConflictAction == "overwrite" {
 			s.db.Unscoped().Model(&model.FileRecord{}).Where("id = ?", existingFile.ID).Updates(map[string]any{
 				"deleted_at":            nil,
+				"policy_id":             policy.ID,
 				"sign_version":          gorm.Expr("sign_version + 1"),
 				"storage_key":           storageKey,
 				"mime_type":             mime,
@@ -337,13 +423,29 @@ func (s *ImportService) ImportArchive(ctx context.Context, user *model.User, arc
 				userUpdates["file_count"] = gorm.Expr("file_count + 1")
 			}
 			s.db.Model(&model.User{}).Where("id = ?", targetQuotaUserID).Updates(userUpdates)
-			s.db.Model(&model.StoragePolicy{}).Where("id = ?", policy.ID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes + ? >= 0 THEN used_bytes + ? ELSE 0 END", sizeDelta, sizeDelta))
 			if targetQuotaUserID == user.ID {
 				user.UsedBytes += sizeDelta
 			}
-			policy.UsedBytes += sizeDelta
 		} else if !hasExisting {
 			s.db.Model(&model.User{}).Where("id = ?", targetQuotaUserID).Update("file_count", gorm.Expr("file_count + 1"))
+		}
+
+		if hasExisting && opts.ConflictAction == "overwrite" {
+			if existingFile.PolicyID == policy.ID {
+				if sizeDelta != 0 {
+					s.db.Model(&model.StoragePolicy{}).Where("id = ?", policy.ID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes + ? >= 0 THEN used_bytes + ? ELSE 0 END", sizeDelta, sizeDelta))
+					policy.UsedBytes += sizeDelta
+				}
+			} else {
+				s.db.Model(&model.StoragePolicy{}).Where("id = ?", existingFile.PolicyID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes >= ? THEN used_bytes - ? ELSE 0 END", existingFile.Size, existingFile.Size))
+				s.db.Model(&model.StoragePolicy{}).Where("id = ?", policy.ID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes + ? >= 0 THEN used_bytes + ? ELSE 0 END", finalItemSize, finalItemSize))
+				policy.UsedBytes += finalItemSize
+			}
+		} else {
+			if finalItemSize > 0 {
+				s.db.Model(&model.StoragePolicy{}).Where("id = ?", policy.ID).Update("used_bytes", gorm.Expr("CASE WHEN used_bytes + ? >= 0 THEN used_bytes + ? ELSE 0 END", finalItemSize, finalItemSize))
+				policy.UsedBytes += finalItemSize
+			}
 		}
 
 		imported++
@@ -394,7 +496,10 @@ func (s *ImportService) streamZip(archivePath string, fn func(path string, size 
 			continue
 		}
 		decodedName := s.decodeFilename(f.Name)
-		_ = fn(decodedName, int64(f.UncompressedSize64), rc)
+		if err := fn(decodedName, int64(f.UncompressedSize64), rc); err != nil {
+			_ = rc.Close()
+			return err
+		}
 		_ = rc.Close()
 	}
 	return nil
@@ -423,7 +528,10 @@ func (s *ImportService) stream7z(archivePath string, fn func(path string, size i
 			continue
 		}
 		decodedName := s.decodeFilename(f.Name)
-		_ = fn(decodedName, int64(f.UncompressedSize), rc)
+		if err := fn(decodedName, int64(f.UncompressedSize), rc); err != nil {
+			_ = rc.Close()
+			return err
+		}
 		_ = rc.Close()
 	}
 	return nil
@@ -466,7 +574,7 @@ func (s *ImportService) streamTarReader(r io.Reader, fn func(path string, size i
 		if err != nil {
 			return err
 		}
-		if hdr.Typeflag == tar.TypeDir {
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
 			continue
 		}
 		count++
@@ -477,7 +585,9 @@ func (s *ImportService) streamTarReader(r io.Reader, fn func(path string, size i
 			continue
 		}
 		decodedName := s.decodeFilename(hdr.Name)
-		_ = fn(decodedName, hdr.Size, tr)
+		if err := fn(decodedName, hdr.Size, tr); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -517,4 +627,15 @@ func (s *ImportService) decodeFilename(name string) string {
 	}
 
 	return name
+}
+
+type countingReader struct {
+	reader io.Reader
+	count  int64
+}
+
+func (c *countingReader) Read(p []byte) (n int, err error) {
+	n, err = c.reader.Read(p)
+	c.count += int64(n)
+	return n, err
 }

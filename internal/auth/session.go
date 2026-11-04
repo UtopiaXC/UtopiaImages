@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
@@ -45,9 +46,22 @@ func (sm *SessionManager) CreateSession(userID uint, ip, userAgent string, remem
 
 	tokenHash := HashToken(rawToken)
 
-	duration := 7 * 24 * time.Hour
+	timeoutDays := 7
+	if sm.db != nil {
+		var s model.Setting
+		if err := sm.db.Where("key = ?", "session_timeout_days").First(&s).Error; err == nil {
+			if days, err := strconv.Atoi(s.Value); err == nil && days > 0 {
+				timeoutDays = days
+			}
+		}
+	}
+	duration := time.Duration(timeoutDays) * 24 * time.Hour
 	if rememberMe {
-		duration = 30 * 24 * time.Hour
+		rememberDays := timeoutDays * 4
+		if rememberDays < 30 {
+			rememberDays = 30
+		}
+		duration = time.Duration(rememberDays) * 24 * time.Hour
 	}
 
 	var user model.User

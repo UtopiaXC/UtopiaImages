@@ -1,6 +1,7 @@
 package mailer
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -75,11 +76,12 @@ func SendHTMLEmail(cfg config.SMTPConfig, to, subject, htmlBody, textBody string
 	cleanFromName := headerSanitizer.Replace(fromName)
 	cleanTo := headerSanitizer.Replace(to)
 
+	encodedFromName := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(cleanFromName)))
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(headerSanitizer.Replace(subject))))
 	boundary := fmt.Sprintf("=_part_%d", time.Now().UnixNano())
 
 	msg := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n--%s\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n%s\r\n\r\n--%s\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n%s\r\n\r\n--%s--",
-		cleanFromName, cleanFrom, cleanTo, encodedSubject, boundary,
+		encodedFromName, cleanFrom, cleanTo, encodedSubject, boundary,
 		boundary, base64.StdEncoding.EncodeToString([]byte(textBody)),
 		boundary, base64.StdEncoding.EncodeToString([]byte(htmlBody)),
 		boundary)
@@ -134,13 +136,14 @@ func sendRawMail(cfg config.SMTPConfig, to, subject, body string, isHTML bool) e
 	cleanFromName := headerSanitizer.Replace(fromName)
 	cleanTo := headerSanitizer.Replace(to)
 
+	encodedFromName := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(cleanFromName)))
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(headerSanitizer.Replace(subject))))
 	contentType := "text/plain; charset=UTF-8"
 	if isHTML {
 		contentType = "text/html; charset=UTF-8"
 	}
 	msg := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: %s\r\nContent-Type: %s\r\n\r\n%s",
-		cleanFromName, cleanFrom, cleanTo, encodedSubject, contentType, body)
+		encodedFromName, cleanFrom, cleanTo, encodedSubject, contentType, body)
 
 	client, err := createSMTPClient(cfg, addr)
 	if err != nil {
@@ -190,7 +193,37 @@ func TestConnection(cfg config.SMTPConfig) error {
 	return nil
 }
 
+func isCloudMetadataHost(host string) bool {
+	h := strings.TrimSpace(host)
+	if strings.Contains(h, ":") {
+		if sh, _, err := net.SplitHostPort(h); err == nil {
+			h = sh
+		}
+	}
+	h = strings.Trim(h, "[]")
+	if strings.EqualFold(h, "metadata.google.internal") || strings.HasSuffix(strings.ToLower(h), ".metadata.google.internal") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if ips, err := net.DefaultResolver.LookupIP(ctx, "ip", h); err == nil {
+		for _, ip := range ips {
+			if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func createSMTPClient(cfg config.SMTPConfig, addr string) (*smtp.Client, error) {
+	if isCloudMetadataHost(cfg.Host) {
+		return nil, fmt.Errorf("restricted smtp host address: %s", cfg.Host)
+	}
+
 	enc := strings.ToLower(cfg.Encryption)
 	// Port 465 is always implicit direct SSL. Port 587 and 25 must use STARTTLS.
 	useDirectTLS := (enc == "ssl" && cfg.Port != 587 && cfg.Port != 25) || cfg.Port == 465
@@ -205,6 +238,7 @@ func createSMTPClient(cfg config.SMTPConfig, addr string) (*smtp.Client, error) 
 		if err != nil {
 			return nil, fmt.Errorf("tls connection failed: %w", err)
 		}
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 		client, err := smtp.NewClient(conn, cfg.Host)
 		if err != nil {
 			_ = conn.Close()
@@ -217,6 +251,7 @@ func createSMTPClient(cfg config.SMTPConfig, addr string) (*smtp.Client, error) 
 	if err != nil {
 		return nil, fmt.Errorf("tcp connection failed: %w", err)
 	}
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 	client, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
 		_ = conn.Close()

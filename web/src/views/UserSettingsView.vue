@@ -33,6 +33,16 @@
               <n-input v-model:value="profile.email" placeholder="admin@example.com" style="max-width: 320px;" />
             </n-form-item>
 
+            <n-form-item v-if="isEmailChanged" :label="$t('settings.currentPassword') || '当前密码'">
+              <n-input
+                v-model:value="emailPassword"
+                type="password"
+                show-password-on="click"
+                placeholder="修改绑定邮箱需输入当前账户密码验证"
+                style="max-width: 320px;"
+              />
+            </n-form-item>
+
             <div style="display: flex; justify-content: flex-end;">
               <n-button type="primary" :loading="savingProfile" @click="saveProfile">
                 {{ $t('settings.saveProfile') }}
@@ -407,6 +417,13 @@ const profile = ref<any>({
   email: '',
   require_2fa: false
 })
+const initialEmail = ref('')
+const emailPassword = ref('')
+const isEmailChanged = computed(() => {
+  const current = (profile.value?.email || '').trim().toLowerCase()
+  const initial = initialEmail.value.trim().toLowerCase()
+  return current !== '' && current !== initial
+})
 
 const passwordForm = ref({
   old_password: '',
@@ -500,6 +517,8 @@ const loadData = async () => {
       api.get('/me/settings')
     ])
     profile.value = userRes.data
+    initialEmail.value = userRes.data?.email || ''
+    emailPassword.value = ''
     totpActive.value = Boolean(userRes.data?.totp_enabled || userRes.data?.has_totp)
     preferences.value.default_policy_id = prefRes.data.default_policy_id || '1'
     preferences.value.watermark_mode = prefRes.data.watermark_mode === 'on' ? 'on' : 'off'
@@ -537,12 +556,24 @@ const loadPasskeys = async () => {
 }
 
 const saveProfile = async () => {
+  if (isEmailChanged.value && !emailPassword.value) {
+    message.warning('修改绑定邮箱需输入当前账户密码进行安全验证')
+    return
+  }
   savingProfile.value = true
   try {
-    await api.patch('/me/profile', {
+    const payload: any = {
       nickname: profile.value.nickname,
       email: profile.value.email
-    })
+    }
+    if (isEmailChanged.value) {
+      payload.password = emailPassword.value
+    }
+    const res = await api.patch('/me/profile', payload)
+    if (res.data?.email) {
+      initialEmail.value = res.data.email
+      emailPassword.value = ''
+    }
     message.success(t('settings.profileSaved'))
   } catch (err: any) {
     message.error(err.response?.data?.error || t('settings.profileSaved'))

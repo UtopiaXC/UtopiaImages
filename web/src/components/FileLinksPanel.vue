@@ -517,10 +517,12 @@ const visibleFormatRows = computed(() => {
 
 const formatContent = (url: string) => {
   const name = props.file.display_name || 'image'
+  const safeUrlForAttr = url.replace(/"/g, '&quot;')
+  const safeUrlForMd = url.replace(/\(/g, '%28').replace(/\)/g, '%29')
   switch (activeTab.value) {
     case 'markdown': {
       const safeMd = name.replace(/\[/g, '\\[').replace(/\]/g, '\\]')
-      return `![${safeMd}](${url})`
+      return `![${safeMd}](${safeUrlForMd})`
     }
     case 'html': {
       const safeHtml = name
@@ -529,7 +531,7 @@ const formatContent = (url: string) => {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;')
-      return `<img src="${url}" alt="${safeHtml}" />`
+      return `<img src="${safeUrlForAttr}" alt="${safeHtml}" />`
     }
     case 'bbcode':
       return `[img]${url}[/img]`

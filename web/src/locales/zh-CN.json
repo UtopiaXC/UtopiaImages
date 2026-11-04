@@ -110,7 +110,17 @@
     "validation": "请填写完整的管理员信息",
     "email": "电子邮箱",
     "nickname": "用户昵称",
-    "emailPlaceholder": "admin@example.com"
+    "emailPlaceholder": "admin@example.com",
+    "tokenVerification": "系统初始化身份验证",
+    "tokenGuide": "欢迎使用 Utopia Images！首次运行需要输入初始化激活码以确认管理员权限。",
+    "tokenTipsTitle": "激活码获取途径：",
+    "tokenTipConsole": "1. 服务端控制台：启动时日志中输出的 INITIAL SETUP TOKEN: xxx；",
+    "tokenTipConfig": "2. 配置文件查看：已自动写入挂载目录的 data/config/config.yaml 文件中的 setup_token 项；",
+    "tokenTipDocker": "3. 环境变量预设：Docker 用户可通过环境变量 SETUP_TOKEN 自定义激活码。",
+    "tokenPlaceholder": "请输入初始化激活码 (Setup Token)",
+    "verifyToken": "验证并开始配置",
+    "tokenEmpty": "请输入初始化激活码",
+    "tokenVerifySuccess": "激活码验证成功"
   },
   "login": {
     "title": "登录",

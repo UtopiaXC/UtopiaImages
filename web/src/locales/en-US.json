@@ -110,7 +110,17 @@
     "validation": "Please fill in all required administrator credentials",
     "email": "Email Address",
     "nickname": "Nickname",
-    "emailPlaceholder": "admin@example.com"
+    "emailPlaceholder": "admin@example.com",
+    "tokenVerification": "Setup Verification",
+    "tokenGuide": "Welcome to Utopia Images! An activation token is required to initialize the instance.",
+    "tokenTipsTitle": "How to get your Setup Token:",
+    "tokenTipConsole": "1. Server Console: Look for 'INITIAL SETUP TOKEN: xxx' in startup logs;",
+    "tokenTipConfig": "2. Configuration File: Check 'setup_token' in data/config/config.yaml;",
+    "tokenTipDocker": "3. Docker Deployment: Set custom token via SETUP_TOKEN environment variable.",
+    "tokenPlaceholder": "Enter Setup Token",
+    "verifyToken": "Verify & Begin Setup",
+    "tokenEmpty": "Please enter the Setup Token",
+    "tokenVerifySuccess": "Setup token verified successfully"
   },
   "login": {
     "title": "Login",

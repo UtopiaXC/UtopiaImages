@@ -756,6 +756,7 @@ const buildConfigJSON = (driver: string): string => {
         endpoint: c.webdav_endpoint,
         username: c.webdav_username,
         password: c.webdav_password,
+        root_path: c.webdav_root_path,
         direct_url: c.webdav_direct_url
       })
     case 's3_compatible':
@@ -767,6 +768,7 @@ const buildConfigJSON = (driver: string): string => {
         access_key_id: c.s3_access_key_id,
         secret_access_key: c.s3_secret_access_key,
         custom_domain: c.s3_custom_domain,
+        root_dir: c.s3_root_dir,
         use_path_style: c.s3_use_path_style,
         use_ssl: c.s3_use_ssl
       })
@@ -777,6 +779,7 @@ const buildConfigJSON = (driver: string): string => {
         access_key_id: c.s3_access_key_id,
         secret_access_key: c.s3_secret_access_key,
         custom_domain: c.s3_custom_domain,
+        root_dir: c.s3_root_dir,
       })
     case 'oss':
       return JSON.stringify({
@@ -785,6 +788,7 @@ const buildConfigJSON = (driver: string): string => {
         access_key_id: c.oss_access_key_id,
         secret_access_key: c.oss_secret_access_key,
         custom_domain: c.oss_custom_domain,
+        root_dir: c.oss_root_dir,
       })
     case 'cos':
       return JSON.stringify({
@@ -793,6 +797,7 @@ const buildConfigJSON = (driver: string): string => {
         secret_id: c.cos_secret_id,
         secret_key: c.cos_secret_key,
         custom_domain: c.cos_custom_domain,
+        root_dir: c.cos_root_dir,
       })
     case 'obs':
       return JSON.stringify({
@@ -801,12 +806,14 @@ const buildConfigJSON = (driver: string): string => {
         access_key_id: c.obs_access_key_id,
         secret_access_key: c.obs_secret_access_key,
         custom_domain: c.obs_custom_domain,
+        root_dir: c.obs_root_dir,
       })
     case 'gcs':
       return JSON.stringify({
         bucket: c.gcs_bucket,
         credentials_json: c.gcs_credentials_json,
         custom_domain: c.gcs_custom_domain,
+        root_dir: c.gcs_root_dir,
       })
     case 'azure_blob':
       return JSON.stringify({
@@ -815,6 +822,7 @@ const buildConfigJSON = (driver: string): string => {
         container_name: c.azure_container_name,
         connection_string: c.azure_connection_string,
         custom_domain: c.azure_custom_domain,
+        root_dir: c.azure_root_dir,
       })
     case 'github':
       return JSON.stringify({
@@ -822,6 +830,7 @@ const buildConfigJSON = (driver: string): string => {
         repo: c.github_repo,
         branch: c.github_branch || 'main',
         token: c.github_token,
+        path_prefix: c.github_path_prefix,
         cdn_type: c.github_cdn_type || 'jsdelivr',
         cdn_custom_url: c.github_cdn_custom_url
       })
@@ -832,6 +841,7 @@ const buildConfigJSON = (driver: string): string => {
         client_secret: c.onedrive_client_secret,
         redirect_uri: c.onedrive_redirect_uri,
         refresh_token: c.onedrive_refresh_token,
+        base_path: c.onedrive_base_path,
       })
     default:
       return '{}'

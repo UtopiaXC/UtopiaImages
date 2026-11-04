@@ -2,6 +2,7 @@ package auth
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
@@ -70,6 +71,55 @@ func AuthMiddleware(sm *SessionManager) gin.HandlerFunc {
 	}
 }
 
+// ValidateSessionCSRF checks that state-changing requests using cookie sessions originate from the same site/origin
+func ValidateSessionCSRF(c *gin.Context) bool {
+	if isApi, ok := c.Get(CtxIsApiTokenKey); ok && isApi.(bool) {
+		// Personal Access Tokens (PAT) e.g. PicGo / ShareX / CLI tools are immune to browser CSRF
+		return true
+	}
+
+	method := c.Request.Method
+	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch && method != http.MethodDelete {
+		return true
+	}
+
+	// 1. Check Sec-Fetch-Site (modern browsers)
+	secFetch := c.GetHeader("Sec-Fetch-Site")
+	if secFetch == "cross-site" {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"code":  "CSRF_BLOCKED",
+			"error": "Cross-site request blocked",
+		})
+		return false
+	}
+
+	// 2. Check Origin / Referer against request Host
+	targetHost := strings.ToLower(c.Request.Host)
+	if origin := c.GetHeader("Origin"); origin != "" {
+		if u, err := url.Parse(origin); err == nil {
+			if !strings.EqualFold(u.Host, targetHost) {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"code":  "CSRF_BLOCKED",
+					"error": "Cross-origin request blocked",
+				})
+				return false
+			}
+		}
+	} else if referer := c.Request.Referer(); referer != "" {
+		if u, err := url.Parse(referer); err == nil {
+			if !strings.EqualFold(u.Host, targetHost) {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"code":  "CSRF_BLOCKED",
+					"error": "Cross-origin referer blocked",
+				})
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
 func RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_, exists := c.Get(CtxUserKey)
@@ -78,6 +128,9 @@ func RequireAuth() gin.HandlerFunc {
 				"code":    "UNAUTHORIZED",
 				"message": "Authentication required",
 			})
+			return
+		}
+		if !ValidateSessionCSRF(c) {
 			return
 		}
 		c.Next()
@@ -100,6 +153,9 @@ func RequireSessionAuth() gin.HandlerFunc {
 				"code":    "FORBIDDEN",
 				"message": "Personal access tokens cannot manage security credentials or tokens",
 			})
+			return
+		}
+		if !ValidateSessionCSRF(c) {
 			return
 		}
 		c.Next()
@@ -128,7 +184,7 @@ func RequireAdmin() gin.HandlerFunc {
 	}
 }
 
-func hasTokenScope(scopesStr string, requiredPermission string) bool {
+func HasTokenScope(scopesStr string, requiredPermission string) bool {
 	if scopesStr == "" {
 		return false
 	}
@@ -140,6 +196,10 @@ func hasTokenScope(scopesStr string, requiredPermission string) bool {
 		}
 	}
 	return false
+}
+
+func hasTokenScope(scopesStr string, requiredPermission string) bool {
+	return HasTokenScope(scopesStr, requiredPermission)
 }
 
 func RequirePermission(permission string) gin.HandlerFunc {

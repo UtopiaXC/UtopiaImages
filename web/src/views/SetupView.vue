@@ -23,15 +23,45 @@
 
       <!-- Step Indicator -->
       <n-card class="setup-main-card">
-        <n-steps :current="currentStep" size="small" style="margin-bottom: 24px;">
-          <n-step :title="$t('setup.stepSite')" />
-          <n-step :title="$t('setup.stepDb')" />
-          <n-step :title="$t('setup.stepSmtp')" />
-          <n-step :title="$t('setup.stepAdmin')" />
-        </n-steps>
+        <!-- Step 0: Activation / Setup Token Verification -->
+        <div v-if="!tokenVerified">
+          <div class="step-guide">{{ $t('setup.tokenGuide') }}</div>
+          <n-alert type="info" :show-icon="true" style="margin-bottom: 20px; font-size: 13px;">
+            <div style="font-weight: 600; margin-bottom: 6px;">{{ $t('setup.tokenTipsTitle') }}</div>
+            <div style="margin-bottom: 4px;">{{ $t('setup.tokenTipConsole') }}</div>
+            <div style="margin-bottom: 4px;">{{ $t('setup.tokenTipConfig') }}</div>
+            <div>{{ $t('setup.tokenTipDocker') }}</div>
+          </n-alert>
+          <n-form label-placement="left" label-width="140" style="margin-top: 16px;">
+            <n-form-item :label="$t('setup.tokenVerification')">
+              <n-input
+                v-model:value="setupTokenInput"
+                type="password"
+                show-password-on="click"
+                :placeholder="$t('setup.tokenPlaceholder')"
+                @keydown.enter="handleVerifyToken"
+              />
+            </n-form-item>
+          </n-form>
+          <div class="setup-actions">
+            <div style="flex: 1;"></div>
+            <n-button type="primary" :loading="verifyingToken" @click="handleVerifyToken">
+              {{ $t('setup.verifyToken') }}
+            </n-button>
+          </div>
+        </div>
 
-        <!-- Step 1: Site Info -->
-        <div v-if="currentStep === 1">
+        <!-- Setup Wizard (Unlocked after Token Verification) -->
+        <template v-else>
+          <n-steps :current="currentStep" size="small" style="margin-bottom: 24px;">
+            <n-step :title="$t('setup.stepSite')" />
+            <n-step :title="$t('setup.stepDb')" />
+            <n-step :title="$t('setup.stepSmtp')" />
+            <n-step :title="$t('setup.stepAdmin')" />
+          </n-steps>
+
+          <!-- Step 1: Site Info -->
+          <div v-if="currentStep === 1">
           <div class="step-guide">{{ $t('setup.welcome') }}</div>
           <n-form label-placement="left" label-width="140" style="margin-top: 16px;">
             <n-form-item :label="$t('setup.siteName')">
@@ -249,19 +279,20 @@
           </n-form>
         </div>
 
-        <!-- Footer Navigation Buttons -->
-        <div class="setup-actions">
-          <n-button v-if="currentStep > 1" @click="prevStep">
-            {{ $t('setup.prevStep') }}
-          </n-button>
-          <div style="flex: 1;"></div>
-          <n-button v-if="currentStep < 4" type="primary" @click="nextStep">
-            {{ $t('setup.nextStep') }}
-          </n-button>
-          <n-button v-else type="primary" :loading="loading" @click="handleFinishSetup">
-            {{ $t('setup.finish') }}
-          </n-button>
-        </div>
+          <!-- Footer Navigation Buttons -->
+          <div class="setup-actions">
+            <n-button v-if="currentStep > 1" @click="prevStep">
+              {{ $t('setup.prevStep') }}
+            </n-button>
+            <div style="flex: 1;"></div>
+            <n-button v-if="currentStep < 4" type="primary" @click="nextStep">
+              {{ $t('setup.nextStep') }}
+            </n-button>
+            <n-button v-else type="primary" :loading="loading" @click="handleFinishSetup">
+              {{ $t('setup.finish') }}
+            </n-button>
+          </div>
+        </template>
       </n-card>
     </div>
   </div>
@@ -280,6 +311,9 @@ const message = useMessage()
 const { t, locale } = useI18n()
 
 const currentLocale = ref(locale.value)
+const tokenVerified = ref(false)
+const setupTokenInput = ref('')
+const verifyingToken = ref(false)
 const currentStep = ref(1)
 const loading = ref(false)
 const testingDb = ref(false)
@@ -351,6 +385,26 @@ const changeLocale = (val: string) => {
   form.value.site.locale = val
 }
 
+const handleVerifyToken = async () => {
+  const tok = setupTokenInput.value.trim()
+  if (!tok) {
+    message.warning(t('setup.tokenEmpty'))
+    return
+  }
+  verifyingToken.value = true
+  try {
+    const res = await api.post('/setup/verify-token', {
+      token: tok
+    })
+    tokenVerified.value = true
+    message.success(res.data.message || t('setup.tokenVerifySuccess'))
+  } catch (err: any) {
+    message.error(err.response?.data?.error || t('setup.failed'))
+  } finally {
+    verifyingToken.value = false
+  }
+}
+
 const buildDsn = () => {
   const driver = form.value.database.driver
   if (driver === 'sqlite') {
@@ -369,10 +423,16 @@ const handleTestDb = async () => {
   testingDb.value = true
   const dsn = buildDsn()
   try {
-    const res = await api.post('/setup/test-db', {
-      driver: form.value.database.driver,
-      dsn: dsn
-    })
+    const res = await api.post(
+      '/setup/test-db',
+      {
+        driver: form.value.database.driver,
+        dsn: dsn
+      },
+      {
+        headers: { 'X-Setup-Token': setupTokenInput.value.trim() }
+      }
+    )
     message.success(res.data.message || t('setup.testDbSuccess'))
   } catch (err: any) {
     message.error(err.response?.data?.error || t('setup.testDbFailed'))
@@ -388,14 +448,20 @@ const handleTestSmtp = async () => {
   }
   testingSmtp.value = true
   try {
-    const res = await api.post('/setup/test-smtp', {
-      host: form.value.smtp.host,
-      port: form.value.smtp.port,
-      from: form.value.smtp.from,
-      user: form.value.smtp.user,
-      password: form.value.smtp.password,
-      encryption: form.value.smtp.encryption
-    })
+    const res = await api.post(
+      '/setup/test-smtp',
+      {
+        host: form.value.smtp.host,
+        port: form.value.smtp.port,
+        from: form.value.smtp.from,
+        user: form.value.smtp.user,
+        password: form.value.smtp.password,
+        encryption: form.value.smtp.encryption
+      },
+      {
+        headers: { 'X-Setup-Token': setupTokenInput.value.trim() }
+      }
+    )
     message.success(res.data.message || t('setup.testSmtpSuccess'))
   } catch (err: any) {
     message.error(err.response?.data?.error || t('setup.testSmtpFailed'))
@@ -444,7 +510,13 @@ const handleFinishSetup = async () => {
 
   loading.value = true
   try {
-    await api.post('/setup', form.value)
+    const payload = {
+      ...form.value,
+      setup_token: setupTokenInput.value.trim()
+    }
+    await api.post('/setup', payload, {
+      headers: { 'X-Setup-Token': setupTokenInput.value.trim() }
+    })
     markSetupComplete()
     message.success(t('setup.success'))
     router.push('/usr/login')

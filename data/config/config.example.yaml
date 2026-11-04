@@ -4,7 +4,7 @@ server:
   host: "0.0.0.0"
   port: 2983
   base_url: "http://localhost:2983" # 对外访问域名
-  mode: "debug" # debug | release
+  mode: "release" # debug | release
 
 # 数据库配置（支持 sqlite / postgres）
 database:
@@ -34,7 +34,8 @@ logging:
 
 # 安全与认证
 security:
-  secret_key: "CHANGE_ME_TO_A_SECURE_RANDOM_STRING"
+  secret_key: "" # 密钥，若留空将在首次启动时自动生成高强度安全随机密钥
+  setup_token: "" # 初始化激活码，用于首次部署向导(/stp)验证。留空将自动生成并输出至控制台与本文件，支持环境变量 SETUP_TOKEN 覆盖
   session_timeout_days: 7
   remember_me_days: 30
   max_login_attempts: 5

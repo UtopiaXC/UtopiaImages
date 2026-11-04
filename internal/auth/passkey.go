@@ -409,9 +409,17 @@ func (pm *PasskeyManager) BeginLogin(username string, requestHost ...string) (*p
 
 	sessionKey, _ := GenerateRandomToken(16)
 	pm.sessionLock.Lock()
+	now := time.Now()
+	if len(pm.sessions) > 100 {
+		for k, v := range pm.sessions {
+			if now.After(v.expiresAt) {
+				delete(pm.sessions, k)
+			}
+		}
+	}
 	pm.sessions[sessionKey] = &sessionEntry{
 		sessionData: sessionData,
-		expiresAt:   time.Now().Add(5 * time.Minute),
+		expiresAt:   now.Add(5 * time.Minute),
 	}
 	pm.sessionLock.Unlock()
 
@@ -448,9 +456,6 @@ func (pm *PasskeyManager) FinishLogin(sessionKey string, r *protocol.ParsedCrede
 	}
 	if user.Status != "active" {
 		return nil, errors.New("user account is not active or has been disabled")
-	}
-	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
-		return nil, errors.New("user account is temporarily locked")
 	}
 
 	creds := pm.loadUserCredentials(user.ID)
@@ -498,6 +503,13 @@ func (pm *PasskeyManager) FinishLogin(sessionKey string, r *protocol.ParsedCrede
 		updates["credential_data"] = string(credBytes)
 	}
 	pm.db.Model(&credRecord).Updates(updates)
+
+	if user.FailedLoginAttempts > 0 || user.LockoutUntil != nil {
+		pm.db.Model(&user).Updates(map[string]any{
+			"failed_login_attempts": 0,
+			"lockout_until":         nil,
+		})
+	}
 
 	return &user, nil
 }

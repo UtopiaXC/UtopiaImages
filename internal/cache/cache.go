@@ -54,13 +54,40 @@ func (c *DerivedCache) GenerateKey(publicPath, params, watermarkVersion string) 
 	return hex.EncodeToString(sum[:])
 }
 
-func (c *DerivedCache) getFilePath(key, ext string) string {
-	if len(key) < 4 {
-		return filepath.Join(c.baseDir, key+ext)
+func sanitizeExt(ext string) string {
+	ext = strings.TrimSpace(ext)
+	if strings.ContainsAny(ext, "/\\") {
+		return ""
 	}
-	sub1 := key[:2]
-	sub2 := key[2:4]
-	return filepath.Join(c.baseDir, sub1, sub2, key+ext)
+	ext = strings.TrimPrefix(ext, ".")
+	var b strings.Builder
+	for _, r := range ext {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	cleaned := b.String()
+	if cleaned == "" || len(cleaned) > 16 {
+		return ""
+	}
+	return "." + cleaned
+}
+
+func (c *DerivedCache) getFilePath(key, ext string) string {
+	cleanExt := sanitizeExt(ext)
+	cleanKey := filepath.Base(key)
+	if len(cleanKey) < 4 {
+		return filepath.Join(c.baseDir, cleanKey+cleanExt)
+	}
+	sub1 := cleanKey[:2]
+	sub2 := cleanKey[2:4]
+	target := filepath.Join(c.baseDir, sub1, sub2, cleanKey+cleanExt)
+	cleanTarget := filepath.Clean(target)
+	cleanBase := filepath.Clean(c.baseDir)
+	if !strings.HasPrefix(cleanTarget, cleanBase) {
+		return filepath.Join(c.baseDir, cleanKey+cleanExt)
+	}
+	return cleanTarget
 }
 
 // Get returns path to cached file if it exists and touches access time for LRU
@@ -164,7 +191,13 @@ func (c *DerivedCache) Prune(maxBytes int64, maxAge time.Duration) (clearedCount
 
 	// 1. Scan all cached files
 	_ = filepath.Walk(c.baseDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			if info.Name() == "chunks" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// Clean up leftover tmp files older than 10 minutes
@@ -240,7 +273,7 @@ func (c *DerivedCache) PruneIfNecessary() {
 	}()
 }
 
-// Clear removes all files in the cache directory
+// Clear removes all files in the cache directory, preserving the chunks directory
 func (c *DerivedCache) Clear() int {
 	entries, err := os.ReadDir(c.baseDir)
 	if err != nil {
@@ -248,6 +281,9 @@ func (c *DerivedCache) Clear() int {
 	}
 	count := 0
 	for _, entry := range entries {
+		if entry.Name() == "chunks" {
+			continue
+		}
 		_ = os.RemoveAll(filepath.Join(c.baseDir, entry.Name()))
 		count++
 	}

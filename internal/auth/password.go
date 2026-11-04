@@ -19,16 +19,22 @@ type Argon2Params struct {
 	KeyLength   uint32
 }
 
-var DefaultArgon2Params = &Argon2Params{
-	Memory:      64 * 1024, // 64MB
-	Iterations:  3,
-	Parallelism: 2,
-	SaltLength:  16,
-	KeyLength:   32,
-}
+var (
+	DefaultArgon2Params = &Argon2Params{
+		Memory:      64 * 1024, // 64MB
+		Iterations:  3,
+		Parallelism: 2,
+		SaltLength:  16,
+		KeyLength:   32,
+	}
+	argon2Semaphore = make(chan struct{}, 8)
+)
 
 // HashPassword hashes a password using Argon2id
 func HashPassword(password string) (string, error) {
+	argon2Semaphore <- struct{}{}
+	defer func() { <-argon2Semaphore }()
+
 	salt := make([]byte, DefaultArgon2Params.SaltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
@@ -60,6 +66,9 @@ func HashPassword(password string) (string, error) {
 
 // VerifyPassword verifies a password against an encoded Argon2id hash
 func VerifyPassword(password, encodedHash string) (bool, error) {
+	argon2Semaphore <- struct{}{}
+	defer func() { <-argon2Semaphore }()
+
 	parts := strings.Split(encodedHash, "$")
 	if len(parts) != 6 {
 		return false, errors.New("invalid hash format")

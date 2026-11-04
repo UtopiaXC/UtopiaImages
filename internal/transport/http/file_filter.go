@@ -289,7 +289,16 @@ func buildFormatRuleSQL(op string, val interface{}) (string, []interface{}) {
 		default:
 			if fmtStr != "" {
 				cleanExt := strings.TrimPrefix(fmtStr, ".")
-				return fmt.Sprintf("(public_path LIKE '%%.%s')", cleanExt)
+				isAlphaNum := true
+				for _, r := range cleanExt {
+					if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+						isAlphaNum = false
+						break
+					}
+				}
+				if isAlphaNum && len(cleanExt) > 0 && len(cleanExt) <= 16 {
+					return fmt.Sprintf("(public_path LIKE '%%.%s')", cleanExt)
+				}
 			}
 			return ""
 		}

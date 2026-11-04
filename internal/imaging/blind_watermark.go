@@ -19,6 +19,9 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
+// BlindWatermarkSem is the system-wide concurrency semaphore for blind watermark operations (max 2 concurrent)
+var BlindWatermarkSem = make(chan struct{}, 2)
+
 // fftRadix2 computes an in-place Radix-2 Cooley-Tukey FFT for slice length power of 2
 func fftRadix2(a []complex128, inverse bool) {
 	n := len(a)
@@ -270,7 +273,7 @@ func EmbedBlindWatermark(src image.Image, watermarkText string) *image.RGBA {
 	dst := image.NewRGBA(bounds)
 	draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
 
-	if w < 16 || h < 16 || w > 16384 || h > 16384 || int64(w)*int64(h) > 80000000 || watermarkText == "" {
+	if w < 16 || h < 16 || w > 4096 || h > 4096 || int64(w)*int64(h) > 16000000 || watermarkText == "" {
 		return dst
 	}
 
@@ -428,8 +431,8 @@ func ExtractBlindWatermark(src image.Image) (string, string, error) {
 	if w < 16 || h < 16 {
 		return "", "", errors.New("image dimensions too small for blind watermark extraction")
 	}
-	if w > 16384 || h > 16384 || int64(w)*int64(h) > 80000000 {
-		return "", "", errors.New("image dimensions too large for blind watermark extraction (max 80MP)")
+	if w > 4096 || h > 4096 || int64(w)*int64(h) > 16000000 {
+		return "", "", errors.New("image dimensions too large for blind watermark extraction (max 16MP / 4096x4096)")
 	}
 
 	rgba, ok := src.(*image.RGBA)

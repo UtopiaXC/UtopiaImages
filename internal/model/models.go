@@ -25,7 +25,7 @@ type StoragePolicy struct {
 	ID                  uint      `gorm:"primaryKey" json:"id"`
 	Name                string    `gorm:"size:64;not null" json:"name"`
 	Driver              string    `gorm:"size:32;default:local" json:"driver"` // currently "local", extensible to "oss", "s3"
-	Config              string    `gorm:"type:text" json:"config"`             // JSON backend driver configuration
+	Config              string    `gorm:"type:text" json:"-"`                  // JSON backend driver configuration (hidden from JSON serialization to prevent secret leakage)
 	MaxCapacityBytes    int64     `gorm:"default:0" json:"max_capacity_bytes"` // 0 = unlimited
 	UsedBytes           int64     `gorm:"default:0" json:"used_bytes"`
 	MaxSingleFileSizeMB int64     `gorm:"default:0" json:"max_single_file_size_mb"` // 0 = system default
@@ -100,10 +100,11 @@ type ApiToken struct {
 
 // TOTPSecret stores the encrypted secret for 2FA
 type TOTPSecret struct {
-	UserID          uint       `gorm:"primaryKey" json:"user_id"`
-	SecretEncrypted string     `gorm:"type:text;not null" json:"-"`
-	ConfirmedAt     *time.Time `json:"confirmed_at"`
-	CreatedAt       time.Time  `json:"created_at"`
+	UserID                 uint       `gorm:"primaryKey" json:"user_id"`
+	SecretEncrypted        string     `gorm:"type:text;not null" json:"-"`
+	PendingSecretEncrypted string     `gorm:"type:text" json:"-"`
+	ConfirmedAt            *time.Time `json:"confirmed_at"`
+	CreatedAt              time.Time  `json:"created_at"`
 }
 
 // WebAuthnCredential stores registered Passkeys

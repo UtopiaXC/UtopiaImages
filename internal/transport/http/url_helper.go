@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -10,20 +11,38 @@ import (
 	"gorm.io/gorm"
 )
 
+func isRemoteTrustedProxy(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	remote := c.Request.RemoteAddr
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
 // ExtractRequestBaseURL detects the scheme://host from the incoming HTTP request.
 func ExtractRequestBaseURL(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""
 	}
 	host := c.Request.Host
-	if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
-		host = xfh
+	if isRemoteTrustedProxy(c) {
+		if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
+			host = strings.TrimSpace(strings.Split(xfh, ",")[0])
+		}
 	}
 	if host == "" {
 		return ""
 	}
 	proto := "http"
-	if c.Request.TLS != nil || strings.EqualFold(c.Request.Header.Get("X-Forwarded-Proto"), "https") {
+	if c.Request.TLS != nil || (isRemoteTrustedProxy(c) && strings.EqualFold(c.Request.Header.Get("X-Forwarded-Proto"), "https")) {
 		proto = "https"
 	}
 	return fmt.Sprintf("%s://%s", proto, host)
@@ -46,22 +65,25 @@ func ExtractHostOnly(raw string) string {
 // ResolveBaseURL dynamically detects the appropriate base URL for the client request.
 // Rules:
 // 1. If system preset domains are configured:
-//   - If the incoming request domain matches any preset domain, prioritize that preset domain.
-//   - If the incoming request domain is NOT in system presets, use the current request domain.
+//   - If incoming request matches any preset domain, prioritize that preset domain (substituting wildcards if needed).
+//   - If restrict_domains is disabled, allow dynamic domain/LAN IP matching for image links.
+//   - If restrict_domains is enabled, enforce trusted preset domains.
 //
 // 2. If no preset domains are configured:
 //   - Use the current request domain.
-//
-// 3. If c == nil (background task):
-//   - Return the first preset domain, or fallback URL.
 func ResolveBaseURL(c *gin.Context, db *gorm.DB, fallback string) string {
 	var presetURLs []string
+	restrictDomains := false
 
 	// 1. Fetch DB configured base_url
 	if db != nil {
 		var s model.Setting
 		if err := db.Where("key = 'base_url'").First(&s).Error; err == nil && s.Value != "" {
 			presetURLs = splitDomainList(s.Value)
+		}
+		var rSetting model.Setting
+		if err := db.Where("key = 'restrict_domains'").First(&rSetting).Error; err == nil && rSetting.Value == "true" {
+			restrictDomains = true
 		}
 	}
 	if len(presetURLs) == 0 && fallback != "" {
@@ -72,8 +94,10 @@ func ResolveBaseURL(c *gin.Context, db *gorm.DB, fallback string) string {
 	if c != nil && c.Request != nil {
 		reqBaseURL := ExtractRequestBaseURL(c)
 		reqHost := ExtractHostOnly(c.Request.Host)
-		if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
-			reqHost = ExtractHostOnly(xfh)
+		if isRemoteTrustedProxy(c) {
+			if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
+				reqHost = ExtractHostOnly(strings.Split(xfh, ",")[0])
+			}
 		}
 
 		if len(presetURLs) > 0 {
@@ -81,13 +105,23 @@ func ResolveBaseURL(c *gin.Context, db *gorm.DB, fallback string) string {
 			for _, p := range presetURLs {
 				presetHost := ExtractHostOnly(p)
 				if matchHost(presetHost, reqHost) {
+					if strings.Contains(p, "*") {
+						return strings.Replace(p, "*."+presetHost[2:], reqHost, 1)
+					}
 					return p
 				}
 			}
-			// Request domain is NOT in system presets -> use current domain
-			if reqBaseURL != "" {
+			// When domain restriction is disabled, allow dynamic LAN IP / multi-domain link generation
+			if !restrictDomains && reqBaseURL != "" {
 				return reqBaseURL
 			}
+			// Fallback to the primary non-wildcard preset domain
+			for _, p := range presetURLs {
+				if !strings.Contains(p, "*") {
+					return p
+				}
+			}
+			return presetURLs[0]
 		} else if reqBaseURL != "" {
 			return reqBaseURL
 		}
@@ -95,8 +129,61 @@ func ResolveBaseURL(c *gin.Context, db *gorm.DB, fallback string) string {
 
 	// 3. Fallback when c is nil or request has no host
 	if len(presetURLs) > 0 {
+		for _, p := range presetURLs {
+			if !strings.Contains(p, "*") {
+				return p
+			}
+		}
 		return presetURLs[0]
 	}
+	if fallback != "" {
+		urls := splitDomainList(fallback)
+		if len(urls) > 0 {
+			return urls[0]
+		}
+	}
+
+	return ""
+}
+
+// ResolveTrustedMailBaseURL resolves base URL strictly for security emails (password reset, 2FA reset, activation)
+// It NEVER falls back to unvalidated client request headers.
+func ResolveTrustedMailBaseURL(c *gin.Context, db *gorm.DB, fallback string) string {
+	var presetURLs []string
+	if db != nil {
+		var s model.Setting
+		if err := db.Where("key = 'base_url'").First(&s).Error; err == nil && s.Value != "" {
+			presetURLs = splitDomainList(s.Value)
+		}
+	}
+	if len(presetURLs) == 0 && fallback != "" {
+		presetURLs = splitDomainList(fallback)
+	}
+
+	if c != nil && c.Request != nil && len(presetURLs) > 0 {
+		reqHost := ExtractHostOnly(c.Request.Host)
+		if isRemoteTrustedProxy(c) {
+			if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
+				reqHost = ExtractHostOnly(strings.Split(xfh, ",")[0])
+			}
+		}
+		for _, p := range presetURLs {
+			presetHost := ExtractHostOnly(p)
+			if matchHost(presetHost, reqHost) {
+				if strings.Contains(p, "*") {
+					return strings.Replace(p, "*."+presetHost[2:], reqHost, 1)
+				}
+				return p
+			}
+		}
+	}
+
+	for _, p := range presetURLs {
+		if !strings.Contains(p, "*") {
+			return p
+		}
+	}
+
 	if fallback != "" {
 		urls := splitDomainList(fallback)
 		if len(urls) > 0 {
@@ -120,18 +207,27 @@ func GetConfiguredBaseURLs(c *gin.Context, db *gorm.DB, fallback string) []strin
 		raw = fallback
 	}
 	urls := splitDomainList(raw)
-	// If current request exists, ensure current domain is included if not present
+	// If current request exists, format wildcards and include current domain if allowed
 	if c != nil && c.Request != nil {
 		reqURL := ExtractRequestBaseURL(c)
+		reqHost := ExtractHostOnly(c.Request.Host)
 		if reqURL != "" {
 			found := false
-			for _, u := range urls {
-				if strings.EqualFold(u, reqURL) || ExtractHostOnly(u) == ExtractHostOnly(reqURL) {
+			for i, u := range urls {
+				uHost := ExtractHostOnly(u)
+				if matchHost(uHost, reqHost) {
+					found = true
+					if strings.Contains(u, "*") {
+						urls[i] = strings.Replace(u, "*."+uHost[2:], reqHost, 1)
+					}
+					break
+				}
+				if strings.EqualFold(u, reqURL) || uHost == reqHost {
 					found = true
 					break
 				}
 			}
-			if !found {
+			if !found && IsDomainAllowed(c, db, fallback) {
 				urls = append(urls, reqURL)
 			}
 		}
@@ -169,8 +265,10 @@ func IsDomainAllowed(c *gin.Context, db *gorm.DB, fallback string) bool {
 	}
 
 	reqHost := ExtractHostOnly(c.Request.Host)
-	if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
-		reqHost = ExtractHostOnly(xfh)
+	if isRemoteTrustedProxy(c) {
+		if xfh := c.Request.Header.Get("X-Forwarded-Host"); xfh != "" {
+			reqHost = ExtractHostOnly(strings.Split(xfh, ",")[0])
+		}
 	}
 
 	for _, p := range presetURLs {

@@ -59,10 +59,10 @@ func (ctrl *SettingsController) RegisterRoutes(rg *gin.RouterGroup) {
 	me.Use(auth.RequireAuth())
 	{
 		me.GET("/settings", ctrl.GetUserSettings)
-		me.POST("/settings", ctrl.SaveUserSettings)
+		me.POST("/settings", auth.RequireSessionAuth(), ctrl.SaveUserSettings)
 		me.GET("/quota", ctrl.GetUserQuota)
 		me.GET("/policies", ctrl.GetUserPolicies)
-		me.PATCH("/profile", ctrl.UpdateProfile)
+		me.PATCH("/profile", auth.RequireSessionAuth(), ctrl.UpdateProfile)
 		me.POST("/password", auth.RequireSessionAuth(), ctrl.ChangePassword)
 	}
 
@@ -93,19 +93,12 @@ func (ctrl *SettingsController) fetchPoliciesForUser(user *model.User) []model.S
 		return policies
 	}
 
-	// 1. Policies specifically assigned to user's role OR policies with no role restrictions
+	// Only return policies specifically permitted for user's role
 	ctrl.db.Table("storage_policies").
-		Where("id IN (SELECT policy_id FROM role_policies WHERE role_id = ?) OR id NOT IN (SELECT policy_id FROM role_policies)", user.RoleID).
+		Where("id IN (SELECT policy_id FROM role_policies WHERE role_id = ?)", user.RoleID).
 		Order("id ASC").
 		Find(&policies)
 
-	// 2. Fallback: if none matched, return default policies, or all policies
-	if len(policies) == 0 {
-		ctrl.db.Where("is_default = ?", true).Order("id ASC").Find(&policies)
-		if len(policies) == 0 {
-			ctrl.db.Order("id ASC").Find(&policies)
-		}
-	}
 	return policies
 }
 
@@ -169,12 +162,20 @@ func (ctrl *SettingsController) SaveUserSettings(c *gin.Context) {
 		ctrl.setSettingVal("user_wm_mode_"+strconvUint(userID), req.WatermarkMode)
 	}
 	if req.WatermarkTemplateID != "" {
+		tmplID := ParseUintSafe(req.WatermarkTemplateID, 0)
+		if tmplID > 0 {
+			var count int64
+			ctrl.db.Model(&model.WatermarkTemplate{}).
+				Where("id = ? AND (owner_id = ? OR is_system = ?)", tmplID, userID, true).
+				Count(&count)
+			if count == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "无效或无权使用的水印模板"})
+				return
+			}
+		}
 		ctrl.setSettingVal("user_wm_tmpl_"+strconvUint(userID), req.WatermarkTemplateID)
 	}
 	if req.WatermarkMode != "" || req.WatermarkTemplateID != "" {
-		if ctrl.derivedCache != nil {
-			ctrl.derivedCache.Clear()
-		}
 		ctrl.db.Model(&model.FileRecord{}).Where("user_id = ?", userID).Update("sign_version", gorm.Expr("sign_version + 1"))
 	}
 	if req.DefaultLinkFormat != "" {
@@ -227,7 +228,11 @@ func (ctrl *SettingsController) GetUserQuota(c *gin.Context) {
 
 	var totalSize int64
 	var count int64
-	ctrl.db.Model(&model.FileRecord{}).Where("user_id = ? AND deleted_at IS NULL", user.ID).Select("COALESCE(SUM(size), 0)").Scan(&totalSize)
+	ctrl.db.Model(&model.FileRecord{}).
+		Joins("LEFT JOIN file_policy_replicas ON file_policy_replicas.file_id = file_records.id AND file_policy_replicas.status = 'ready'").
+		Where("file_records.user_id = ? AND file_records.deleted_at IS NULL", user.ID).
+		Select("COALESCE(SUM(COALESCE(file_policy_replicas.size, file_records.size)), 0)").
+		Scan(&totalSize)
 	ctrl.db.Model(&model.FileRecord{}).Where("user_id = ? AND deleted_at IS NULL", user.ID).Count(&count)
 
 	if current.UsedBytes != totalSize || current.FileCount != count {
@@ -265,9 +270,16 @@ func (ctrl *SettingsController) UpdateProfile(c *gin.Context) {
 	var req struct {
 		Nickname string `json:"nickname"`
 		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var user model.User
+	if err := ctrl.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
@@ -277,7 +289,25 @@ func (ctrl *SettingsController) UpdateProfile(c *gin.Context) {
 	}
 	if req.Email != "" {
 		em := strings.TrimSpace(req.Email)
-		updates["email"] = &em
+		currentEmail := ""
+		if user.Email != nil {
+			currentEmail = *user.Email
+		}
+		if !strings.EqualFold(em, currentEmail) {
+			// Changing email requires password verification if password is set
+			if user.PasswordHash != "" {
+				if req.Password == "" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "修改绑定邮箱需输入当前账户密码进行安全验证"})
+					return
+				}
+				ok, err := auth.VerifyPassword(req.Password, user.PasswordHash)
+				if err != nil || !ok {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "当前账户密码验证失败"})
+					return
+				}
+			}
+			updates["email"] = &em
+		}
 	}
 
 	if len(updates) > 0 {
@@ -287,7 +317,6 @@ func (ctrl *SettingsController) UpdateProfile(c *gin.Context) {
 		}
 	}
 
-	var user model.User
 	ctrl.db.Where("id = ?", userID).First(&user)
 	c.JSON(http.StatusOK, user)
 }
@@ -318,13 +347,23 @@ func (ctrl *SettingsController) ChangePassword(c *gin.Context) {
 		return
 	}
 
-	ctrl.db.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-		"password_hash": newHash,
-		"token_version": gorm.Expr("token_version + 1"),
+	err = ctrl.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+			"password_hash": newHash,
+			"token_version": gorm.Expr("token_version + 1"),
+		}).Error; err != nil {
+			return err
+		}
+		// Revoke all existing sessions and API tokens
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.Session{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("user_id = ?", user.ID).Delete(&model.ApiToken{}).Error
 	})
-
-	// Revoke all existing sessions
-	ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully"})
 }
@@ -416,7 +455,9 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 	}
 
 	for _, s := range settings {
-		res[s.Key] = s.Value
+		if allowedSystemSettings[s.Key] {
+			res[s.Key] = s.Value
+		}
 	}
 
 	if ctrl.cfg != nil {
@@ -476,16 +517,21 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 		}
 	}
 
-	// Check default_register_role_id cannot be guest role
+	// Check default_register_role_id cannot be guest or admin role
 	if defaultRoleStr, ok := req["default_register_role_id"]; ok && defaultRoleStr != "" {
-		if roleID, err := strconv.Atoi(defaultRoleStr); err == nil && roleID > 0 {
-			var role model.Role
-			if err := ctrl.db.First(&role, roleID).Error; err == nil {
-				if role.Name == "guest" {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将新注册用户默认角色设置为游客组"})
-					return
-				}
-			}
+		roleID, err := strconv.Atoi(defaultRoleStr)
+		if err != nil || roleID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "默认注册角色ID格式不正确"})
+			return
+		}
+		var role model.Role
+		if err := ctrl.db.First(&role, roleID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "指定的默认注册角色不存在"})
+			return
+		}
+		if role.Name == "guest" || role.Name == "admin" || role.ID == 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将新注册用户默认角色设置为管理员或游客组"})
+			return
 		}
 	}
 
@@ -755,6 +801,8 @@ func strconvUint(u uint) string {
 }
 
 func (ctrl *SettingsController) UploadFavicon(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2*1024*1024)
+
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded"})
@@ -773,7 +821,7 @@ func (ctrl *SettingsController) UploadFavicon(c *gin.Context) {
 	}
 	defer f.Close()
 
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, 2*1024*1024))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file content"})
 		return

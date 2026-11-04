@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -114,11 +115,27 @@ func NewGitHubStorageDriver(cfg GitHubConfig) (*GitHubStorageDriver, error) {
 }
 
 func (d *GitHubStorageDriver) resolvePath(key string) string {
-	return strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	cleanKey := strings.TrimLeft(path.Clean("/"+strings.TrimLeft(key, "/\\")), "/")
+	if d.cfg.PathPrefix != "" {
+		cleanPrefix := strings.Trim(path.Clean("/"+strings.Trim(d.cfg.PathPrefix, "/\\")), "/")
+		if cleanPrefix != "" && cleanPrefix != "." {
+			return cleanPrefix + "/" + cleanKey
+		}
+	}
+	return cleanKey
+}
+
+func escapePathSegments(p string) string {
+	parts := strings.Split(p, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }
 
 func (d *GitHubStorageDriver) getFileSHA(ctx context.Context, fullPath string) (string, error) {
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", d.cfg.Owner, d.cfg.Repo, fullPath, d.cfg.Branch)
+	escapedPath := escapePathSegments(fullPath)
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", d.cfg.Owner, d.cfg.Repo, escapedPath, url.QueryEscape(d.cfg.Branch))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return "", err
@@ -152,16 +169,24 @@ func (d *GitHubStorageDriver) Put(ctx context.Context, key string, r io.Reader, 
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
+	if size > 25*1024*1024 {
+		return fmt.Errorf("GitHub API limits upload to maximum 25MB per file")
+	}
+
 	fullPath := d.resolvePath(key)
 	existingSHA, _ := d.getFileSHA(ctx, fullPath)
 
-	data, err := io.ReadAll(r)
+	data, err := io.ReadAll(io.LimitReader(r, 26*1024*1024))
 	if err != nil {
 		return err
 	}
+	if int64(len(data)) > 25*1024*1024 {
+		return fmt.Errorf("file size exceeds GitHub API limit of 25MB")
+	}
 	encoded := base64.StdEncoding.EncodeToString(data)
 
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", d.cfg.Owner, d.cfg.Repo, fullPath)
+	escapedPath := escapePathSegments(fullPath)
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", d.cfg.Owner, d.cfg.Repo, escapedPath)
 	payload := map[string]any{
 		"message": fmt.Sprintf("Upload %s", path.Base(fullPath)),
 		"content": encoded,
@@ -195,7 +220,8 @@ func (d *GitHubStorageDriver) Put(ctx context.Context, key string, r io.Reader, 
 
 func (d *GitHubStorageDriver) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	fullPath := d.resolvePath(key)
-	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", d.cfg.Owner, d.cfg.Repo, d.cfg.Branch, fullPath)
+	escapedPath := escapePathSegments(fullPath)
+	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", d.cfg.Owner, d.cfg.Repo, d.cfg.Branch, escapedPath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -218,18 +244,16 @@ func (d *GitHubStorageDriver) Delete(ctx context.Context, key string) error {
 	defer d.lock.Unlock()
 
 	fullPath := d.resolvePath(key)
-	sha, err := d.getFileSHA(ctx, fullPath)
-	if err != nil {
-		return err
-	}
-	if sha == "" {
-		return nil // already absent
+	existingSHA, _ := d.getFileSHA(ctx, fullPath)
+	if existingSHA == "" {
+		return nil
 	}
 
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", d.cfg.Owner, d.cfg.Repo, fullPath)
+	escapedPath := escapePathSegments(fullPath)
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", d.cfg.Owner, d.cfg.Repo, escapedPath)
 	payload := map[string]any{
 		"message": fmt.Sprintf("Delete %s", path.Base(fullPath)),
-		"sha":     sha,
+		"sha":     existingSHA,
 		"branch":  d.cfg.Branch,
 	}
 
@@ -249,7 +273,8 @@ func (d *GitHubStorageDriver) Delete(ctx context.Context, key string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		return fmt.Errorf("github delete failed (status %d)", resp.StatusCode)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("github delete failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }

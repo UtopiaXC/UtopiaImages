@@ -451,15 +451,33 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 		updates["role_id"] = req.RoleID
 	}
 	if req.Status != "" {
+		validStatuses := map[string]bool{
+			"active":   true,
+			"banned":   true,
+			"frozen":   true,
+			"disabled": true,
+		}
+		if !validStatuses[req.Status] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的用户状态，仅允许 active/banned/frozen/disabled"})
+			return
+		}
 		updates["status"] = req.Status
-		if req.Status == "disabled" || req.Status == "banned" {
+		if req.Status == "disabled" || req.Status == "banned" || req.Status == "frozen" {
 			updates["token_version"] = gorm.Expr("token_version + 1")
+			updates["lockout_until"] = nil
 			ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
 			ctrl.db.Where("user_id = ?", user.ID).Delete(&model.ApiToken{})
+		} else if req.Status == "active" {
+			updates["lockout_until"] = nil
+			updates["failed_login_attempts"] = 0
 		}
 	}
 	if req.Password != "" {
-		h, _ := auth.HashPassword(req.Password)
+		h, err := auth.HashPassword(req.Password)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "密码加密失败，长度不能超过72字节"})
+			return
+		}
 		updates["password_hash"] = h
 		updates["token_version"] = gorm.Expr("token_version + 1")
 		ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
@@ -515,12 +533,21 @@ func (ctrl *AdminController) DeleteUser(c *gin.Context) {
 	}
 
 	err := ctrl.db.Transaction(func(tx *gorm.DB) error {
+		var remainingFileIDs []uint
+		tx.Model(&model.FileRecord{}).Where("user_id = ?", id).Pluck("id", &remainingFileIDs)
+		if len(remainingFileIDs) > 0 {
+			tx.Where("file_id IN ?", remainingFileIDs).Delete(&model.FilePolicyReplica{})
+			tx.Unscoped().Where("user_id = ?", id).Delete(&model.FileRecord{})
+		}
+		tx.Where("user_id = ?", id).Delete(&model.ImportJob{})
 		tx.Where("user_id = ?", id).Delete(&model.Session{})
 		tx.Where("user_id = ?", id).Delete(&model.ApiToken{})
 		tx.Where("user_id = ?", id).Delete(&model.TOTPSecret{})
 		tx.Where("user_id = ?", id).Delete(&model.WebAuthnCredential{})
 		tx.Where("user_id = ?", id).Delete(&model.RecoveryCode{})
 		tx.Where("user_id = ?", id).Delete(&model.PasswordResetToken{})
+		tx.Where("user_id = ?", id).Delete(&model.TemporaryLink{})
+		tx.Where("owner_id = ?", id).Delete(&model.WatermarkTemplate{})
 		res := tx.Unscoped().Where("id = ?", id).Delete(&model.User{})
 		if res.RowsAffected == 0 {
 			return errors.New("user not found")
@@ -605,16 +632,17 @@ func (ctrl *AdminController) UnfreezeUser(c *gin.Context) {
 // -------------------------------------------------------------
 
 type RoleDTO struct {
-	ID             uint      `json:"id"`
-	Name           string    `json:"name"`
-	DisplayName    string    `json:"display_name"`
-	QuotaBytes     int64     `json:"quota_bytes"`
-	AllowedFormats string    `json:"allowed_formats"`
-	IsSystem       bool      `json:"is_system"`
-	UserCount      int64     `json:"user_count"`
-	PolicyIDs      []uint    `json:"policy_ids"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                  uint      `json:"id"`
+	Name                string    `json:"name"`
+	DisplayName         string    `json:"display_name"`
+	QuotaBytes          int64     `json:"quota_bytes"`
+	AllowedFormats      string    `json:"allowed_formats"`
+	MaxSingleFileSizeMB int64     `json:"max_single_file_size_mb"`
+	IsSystem            bool      `json:"is_system"`
+	UserCount           int64     `json:"user_count"`
+	PolicyIDs           []uint    `json:"policy_ids"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 func (ctrl *AdminController) ListRoles(c *gin.Context) {
@@ -651,16 +679,17 @@ func (ctrl *AdminController) ListRoles(c *gin.Context) {
 		}
 
 		dtos = append(dtos, RoleDTO{
-			ID:             r.ID,
-			Name:           r.Name,
-			DisplayName:    r.DisplayName,
-			QuotaBytes:     r.QuotaBytes,
-			AllowedFormats: r.AllowedFormats,
-			IsSystem:       r.IsSystem,
-			UserCount:      uCount,
-			PolicyIDs:      policyIDs,
-			CreatedAt:      r.CreatedAt,
-			UpdatedAt:      r.UpdatedAt,
+			ID:                  r.ID,
+			Name:                r.Name,
+			DisplayName:         r.DisplayName,
+			QuotaBytes:          r.QuotaBytes,
+			AllowedFormats:      r.AllowedFormats,
+			MaxSingleFileSizeMB: r.MaxSingleFileSizeMB,
+			IsSystem:            r.IsSystem,
+			UserCount:           uCount,
+			PolicyIDs:           policyIDs,
+			CreatedAt:           r.CreatedAt,
+			UpdatedAt:           r.UpdatedAt,
 		})
 	}
 
@@ -669,11 +698,12 @@ func (ctrl *AdminController) ListRoles(c *gin.Context) {
 
 func (ctrl *AdminController) CreateRole(c *gin.Context) {
 	var req struct {
-		Name           string `json:"name" binding:"required"`
-		DisplayName    string `json:"display_name" binding:"required"`
-		QuotaBytes     int64  `json:"quota_bytes"`
-		AllowedFormats string `json:"allowed_formats"`
-		PolicyIDs      []uint `json:"policy_ids"`
+		Name                string `json:"name" binding:"required"`
+		DisplayName         string `json:"display_name" binding:"required"`
+		QuotaBytes          int64  `json:"quota_bytes"`
+		AllowedFormats      string `json:"allowed_formats"`
+		MaxSingleFileSizeMB int64  `json:"max_single_file_size_mb"`
+		PolicyIDs           []uint `json:"policy_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -686,17 +716,18 @@ func (ctrl *AdminController) CreateRole(c *gin.Context) {
 	}
 
 	role := model.Role{
-		Name:           req.Name,
-		DisplayName:    req.DisplayName,
-		QuotaBytes:     req.QuotaBytes,
-		AllowedFormats: strings.TrimSpace(req.AllowedFormats),
-		IsSystem:       false,
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		Name:                req.Name,
+		DisplayName:         req.DisplayName,
+		QuotaBytes:          req.QuotaBytes,
+		AllowedFormats:      strings.TrimSpace(req.AllowedFormats),
+		MaxSingleFileSizeMB: req.MaxSingleFileSizeMB,
+		IsSystem:            false,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
 	}
 
 	if err := ctrl.db.Create(&role).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "创建角色失败: " + err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "创建角色失败: " + common.SanitizeError(err)})
 		return
 	}
 
@@ -716,10 +747,11 @@ func (ctrl *AdminController) UpdateRole(c *gin.Context) {
 	}
 
 	var req struct {
-		DisplayName    string  `json:"display_name"`
-		QuotaBytes     *int64  `json:"quota_bytes"`
-		AllowedFormats *string `json:"allowed_formats"`
-		PolicyIDs      []uint  `json:"policy_ids"`
+		DisplayName         string  `json:"display_name"`
+		QuotaBytes          *int64  `json:"quota_bytes"`
+		AllowedFormats      *string `json:"allowed_formats"`
+		MaxSingleFileSizeMB *int64  `json:"max_single_file_size_mb"`
+		PolicyIDs           []uint  `json:"policy_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -736,6 +768,9 @@ func (ctrl *AdminController) UpdateRole(c *gin.Context) {
 	if req.AllowedFormats != nil {
 		updates["allowed_formats"] = strings.TrimSpace(*req.AllowedFormats)
 	}
+	if req.MaxSingleFileSizeMB != nil {
+		updates["max_single_file_size_mb"] = *req.MaxSingleFileSizeMB
+	}
 
 	if role.Name == "guest" && req.PolicyIDs != nil {
 		if len(req.PolicyIDs) != 1 {
@@ -744,7 +779,10 @@ func (ctrl *AdminController) UpdateRole(c *gin.Context) {
 		}
 	}
 
-	ctrl.db.Model(&role).Updates(updates)
+	if err := ctrl.db.Model(&role).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "更新角色失败: " + common.SanitizeError(err)})
+		return
+	}
 
 	// Update role policy associations
 	if req.PolicyIDs != nil {
@@ -803,6 +841,95 @@ type PolicyDTO struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
+var policySecretKeys = []string{
+	"secret_access_key", "secret_key", "password", "token", "access_token", "refresh_token",
+	"client_secret", "credentials_json", "account_key", "connection_string", "access_key_secret", "security_key",
+}
+
+func maskPolicyConfig(configStr string) string {
+	if configStr == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(configStr), &m); err != nil {
+		return configStr
+	}
+	for _, k := range policySecretKeys {
+		if val, exists := m[k]; exists && val != nil && val != "" {
+			m[k] = "********"
+		}
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return configStr
+	}
+	return string(b)
+}
+
+func mergeUnmaskedPolicyConfig(newConfigStr, oldConfigStr string) string {
+	if oldConfigStr == "" || !strings.Contains(newConfigStr, "********") {
+		return newConfigStr
+	}
+	var newMap, oldMap map[string]any
+	if err := json.Unmarshal([]byte(newConfigStr), &newMap); err != nil {
+		return newConfigStr
+	}
+	if err := json.Unmarshal([]byte(oldConfigStr), &oldMap); err != nil {
+		return newConfigStr
+	}
+
+	// Prevent credential exfiltration: if endpoint/host/bucket is modified, do NOT auto-restore masked credentials
+	endpointKeys := []string{"endpoint", "bucket_url", "custom_domain", "bucket", "owner", "repo"}
+	endpointChanged := false
+	for _, ek := range endpointKeys {
+		if newEp, exists := newMap[ek]; exists && newEp != nil {
+			if oldEp, ok := oldMap[ek]; ok && oldEp != nil {
+				if fmt.Sprintf("%v", newEp) != fmt.Sprintf("%v", oldEp) {
+					endpointChanged = true
+					break
+				}
+			}
+		}
+	}
+
+	for _, k := range policySecretKeys {
+		if val, exists := newMap[k]; exists && val == "********" {
+			if endpointChanged {
+				newMap[k] = "" // Erase secret to avoid transmitting old secret to newly modified target
+			} else if oldVal, ok := oldMap[k]; ok {
+				newMap[k] = oldVal
+			}
+		}
+	}
+	b, err := json.Marshal(newMap)
+	if err != nil {
+		return newConfigStr
+	}
+	return string(b)
+}
+
+func policyToDTO(p model.StoragePolicy) PolicyDTO {
+	roleIDs := make([]uint, 0, len(p.Roles))
+	for _, r := range p.Roles {
+		roleIDs = append(roleIDs, r.ID)
+	}
+	return PolicyDTO{
+		ID:                  p.ID,
+		Name:                p.Name,
+		Driver:              p.Driver,
+		Config:              maskPolicyConfig(p.Config),
+		MaxCapacityBytes:    p.MaxCapacityBytes,
+		MaxSingleFileSizeMB: p.MaxSingleFileSizeMB,
+		UsedBytes:           p.UsedBytes,
+		IsDefault:           p.IsDefault,
+		PathPrefix:          p.PathPrefix,
+		NamingRule:          p.NamingRule,
+		RoleIDs:             roleIDs,
+		CreatedAt:           p.CreatedAt,
+		UpdatedAt:           p.UpdatedAt,
+	}
+}
+
 func (ctrl *AdminController) ListPolicies(c *gin.Context) {
 	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
 	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
@@ -829,25 +956,7 @@ func (ctrl *AdminController) ListPolicies(c *gin.Context) {
 
 	dtos := make([]PolicyDTO, 0, len(policies))
 	for _, p := range policies {
-		roleIDs := make([]uint, 0, len(p.Roles))
-		for _, r := range p.Roles {
-			roleIDs = append(roleIDs, r.ID)
-		}
-		dtos = append(dtos, PolicyDTO{
-			ID:                  p.ID,
-			Name:                p.Name,
-			Driver:              p.Driver,
-			Config:              p.Config,
-			MaxCapacityBytes:    p.MaxCapacityBytes,
-			MaxSingleFileSizeMB: p.MaxSingleFileSizeMB,
-			UsedBytes:           p.UsedBytes,
-			IsDefault:           p.IsDefault,
-			PathPrefix:          p.PathPrefix,
-			NamingRule:          p.NamingRule,
-			RoleIDs:             roleIDs,
-			CreatedAt:           p.CreatedAt,
-			UpdatedAt:           p.UpdatedAt,
-		})
+		dtos = append(dtos, policyToDTO(p))
 	}
 	c.JSON(http.StatusOK, dtos)
 }
@@ -882,14 +991,16 @@ func (ctrl *AdminController) TestPolicy(c *gin.Context) {
 
 	driverType := req.Driver
 	configStr := req.Config
-	if req.ID > 0 && driverType == "" {
+	if req.ID > 0 {
 		var p model.StoragePolicy
 		if err := ctrl.db.First(&p, req.ID).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
 			return
 		}
-		driverType = p.Driver
-		configStr = p.Config
+		if driverType == "" {
+			driverType = p.Driver
+		}
+		configStr = mergeUnmaskedPolicyConfig(configStr, p.Config)
 	}
 
 	if driverType == "" {
@@ -1001,10 +1112,11 @@ func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
 		ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
 	}
 
+	ctrl.db.Preload("Roles").First(&policy, policy.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "存储策略保存成功",
 		"warning": warnMsg,
-		"policy":  policy,
+		"policy":  policyToDTO(policy),
 	})
 }
 
@@ -1053,7 +1165,7 @@ func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
 		updates["driver"] = req.Driver
 	}
 	if req.Config != nil {
-		updates["config"] = *req.Config
+		updates["config"] = mergeUnmaskedPolicyConfig(*req.Config, policy.Config)
 	}
 
 	targetDriver := policy.Driver
@@ -1128,10 +1240,11 @@ func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
 	}
 
 	ctrl.db.Preload("Roles").First(&policy, policy.ID)
+	ctrl.db.Preload("Roles").First(&policy, policy.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "存储策略保存成功",
 		"warning": warnMsg,
-		"policy":  policy,
+		"policy":  policyToDTO(policy),
 	})
 }
 
@@ -1721,6 +1834,14 @@ func (ctrl *AdminController) CreateAdminWatermark(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "水印名称不能为空"})
 		return
 	}
+	if len(req.Layers) > 65536 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "水印图层配置过大"})
+		return
+	}
+	if !json.Valid([]byte(req.Layers)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "水印图层配置必须是合法JSON"})
+		return
+	}
 
 	tmpl := model.WatermarkTemplate{
 		Name:      req.Name,
@@ -1733,7 +1854,7 @@ func (ctrl *AdminController) CreateAdminWatermark(c *gin.Context) {
 	}
 
 	if err := ctrl.db.Create(&tmpl).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": common.SanitizeError(err)})
 		return
 	}
 	c.JSON(http.StatusOK, tmpl)
@@ -1770,23 +1891,40 @@ func (ctrl *AdminController) UpdateAdminWatermark(c *gin.Context) {
 		updates["name"] = trimmed
 	}
 	if req.Layers != "" {
+		if len(req.Layers) > 65536 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "水印图层配置过大"})
+			return
+		}
+		if !json.Valid([]byte(req.Layers)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "水印图层配置必须是合法JSON"})
+			return
+		}
 		updates["layers"] = req.Layers
 	}
 
 	ctrl.db.Model(&tmpl).Updates(updates)
 	ctrl.db.Where("id = ?", id).First(&tmpl)
 
-	// Invalidate client keys for affected files
-	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ?", tmpl.ID).Update("sign_version", gorm.Expr("sign_version + 1"))
+	// Invalidate client keys for affected files (direct template usage or system watermark inheritance)
+	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ? OR watermark_template_id IS NULL", tmpl.ID).Update("sign_version", gorm.Expr("sign_version + 1"))
 
 	c.JSON(http.StatusOK, tmpl)
 }
 
 func (ctrl *AdminController) DeleteAdminWatermark(c *gin.Context) {
 	id := ParseUintSafe(c.Param("id"), 0)
-	res := ctrl.db.Where("id = ?", id).Delete(&model.WatermarkTemplate{})
-	if res.RowsAffected == 0 {
+	var tmpl model.WatermarkTemplate
+	if err := ctrl.db.Where("id = ?", id).First(&tmpl).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark not found"})
+		return
+	}
+	if tmpl.OwnerID != nil || !tmpl.IsSystem {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "仅允许删除系统水印，用户私有水印不可在此删除"})
+		return
+	}
+
+	if err := ctrl.db.Delete(&tmpl).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": common.SanitizeError(err)})
 		return
 	}
 	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ?", id).Updates(map[string]any{

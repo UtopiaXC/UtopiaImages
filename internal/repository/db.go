@@ -181,10 +181,8 @@ func SeedDefaults(db *gorm.DB) error {
 		db.FirstOrCreate(&model.RolePolicy{RoleID: 2, PolicyID: 2}, model.RolePolicy{RoleID: 2, PolicyID: 2})
 	}
 
-	// Ensure policy base paths and capacities: User local storage is 10G, Admin is unlimited (0)
+	// Migrate legacy policy base path config if needed
 	db.Model(&model.StoragePolicy{}).Where("config = '{\"base_path\":\"storage\"}'").Update("config", `{"base_path":"data/storage"}`)
-	db.Model(&model.StoragePolicy{}).Where("id = 1 OR name = '管理员本地存储'").Update("max_capacity_bytes", 0)
-	db.Model(&model.StoragePolicy{}).Where("id = 2 OR name = '用户本地存储'").Update("max_capacity_bytes", 10737418240)
 
 	// Ensure Role 1 has Policy 1, Role 2 has Policy 2 if existing
 	var adminP, userP model.StoragePolicy
@@ -224,6 +222,25 @@ func ConnectTargetDB(driver, dsn string) (*gorm.DB, error) {
 
 	switch strings.ToLower(driver) {
 	case "sqlite", "sqlite3":
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(dsn)), "file:") {
+			return nil, fmt.Errorf("invalid sqlite dsn: file uri scheme not allowed")
+		}
+		cleanDSN := filepath.Clean(dsn)
+		if strings.Contains(cleanDSN, "..") {
+			return nil, fmt.Errorf("invalid sqlite dsn path: directory traversal not allowed")
+		}
+		if filepath.IsAbs(cleanDSN) {
+			absData, _ := filepath.Abs("data")
+			rel, err := filepath.Rel(absData, cleanDSN)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				return nil, fmt.Errorf("sqlite database path must be within data directory")
+			}
+		} else {
+			slash := filepath.ToSlash(cleanDSN)
+			if slash != "data" && !strings.HasPrefix(slash, "data/") {
+				return nil, fmt.Errorf("sqlite database path must be within data directory: %s", cleanDSN)
+			}
+		}
 		dir := filepath.Dir(dsn)
 		if dir != "." && dir != "" {
 			if err := os.MkdirAll(dir, 0755); err != nil {
