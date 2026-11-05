@@ -649,9 +649,13 @@ func (ctrl *AuthController) Register(c *gin.Context) {
 	// Send email with activation link
 	baseURL := ctrl.resolveBaseURL(c)
 	activationLink := fmt.Sprintf("%s/usr/login?action=activate&token=%s", baseURL, token)
-	if err := ctrl.sendActivationEmail(*user.Email, user.Username, activationLink); err != nil {
-		slog.Error("Failed to send activation email", "error", err, "email", *user.Email)
-	}
+	toEmail := *user.Email
+	username := user.Username
+	go func() {
+		if err := ctrl.sendActivationEmail(toEmail, username, activationLink); err != nil {
+			slog.Error("Failed to send activation email asynchronously", "error", err, "email", toEmail)
+		}
+	}()
 
 	c.JSON(http.StatusOK, gin.H{
 		"code":    "ACTIVATION_EMAIL_SENT",
@@ -728,12 +732,13 @@ func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
 	// Send email with reset token link
 	baseURL := ctrl.resolveBaseURL(c)
 	resetLink := fmt.Sprintf("%s/usr/login?action=reset&token=%s", baseURL, token)
-	err := ctrl.sendPasswordResetEmail(*user.Email, user.Username, resetLink)
-	if err != nil {
-		slog.Error("Failed to send password reset email", "error", err, "email", *user.Email)
-		common.RespondError(c, http.StatusInternalServerError, common.ErrInternalServerError)
-		return
-	}
+	toEmail := *user.Email
+	username := user.Username
+	go func() {
+		if err := ctrl.sendPasswordResetEmail(toEmail, username, resetLink); err != nil {
+			slog.Error("Failed to send password reset email asynchronously", "error", err, "email", toEmail)
+		}
+	}()
 
 	c.JSON(http.StatusOK, gin.H{
 		"code":    "RESET_EMAIL_SENT",
@@ -831,12 +836,13 @@ func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
 
 	baseURL := ctrl.resolveBaseURL(c)
 	resetLink := fmt.Sprintf("%s/usr/login?action=reset-2fa&token=%s", baseURL, token)
-	err := ctrl.send2FAResetEmail(*user.Email, user.Username, resetLink, token)
-	if err != nil {
-		slog.Error("Failed to send 2FA reset email", "error", err, "email", *user.Email)
-		common.RespondError(c, http.StatusInternalServerError, common.ErrInternalServerError)
-		return
-	}
+	toEmail := *user.Email
+	username := user.Username
+	go func() {
+		if err := ctrl.send2FAResetEmail(toEmail, username, resetLink, token); err != nil {
+			slog.Error("Failed to send 2FA reset email asynchronously", "error", err, "email", toEmail)
+		}
+	}()
 
 	c.JSON(http.StatusOK, gin.H{
 		"code":    "2FA_RESET_EMAIL_SENT",
@@ -1289,6 +1295,15 @@ func (ctrl *AuthController) FinishMFAPasskey(c *gin.Context) {
 	}
 	user, err := ctrl.authService.PasskeyManager().FinishLogin(sessionKey, parsedData)
 	if err != nil {
+		var u model.User
+		if ctrl.db.Where("id = ?", expectedUserID).First(&u).Error == nil {
+			dur, errCode := ctrl.authService.RecordFailedAttempt(&u)
+			if dur > 0 {
+				ctrl.authService.RevokeMFAToken(mfaToken)
+				c.JSON(http.StatusForbidden, gin.H{"error": errCode, "code": errCode})
+				return
+			}
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Passkey verification failed: " + err.Error()})
 		return
 	}

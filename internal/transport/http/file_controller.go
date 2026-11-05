@@ -1598,6 +1598,38 @@ func (ctrl *FileController) GuestUpload(c *gin.Context) {
 	})
 }
 
+type PublicFileResponse struct {
+	ID          uint      `json:"id"`
+	DisplayName string    `json:"display_name"`
+	PublicPath  string    `json:"public_path"`
+	MimeType    string    `json:"mime_type"`
+	Size        int64     `json:"size"`
+	Width       int       `json:"width"`
+	Height      int       `json:"height"`
+	Sha256      string    `json:"sha256"`
+	IsImage     bool      `json:"is_image"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Links       gin.H     `json:"links"`
+}
+
+func sanitizePublicFileRecord(f *model.FileRecord, links gin.H) PublicFileResponse {
+	return PublicFileResponse{
+		ID:          f.ID,
+		DisplayName: f.DisplayName,
+		PublicPath:  f.PublicPath,
+		MimeType:    f.MimeType,
+		Size:        f.Size,
+		Width:       f.Width,
+		Height:      f.Height,
+		Sha256:      f.Sha256,
+		IsImage:     f.IsImage,
+		CreatedAt:   f.CreatedAt,
+		UpdatedAt:   f.UpdatedAt,
+		Links:       links,
+	}
+}
+
 func (ctrl *FileController) ListGuestFiles(c *gin.Context) {
 	var s model.Setting
 	ctrl.db.Where("key = 'enable_guest_upload'").First(&s)
@@ -1660,17 +1692,10 @@ func (ctrl *FileController) ListGuestFiles(c *gin.Context) {
 	query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
 
 	currentBaseURL := ctrl.resolveBaseURL(c)
-	type GuestFileItem struct {
-		model.FileRecord
-		Links gin.H `json:"links"`
-	}
-	items := make([]GuestFileItem, 0, len(files))
+	items := make([]PublicFileResponse, 0, len(files))
 	for _, f := range files {
 		links := ctrl.buildFileLinks(&f, currentBaseURL)
-		items = append(items, GuestFileItem{
-			FileRecord: f,
-			Links:      links,
-		})
+		items = append(items, sanitizePublicFileRecord(&f, links))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1714,17 +1739,10 @@ func (ctrl *FileController) ListSquareFiles(c *gin.Context) {
 	query.Order("file_records.id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
 
 	currentBaseURL := ctrl.resolveBaseURL(c)
-	type SquareFileItem struct {
-		model.FileRecord
-		Links gin.H `json:"links"`
-	}
-	items := make([]SquareFileItem, 0, len(files))
+	items := make([]PublicFileResponse, 0, len(files))
 	for _, f := range files {
 		links := ctrl.buildFileLinks(&f, currentBaseURL)
-		items = append(items, SquareFileItem{
-			FileRecord: f,
-			Links:      links,
-		})
+		items = append(items, sanitizePublicFileRecord(&f, links))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1764,7 +1782,7 @@ func (ctrl *FileController) GetGuestFileDetails(c *gin.Context) {
 	currentBaseURL := ctrl.resolveBaseURL(c)
 	links := ctrl.buildFileLinks(&file, currentBaseURL)
 	c.JSON(http.StatusOK, gin.H{
-		"file":  file,
+		"file":  sanitizePublicFileRecord(&file, links),
 		"links": links,
 	})
 }
@@ -1808,7 +1826,7 @@ func (ctrl *FileController) GetSquareFileDetails(c *gin.Context) {
 	currentBaseURL := ctrl.resolveBaseURL(c)
 	links := ctrl.buildFileLinks(&file, currentBaseURL)
 	c.JSON(http.StatusOK, gin.H{
-		"file":  file,
+		"file":  sanitizePublicFileRecord(&file, links),
 		"links": links,
 	})
 }

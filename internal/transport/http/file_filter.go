@@ -214,9 +214,9 @@ func buildRuleSQL(rule FilterRule, db *gorm.DB, isAdmin bool) (string, []interfa
 	case "is_image":
 		sVal := fmt.Sprintf("%v", val)
 		if sVal == "false" || sVal == "0" || sVal == "non_image" {
-			return "is_image = 0", nil
+			return "is_image = ?", []interface{}{false}
 		}
-		return "is_image = 1", nil
+		return "is_image = ?", []interface{}{true}
 
 	case "created_at":
 		return buildTimeRuleSQL(op, val, rule.ValueTo)
@@ -285,7 +285,7 @@ func buildFormatRuleSQL(op string, val interface{}) (string, []interface{}) {
 		case "heif", "heic":
 			return "(mime_type IN ('image/heif', 'image/heic') OR public_path LIKE '%.heif' OR public_path LIKE '%.heic')"
 		case "other":
-			return "(is_image = 0)"
+			return "(is_image = false)"
 		default:
 			if fmtStr != "" {
 				cleanExt := strings.TrimPrefix(fmtStr, ".")
@@ -409,11 +409,11 @@ func buildDimensionsRuleSQL(op string, val, valTo interface{}, subType string) (
 		}
 		switch targetRatio {
 		case "landscape":
-			return "is_image = 1 AND width > height", nil
+			return "is_image = ? AND width > height", []interface{}{true}
 		case "portrait":
-			return "is_image = 1 AND height > width", nil
+			return "is_image = ? AND height > width", []interface{}{true}
 		case "square":
-			return "is_image = 1 AND width = height AND width > 0", nil
+			return "is_image = ? AND width = height AND width > 0", []interface{}{true}
 		}
 		return "", nil
 	}

@@ -71,7 +71,15 @@ func AuthMiddleware(sm *SessionManager) gin.HandlerFunc {
 	}
 }
 
-// ValidateSessionCSRF checks that state-changing requests using cookie sessions originate from the same site/origin
+// cleanHostNormalizes removes default ports (80, 443) for reliable origin matching
+func cleanHostNormalizes(h string) string {
+	h = strings.ToLower(strings.TrimSpace(h))
+	h = strings.TrimSuffix(h, ":80")
+	h = strings.TrimSuffix(h, ":443")
+	return h
+}
+
+// ValidateSessionCSRF checks that state-changing requests using cookie sessions originate strictly from the same origin
 func ValidateSessionCSRF(c *gin.Context) bool {
 	if isApi, ok := c.Get(CtxIsApiTokenKey); ok && isApi.(bool) {
 		// Personal Access Tokens (PAT) e.g. PicGo / ShareX / CLI tools are immune to browser CSRF
@@ -83,21 +91,24 @@ func ValidateSessionCSRF(c *gin.Context) bool {
 		return true
 	}
 
-	// 1. Check Sec-Fetch-Site (modern browsers)
-	secFetch := c.GetHeader("Sec-Fetch-Site")
-	if secFetch == "cross-site" {
+	// 1. Check Sec-Fetch-Site (modern browsers): strictly allow same-origin or none (direct navigation/bookmark)
+	secFetch := strings.ToLower(strings.TrimSpace(c.GetHeader("Sec-Fetch-Site")))
+	if secFetch != "" && secFetch != "same-origin" && secFetch != "none" {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 			"code":  "CSRF_BLOCKED",
-			"error": "Cross-site request blocked",
+			"error": "Cross-site or cross-subdomain request blocked",
 		})
 		return false
 	}
 
 	// 2. Check Origin / Referer against request Host
-	targetHost := strings.ToLower(c.Request.Host)
-	if origin := c.GetHeader("Origin"); origin != "" {
+	targetHost := cleanHostNormalizes(c.Request.Host)
+	origin := c.GetHeader("Origin")
+	referer := c.Request.Referer()
+
+	if origin != "" {
 		if u, err := url.Parse(origin); err == nil {
-			if !strings.EqualFold(u.Host, targetHost) {
+			if cleanHostNormalizes(u.Host) != targetHost {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 					"code":  "CSRF_BLOCKED",
 					"error": "Cross-origin request blocked",
@@ -105,9 +116,9 @@ func ValidateSessionCSRF(c *gin.Context) bool {
 				return false
 			}
 		}
-	} else if referer := c.Request.Referer(); referer != "" {
+	} else if referer != "" {
 		if u, err := url.Parse(referer); err == nil {
-			if !strings.EqualFold(u.Host, targetHost) {
+			if cleanHostNormalizes(u.Host) != targetHost {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 					"code":  "CSRF_BLOCKED",
 					"error": "Cross-origin referer blocked",

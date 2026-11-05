@@ -308,7 +308,7 @@ func (s *DispatchService) handleFileRequest(c *gin.Context, rawPath string, isRa
 
 			if file.ID == 0 {
 				var candidateRecord model.FileRecord
-				if err := s.db.Where("public_path IN ? AND is_image = 1", candidatePaths).First(&candidateRecord).Error; err == nil {
+				if err := s.db.Where("public_path IN ? AND is_image = ?", candidatePaths, true).First(&candidateRecord).Error; err == nil {
 					file = candidateRecord
 					requestedFormat = reqExt
 					var rep model.FilePolicyReplica

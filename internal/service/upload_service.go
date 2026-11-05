@@ -226,7 +226,7 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		var defaultPolicyID uint
 		s.db.Table("role_policies").
 			Joins("JOIN storage_policies ON storage_policies.id = role_policies.policy_id").
-			Where("role_policies.role_id = ? AND storage_policies.is_default = 1", user.RoleID).
+			Where("role_policies.role_id = ? AND storage_policies.is_default = ?", user.RoleID, true).
 			Select("storage_policies.id").Scan(&defaultPolicyID)
 		if defaultPolicyID > 0 {
 			var p model.StoragePolicy
@@ -247,7 +247,7 @@ func (s *UploadService) Upload(ctx context.Context, user *model.User, r io.Reade
 		if len(candidatePolicies) == 0 {
 			if isAdmin {
 				var p model.StoragePolicy
-				s.db.Where("is_default = 1").First(&p)
+				s.db.Where("is_default = ?", true).First(&p)
 				if p.ID == 0 {
 					s.db.First(&p)
 				}

@@ -255,6 +255,56 @@ func (s *AuthService) RevokeSetupToken(token string) {
 	s.setupLock.Unlock()
 }
 
+// CalculateLockoutDuration calculates temporary freeze duration and error code based on user failures:
+// 5 failures -> 5 minutes
+// 8 failures -> 10 minutes (3 more after 5)
+// 9 failures -> 30 minutes (1 more after 8)
+// >=10 failures -> 60 minutes (each failure after 9 locks for 1 hour)
+func CalculateLockoutDuration(attempts int) (time.Duration, string) {
+	if attempts >= 10 {
+		return 60 * time.Minute, common.ErrAuthUserFrozen1H
+	}
+	if attempts == 9 {
+		return 30 * time.Minute, common.ErrAuthUserFrozen30M
+	}
+	if attempts == 8 {
+		return 10 * time.Minute, common.ErrAuthUserFrozen10M
+	}
+	if attempts == 5 {
+		return 5 * time.Minute, common.ErrAuthUserFrozen5M
+	}
+	return 0, common.ErrAuthInvalidCredentials
+}
+
+func (s *AuthService) GetCurrentLockoutErrorCode(attempts int) string {
+	if attempts >= 10 {
+		return common.ErrAuthUserFrozen1H
+	}
+	if attempts == 9 {
+		return common.ErrAuthUserFrozen30M
+	}
+	if attempts >= 8 {
+		return common.ErrAuthUserFrozen10M
+	}
+	return common.ErrAuthUserFrozen5M
+}
+
+func (s *AuthService) RecordFailedAttempt(user *model.User) (time.Duration, string) {
+	user.FailedLoginAttempts++
+	dur, errCode := CalculateLockoutDuration(user.FailedLoginAttempts)
+	now := time.Now()
+	updates := map[string]any{
+		"failed_login_attempts": user.FailedLoginAttempts,
+	}
+	if dur > 0 {
+		until := now.Add(dur)
+		updates["lockout_until"] = &until
+		updates["status"] = "frozen"
+	}
+	s.db.Model(user).Updates(updates)
+	return dur, errCode
+}
+
 // Login authenticates user with anti-brute-force protection, progressive freeze, and immediate captcha
 func (s *AuthService) Login(account, password, clientIP, userAgent string, captchaSolution string, rememberMe bool) (*LoginResult, string) {
 	trackerKey := fmt.Sprintf("%s:%s", clientIP, account)
@@ -278,70 +328,57 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 		return &LoginResult{RequiresCaptcha: true}, common.ErrAuthInvalidCredentials
 	}
 
-	// 3. Check if user is permanently banned or disabled by administrator
-	if user.Status == "banned" {
-		return nil, common.ErrAuthUserBanned
-	}
-	if user.Status == "disabled" {
-		return nil, common.ErrAuthUserInactive
-	}
-
-	// 3.5 Check if user account is not yet activated
-	if user.Status == "inactive" || user.Status == "pending" {
-		return nil, common.ErrAuthUserInactive
-	}
-
-	// Unfreeze temporary lockout only if LockoutUntil is set and expired
-	if user.Status == "frozen" {
-		if user.LockoutUntil != nil && time.Now().After(*user.LockoutUntil) {
-			s.db.Model(&user).Update("status", "active")
-			user.Status = "active"
-		} else if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
-			if user.FailedLoginAttempts >= 10 {
-				return nil, common.ErrAuthUserFrozen10M
+	now := time.Now()
+	// Check temporary lockout status
+	if user.LockoutUntil != nil {
+		if now.After(*user.LockoutUntil) {
+			// Lockout expired, unfreeze status
+			if user.Status == "frozen" {
+				user.Status = "active"
 			}
-			return nil, common.ErrAuthUserFrozen3M
+			user.LockoutUntil = nil
+			s.db.Model(&user).Updates(map[string]any{
+				"status":        user.Status,
+				"lockout_until": nil,
+			})
 		} else {
-			// Manually frozen by administrator (LockoutUntil is nil)
-			return nil, common.ErrAuthUserFrozen30D
+			// Still locked out
+			return &LoginResult{RequiresCaptcha: true}, s.GetCurrentLockoutErrorCode(user.FailedLoginAttempts)
 		}
 	}
 
-	// 5. Check if CAPTCHA is required (Immediately after 1 failure)
+	// 3. Check if CAPTCHA is required (Immediately after 1 failure)
 	if user.FailedLoginAttempts >= 1 || s.tracker.RequiresCaptcha(trackerKey) {
 		if !s.VerifyCaptcha(captchaSolution, clientIP) {
 			return &LoginResult{RequiresCaptcha: true}, common.ErrAuthCaptchaRequired
 		}
 	}
 
-	// 6. Verify password
+	// 4. Verify password FIRST (prevent account state enumeration)
 	ok, err := auth.VerifyPassword(password, user.PasswordHash)
 	if err != nil || !ok {
-		user.FailedLoginAttempts++
 		s.tracker.RecordFailure(trackerKey)
-
-		now := time.Now()
-		var errCode string
-		updates := map[string]any{"failed_login_attempts": user.FailedLoginAttempts}
-
-		if user.FailedLoginAttempts >= 10 {
-			until := now.Add(15 * time.Minute)
-			updates["lockout_until"] = &until
-			errCode = common.ErrAuthUserFrozen10M
-		} else if user.FailedLoginAttempts >= 5 {
-			until := now.Add(3 * time.Minute)
-			updates["lockout_until"] = &until
-			errCode = common.ErrAuthUserFrozen3M
-		} else {
-			errCode = common.ErrAuthInvalidCredentials
-		}
-
-		s.db.Model(&user).Updates(updates)
+		_, errCode := s.RecordFailedAttempt(&user)
 		slog.Warn("Failed login attempt", "account", account, "attempts", user.FailedLoginAttempts, "ip", clientIP)
 		return &LoginResult{RequiresCaptcha: true}, errCode
 	}
 
-	// 7. Check 2FA
+	// 5. Password is correct: now check account status
+	if user.Status == "banned" {
+		return nil, common.ErrAuthUserBanned
+	}
+	if user.Status == "disabled" {
+		return nil, common.ErrAuthUserInactive
+	}
+	if user.Status == "inactive" || user.Status == "pending" {
+		return nil, common.ErrAuthUserInactive
+	}
+	if user.Status == "frozen" && user.LockoutUntil == nil {
+		// Manually frozen by administrator
+		return nil, common.ErrAuthUserFrozen30D
+	}
+
+	// 6. Check 2FA
 	var totpSec model.TOTPSecret
 	hasConfirmedTOTP := s.db.Where("user_id = ? AND confirmed_at IS NOT NULL", user.ID).First(&totpSec).Error == nil
 
@@ -373,7 +410,7 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 		}, ""
 	}
 
-	// 8. Success: reset attempt counter & lockout
+	// 7. Success: reset attempt counter & lockout
 	s.tracker.RecordSuccess(trackerKey)
 	s.db.Model(&user).Updates(map[string]any{
 		"failed_login_attempts": 0,
@@ -843,8 +880,14 @@ func (s *AuthService) VerifyMFAAndLogin(mfaToken, code, clientIP, userAgent stri
 	if user.Status != "active" {
 		return "", errors.New("user account is not active or has been disabled")
 	}
-	if user.LockoutUntil != nil && user.LockoutUntil.After(time.Now()) {
-		return "", errors.New("user account is temporarily locked")
+	now := time.Now()
+	if user.LockoutUntil != nil {
+		if now.After(*user.LockoutUntil) {
+			user.LockoutUntil = nil
+			s.db.Model(&user).Update("lockout_until", nil)
+		} else {
+			return "", errors.New(s.GetCurrentLockoutErrorCode(user.FailedLoginAttempts))
+		}
 	}
 
 	var sec model.TOTPSecret
@@ -859,6 +902,13 @@ func (s *AuthService) VerifyMFAAndLogin(mfaToken, code, clientIP, userAgent stri
 
 	if !s.totpManager.ValidateWithContext(fmt.Sprintf("uid:%d", userID), code, plainSecret) {
 		s.tracker.RecordFailure(trackerKey)
+		dur, errCode := s.RecordFailedAttempt(&user)
+		if dur > 0 {
+			s.mfaLock.Lock()
+			delete(s.mfaTokens, mfaToken)
+			s.mfaLock.Unlock()
+			return "", errors.New(errCode)
+		}
 		return "", errors.New("invalid 2FA code")
 	}
 

@@ -68,7 +68,7 @@ func (s *ImportService) resolvePolicy(user *model.User, policyID uint) (model.St
 		var defaultPolicyID uint
 		s.db.Table("role_policies").
 			Joins("JOIN storage_policies ON storage_policies.id = role_policies.policy_id").
-			Where("role_policies.role_id = ? AND storage_policies.is_default = 1", user.RoleID).
+			Where("role_policies.role_id = ? AND storage_policies.is_default = ?", user.RoleID, true).
 			Select("storage_policies.id").Scan(&defaultPolicyID)
 		if defaultPolicyID > 0 {
 			s.db.Where("id = ?", defaultPolicyID).First(&policy)
