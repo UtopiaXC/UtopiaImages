@@ -1,0 +1,16 @@
+services:
+  utopia_images:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: utopia_images
+    restart: always
+    ports:
+      - "2983:2983"
+    volumes:
+      - ../data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - UIMG_SERVER_PORT=2983
+      - UIMG_SERVER_MODE=release
+      - SETUP_TOKEN= # 可选：初始化激活码。留空时系统将在首次启动自动生成并输出至控制台与 data/config/config.yaml

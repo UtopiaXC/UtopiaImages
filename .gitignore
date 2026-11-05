@@ -1,0 +1,58 @@
+# Binaries
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# Go workspace
+go.work
+go.work.sum
+
+# Dependency directories
+/vendor/
+
+# Environment and local configs
+.env
+.env.local
+config/config.yaml
+data/config/config.yaml
+config.local.yaml
+
+# Runtime Data, uploads, cache, logs
+/data/*
+!/data/config/
+data/config/*
+!data/config/config.example.yaml
+/storage/
+/cache/
+/uploads/
+/logs/
+!internal/cache/
+!internal/storage/
+*.db
+*.db-wal
+*.db-shm
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Frontend dependencies & build outputs
+web/node_modules/
+web/dist/
+
+/UtopiaImages
+/UtopiaImages.exe

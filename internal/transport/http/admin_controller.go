@@ -1,0 +1,2034 @@
+package http
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/UtopiaXC/UtopiaImages/internal/auth"
+	"github.com/UtopiaXC/UtopiaImages/internal/cache"
+	"github.com/UtopiaXC/UtopiaImages/internal/common"
+	"github.com/UtopiaXC/UtopiaImages/internal/logger"
+	"github.com/UtopiaXC/UtopiaImages/internal/model"
+	"github.com/UtopiaXC/UtopiaImages/internal/pkg/pathclean"
+	"github.com/UtopiaXC/UtopiaImages/internal/service"
+	"github.com/UtopiaXC/UtopiaImages/internal/storage"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+var serverStartTime = time.Now()
+
+type AdminController struct {
+	db            *gorm.DB
+	uploadService *service.UploadService
+	driverManager *storage.PolicyDriverManager
+	baseURL       string
+	derivedCache  *cache.DerivedCache
+}
+
+func NewAdminController(db *gorm.DB, us *service.UploadService, baseURL string, dc *cache.DerivedCache) *AdminController {
+	return &AdminController{
+		db:            db,
+		uploadService: us,
+		baseURL:       baseURL,
+		derivedCache:  dc,
+	}
+}
+
+func (ctrl *AdminController) SetDriverManager(dm *storage.PolicyDriverManager) {
+	ctrl.driverManager = dm
+}
+
+func (ctrl *AdminController) SetDB(db *gorm.DB) {
+	ctrl.db = db
+}
+
+func (ctrl *AdminController) SetBaseURL(baseURL string) {
+	ctrl.baseURL = baseURL
+}
+
+func (ctrl *AdminController) resolveBaseURL(c *gin.Context) string {
+	return ResolveBaseURL(c, ctrl.db, ctrl.baseURL)
+}
+
+func (ctrl *AdminController) RegisterRoutes(rg *gin.RouterGroup) {
+	admin := rg.Group("/admin")
+	admin.Use(auth.RequireAuth(), auth.RequireAdmin())
+	{
+		admin.GET("/stats", ctrl.GetStats)
+
+		// All-site Files management
+		admin.GET("/files", ctrl.ListAllFiles)
+		admin.GET("/files/:id/details", ctrl.GetAllFileDetails)
+		admin.DELETE("/files/:id", ctrl.DeleteSiteFile)
+		admin.POST("/files/batch-delete", ctrl.BatchDeleteSiteFiles)
+
+		// Users management
+		admin.GET("/users", ctrl.ListUsers)
+		admin.POST("/users", ctrl.CreateUser)
+		admin.PATCH("/users/:id", ctrl.UpdateUser)
+		admin.DELETE("/users/:id", ctrl.DeleteUser)
+		admin.POST("/users/:id/ban", ctrl.BanUser)
+		admin.POST("/users/:id/unfreeze", ctrl.UnfreezeUser)
+
+		// Roles management (Requirement 8)
+		admin.GET("/roles", ctrl.ListRoles)
+		admin.POST("/roles", ctrl.CreateRole)
+		admin.PATCH("/roles/:id", ctrl.UpdateRole)
+		admin.DELETE("/roles/:id", ctrl.DeleteRole)
+
+		// Storage policies management (Requirement 8)
+		admin.GET("/policies", ctrl.ListPolicies)
+		admin.GET("/policies/drivers", ctrl.ListDrivers)
+		admin.POST("/policies/test", ctrl.TestPolicy)
+		admin.POST("/policies", ctrl.CreatePolicy)
+		admin.PATCH("/policies/:id", ctrl.UpdatePolicy)
+		admin.DELETE("/policies/:id", ctrl.DeletePolicy)
+		admin.POST("/policies/onedrive/device-code", ctrl.OneDriveDeviceCode)
+		admin.POST("/policies/onedrive/device-token", ctrl.OneDriveDeviceToken)
+
+		// Image Presets
+		admin.GET("/presets", ctrl.ListPresets)
+		admin.POST("/presets", ctrl.CreatePreset)
+		admin.DELETE("/presets/:id", ctrl.DeletePreset)
+
+		// All-site Watermarks management
+		admin.GET("/watermarks", ctrl.ListAllWatermarks)
+		admin.POST("/watermarks", ctrl.CreateAdminWatermark)
+		admin.PATCH("/watermarks/:id", ctrl.UpdateAdminWatermark)
+		admin.DELETE("/watermarks/:id", ctrl.DeleteAdminWatermark)
+
+		// Database status
+		admin.GET("/database/status", ctrl.GetDatabaseStatus)
+	}
+}
+
+func (ctrl *AdminController) GetStats(c *gin.Context) {
+	var userCount, fileCount, roleCount, policyCount int64
+	var totalBytes int64
+
+	ctrl.db.Model(&model.User{}).Count(&userCount)
+	ctrl.db.Model(&model.FileRecord{}).Count(&fileCount)
+	ctrl.db.Model(&model.Role{}).Count(&roleCount)
+	ctrl.db.Model(&model.StoragePolicy{}).Count(&policyCount)
+
+	type Result struct {
+		Total int64
+	}
+	var res Result
+	ctrl.db.Model(&model.FileRecord{}).Select("COALESCE(SUM(size), 0) as total").Scan(&res)
+	totalBytes = res.Total
+
+	// 14 days activity trend
+	type DayStat struct {
+		Date       string `json:"date"`
+		FilesCount int64  `json:"files_count"`
+		BytesCount int64  `json:"bytes_count"`
+	}
+	daysMap := make(map[string]*DayStat)
+	var daysList []DayStat
+	now := time.Now()
+	for i := 13; i >= 0; i-- {
+		dStr := now.AddDate(0, 0, -i).Format("2006-01-02")
+		ds := &DayStat{Date: dStr, FilesCount: 0, BytesCount: 0}
+		daysMap[dStr] = ds
+	}
+
+	type FileSimple struct {
+		CreatedAt time.Time
+		Size      int64
+	}
+	var recentRecords []FileSimple
+	ctrl.db.Model(&model.FileRecord{}).
+		Where("created_at >= ?", now.AddDate(0, 0, -14).Truncate(24*time.Hour)).
+		Select("created_at, size").
+		Find(&recentRecords)
+
+	for _, rec := range recentRecords {
+		dStr := rec.CreatedAt.Format("2006-01-02")
+		if stat, ok := daysMap[dStr]; ok {
+			stat.FilesCount++
+			stat.BytesCount += rec.Size
+		}
+	}
+
+	for i := 13; i >= 0; i-- {
+		dStr := now.AddDate(0, 0, -i).Format("2006-01-02")
+		daysList = append(daysList, *daysMap[dStr])
+	}
+
+	// Mime type distribution
+	type MimeStat struct {
+		Mime      string `json:"mime"`
+		Count     int64  `json:"count"`
+		TotalSize int64  `json:"total_size"`
+	}
+	var mimeStats []MimeStat
+	ctrl.db.Model(&model.FileRecord{}).
+		Select("mime_type as mime, count(*) as count, COALESCE(sum(size), 0) as total_size").
+		Group("mime_type").
+		Order("count DESC").
+		Limit(10).
+		Scan(&mimeStats)
+
+	// Recent 10 uploaded files with user info
+	var recentFiles []model.FileRecord
+	ctrl.db.Order("id DESC").Limit(10).Find(&recentFiles)
+
+	userIDs := make([]uint, 0)
+	policyIDs := make([]uint, 0)
+	for _, f := range recentFiles {
+		userIDs = append(userIDs, f.UserID)
+		policyIDs = append(policyIDs, f.PolicyID)
+	}
+
+	var users []model.User
+	if len(userIDs) > 0 {
+		ctrl.db.Where("id IN ?", userIDs).Find(&users)
+	}
+	userMap := make(map[uint]string)
+	for _, u := range users {
+		if u.Nickname != "" {
+			userMap[u.ID] = u.Nickname
+		} else {
+			userMap[u.ID] = u.Username
+		}
+	}
+
+	var policies []model.StoragePolicy
+	if len(policyIDs) > 0 {
+		ctrl.db.Where("id IN ?", policyIDs).Find(&policies)
+	}
+	policyMap := make(map[uint]string)
+	for _, p := range policies {
+		policyMap[p.ID] = p.Name
+	}
+
+	type RecentFileDTO struct {
+		ID            uint      `json:"id"`
+		DisplayName   string    `json:"display_name"`
+		PublicPath    string    `json:"public_path"`
+		Size          int64     `json:"size"`
+		MimeType      string    `json:"mime_type"`
+		StoragePolicy string    `json:"storage_policy"`
+		Uploader      string    `json:"uploader"`
+		CreatedAt     time.Time `json:"created_at"`
+	}
+	recentFilesDTO := make([]RecentFileDTO, 0, len(recentFiles))
+	for _, f := range recentFiles {
+		policyName := "默认策略"
+		if name, ok := policyMap[f.PolicyID]; ok && name != "" {
+			policyName = name
+		}
+		uploaderName := "系统"
+		if name, ok := userMap[f.UserID]; ok && name != "" {
+			uploaderName = name
+		}
+		recentFilesDTO = append(recentFilesDTO, RecentFileDTO{
+			ID:            f.ID,
+			DisplayName:   f.DisplayName,
+			PublicPath:    f.PublicPath,
+			Size:          f.Size,
+			MimeType:      f.MimeType,
+			StoragePolicy: policyName,
+			Uploader:      uploaderName,
+			CreatedAt:     f.CreatedAt,
+		})
+	}
+
+	// Recent 10 users
+	var recentUsers []model.User
+	ctrl.db.Preload("Role").Order("id DESC").Limit(10).Find(&recentUsers)
+
+	// System Runtime Info
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	sysInfo := gin.H{
+		"go_version":            runtime.Version(),
+		"os":                    runtime.GOOS,
+		"arch":                  runtime.GOARCH,
+		"goroutines":            runtime.NumGoroutine(),
+		"alloc_bytes":           mem.Alloc,
+		"total_alloc_bytes":     mem.TotalAlloc,
+		"sys_bytes":             mem.Sys,
+		"num_gc":                mem.NumGC,
+		"server_uptime_seconds": int64(time.Since(serverStartTime).Seconds()),
+		"log_level":             logger.GetLevel(),
+		"log_permanent_level":   logger.GetPermanentLevel(),
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"users_count":       userCount,
+		"files_count":       fileCount,
+		"total_bytes":       totalBytes,
+		"roles_count":       roleCount,
+		"policies_count":    policyCount,
+		"daily_trends":      daysList,
+		"mime_distribution": mimeStats,
+		"recent_files":      recentFilesDTO,
+		"recent_users":      recentUsers,
+		"system_info":       sysInfo,
+		"recent_logs":       logger.GetRecentLogs(50),
+		"recent_errors":     logger.GetRecentErrors(50),
+	})
+}
+
+// -------------------------------------------------------------
+// Users Management
+// -------------------------------------------------------------
+
+func (ctrl *AdminController) ListUsers(c *gin.Context) {
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "asc"
+	}
+	allowed := map[string]string{
+		"id":         "id",
+		"username":   "username",
+		"email":      "email",
+		"nickname":   "nickname",
+		"role_id":    "role_id",
+		"used_bytes": "used_bytes",
+		"file_count": "file_count",
+		"created_at": "created_at",
+	}
+	query := ctrl.db.Preload("Role")
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id ASC")
+	}
+	var users []model.User
+	query.Find(&users)
+	c.JSON(http.StatusOK, users)
+}
+
+func (ctrl *AdminController) CreateUser(c *gin.Context) {
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required,min=6"`
+		Nickname string `json:"nickname"`
+		Email    string `json:"email"`
+		RoleID   uint   `json:"role_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	req.Username = strings.ToLower(strings.TrimSpace(req.Username))
+	if !pathclean.IsValidUsername(req.Username) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名格式不合法或属于系统保留字，长度必须大于3位（4~32位），仅允许字母、数字、下划线及连字符"})
+		return
+	}
+
+	var existingCount int64
+	ctrl.db.Unscoped().Model(&model.User{}).Where("LOWER(username) = ?", req.Username).Count(&existingCount)
+	if existingCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名已被使用"})
+		return
+	}
+
+	if req.RoleID == 0 {
+		req.RoleID = 2 // Default regular user role
+	}
+	var targetRole model.Role
+	if err := ctrl.db.First(&targetRole, req.RoleID).Error; err == nil {
+		if targetRole.Name == "guest" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将用户角色设置为游客组"})
+			return
+		}
+	}
+
+	hash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+
+	var emailPtr *string
+	if strings.TrimSpace(req.Email) != "" {
+		em := strings.TrimSpace(req.Email)
+		emailPtr = &em
+	}
+
+	user := model.User{
+		Username:     req.Username,
+		Nickname:     req.Nickname,
+		Email:        emailPtr,
+		PasswordHash: hash,
+		RoleID:       req.RoleID,
+		Status:       "active",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := ctrl.db.Create(&user).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": common.SanitizeError(err)})
+		return
+	}
+
+	ctrl.db.Preload("Role").First(&user, user.ID)
+	c.JSON(http.StatusOK, user)
+}
+
+func (ctrl *AdminController) UpdateUser(c *gin.Context) {
+	userID := c.Param("id")
+	var user model.User
+	if err := ctrl.db.Preload("Role").Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	if user.Username == "guest" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客账户不可被编辑"})
+		return
+	}
+
+	var req struct {
+		Nickname string `json:"nickname"`
+		Email    string `json:"email"`
+		RoleID   uint   `json:"role_id"`
+		Status   string `json:"status"`
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	uVal, _ := c.Get(auth.CtxUserKey)
+	currentAdmin := uVal.(*model.User)
+
+	if user.ID == 1 || user.ID == currentAdmin.ID {
+		if req.RoleID > 0 && req.RoleID != 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot downgrade primary administrator or yourself"})
+			return
+		}
+		if req.Status != "" && req.Status != "active" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot disable or ban primary administrator or yourself"})
+			return
+		}
+	}
+
+	isAdminTarget := user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin")
+	if (req.RoleID > 0 && req.RoleID != 1 && isAdminTarget) || (req.Status != "" && req.Status != "active" && isAdminTarget) {
+		var activeAdminCount int64
+		ctrl.db.Model(&model.User{}).Where("role_id = 1 AND status = 'active' AND id != ?", user.ID).Count(&activeAdminCount)
+		if activeAdminCount == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "System must retain at least one active administrator"})
+			return
+		}
+	}
+
+	updates := map[string]any{}
+	if req.Nickname != "" {
+		updates["nickname"] = req.Nickname
+	}
+	if req.Email != "" {
+		em := strings.TrimSpace(req.Email)
+		updates["email"] = &em
+	}
+	if req.RoleID > 0 {
+		var targetRole model.Role
+		if err := ctrl.db.First(&targetRole, req.RoleID).Error; err == nil {
+			if targetRole.Name == "guest" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将用户角色设置为游客组"})
+				return
+			}
+		}
+		updates["role_id"] = req.RoleID
+	}
+	if req.Status != "" {
+		validStatuses := map[string]bool{
+			"active":   true,
+			"banned":   true,
+			"frozen":   true,
+			"disabled": true,
+		}
+		if !validStatuses[req.Status] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的用户状态，仅允许 active/banned/frozen/disabled"})
+			return
+		}
+		updates["status"] = req.Status
+		if req.Status == "disabled" || req.Status == "banned" || req.Status == "frozen" {
+			updates["token_version"] = gorm.Expr("token_version + 1")
+			updates["lockout_until"] = nil
+			ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+			ctrl.db.Where("user_id = ?", user.ID).Delete(&model.ApiToken{})
+		} else if req.Status == "active" {
+			updates["lockout_until"] = nil
+			updates["failed_login_attempts"] = 0
+		}
+	}
+	if req.Password != "" {
+		h, err := auth.HashPassword(req.Password)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "密码加密失败，长度不能超过72字节"})
+			return
+		}
+		updates["password_hash"] = h
+		updates["token_version"] = gorm.Expr("token_version + 1")
+		ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+		ctrl.db.Where("user_id = ?", user.ID).Delete(&model.ApiToken{})
+	}
+
+	if err := ctrl.db.Model(&user).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": common.SanitizeError(err)})
+		return
+	}
+	ctrl.db.Preload("Role").Where("id = ?", user.ID).First(&user)
+	c.JSON(http.StatusOK, gin.H{"message": "User updated", "user": user})
+}
+
+func (ctrl *AdminController) DeleteUser(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	uVal, _ := c.Get(auth.CtxUserKey)
+	currentAdmin := uVal.(*model.User)
+	if id == currentAdmin.ID {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_DELETE_SELF")
+		return
+	}
+	if id == 1 {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_DELETE_ADMIN")
+		return
+	}
+
+	var targetUser model.User
+	if err := ctrl.db.Preload("Role").First(&targetUser, id).Error; err == nil {
+		if targetUser.Username == "guest" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "游客账户不可被删除"})
+			return
+		}
+		if targetUser.RoleID == 1 || (targetUser.Role != nil && targetUser.Role.Name == "admin") {
+			common.RespondError(c, http.StatusBadRequest, "CANNOT_DELETE_ADMIN")
+			return
+		}
+	} else {
+		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
+		return
+	}
+
+	// Clean up user's files from storage and return storage policy capacity
+	var userFiles []model.FileRecord
+	ctrl.db.Where("user_id = ?", id).Find(&userFiles)
+	for _, f := range userFiles {
+		_ = ctrl.uploadService.DeleteFile(c.Request.Context(), f.ID, id, true)
+	}
+
+	err := ctrl.db.Transaction(func(tx *gorm.DB) error {
+		var remainingFileIDs []uint
+		tx.Model(&model.FileRecord{}).Where("user_id = ?", id).Pluck("id", &remainingFileIDs)
+		if len(remainingFileIDs) > 0 {
+			tx.Where("file_id IN ?", remainingFileIDs).Delete(&model.FilePolicyReplica{})
+			tx.Unscoped().Where("user_id = ?", id).Delete(&model.FileRecord{})
+		}
+		tx.Where("user_id = ?", id).Delete(&model.ImportJob{})
+		tx.Where("user_id = ?", id).Delete(&model.Session{})
+		tx.Where("user_id = ?", id).Delete(&model.ApiToken{})
+		tx.Where("user_id = ?", id).Delete(&model.TOTPSecret{})
+		tx.Where("user_id = ?", id).Delete(&model.WebAuthnCredential{})
+		tx.Where("user_id = ?", id).Delete(&model.RecoveryCode{})
+		tx.Where("user_id = ?", id).Delete(&model.PasswordResetToken{})
+		tx.Where("user_id = ?", id).Delete(&model.TemporaryLink{})
+		tx.Where("owner_id = ?", id).Delete(&model.WatermarkTemplate{})
+		res := tx.Unscoped().Where("id = ?", id).Delete(&model.User{})
+		if res.RowsAffected == 0 {
+			return errors.New("user not found")
+		}
+		return nil
+	})
+	if err != nil {
+		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
+}
+
+func (ctrl *AdminController) BanUser(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
+		return
+	}
+	uVal, _ := c.Get(auth.CtxUserKey)
+	currentAdmin := uVal.(*model.User)
+	if id == currentAdmin.ID {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_BAN_SELF")
+		return
+	}
+	if id == 1 {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_BAN_ADMIN")
+		return
+	}
+	var user model.User
+	if err := ctrl.db.Preload("Role").First(&user, id).Error; err != nil {
+		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
+		return
+	}
+	if user.Username == "guest" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客账户不可被封禁"})
+		return
+	}
+	if user.RoleID == 1 || (user.Role != nil && user.Role.Name == "admin") {
+		common.RespondError(c, http.StatusBadRequest, "CANNOT_BAN_ADMIN")
+		return
+	}
+	user.Status = "banned"
+	user.TokenVersion++
+	if err := ctrl.db.Save(&user).Error; err != nil {
+		slog.Error("Failed to ban user", "user_id", user.ID, "error", err)
+		common.RespondError(c, http.StatusInternalServerError, common.ErrInternalServerError)
+		return
+	}
+	ctrl.db.Where("user_id = ?", user.ID).Delete(&model.Session{})
+	ctrl.db.Where("user_id = ?", user.ID).Delete(&model.ApiToken{})
+	slog.Warn("User banned by admin", "admin_id", currentAdmin.ID, "target_user_id", user.ID, "username", user.Username)
+	c.JSON(http.StatusOK, gin.H{"message": "User banned successfully", "status": user.Status})
+}
+
+func (ctrl *AdminController) UnfreezeUser(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
+		return
+	}
+	var user model.User
+	if err := ctrl.db.First(&user, id).Error; err != nil {
+		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
+		return
+	}
+	user.Status = "active"
+	user.FailedLoginAttempts = 0
+	user.LockoutUntil = nil
+	if err := ctrl.db.Save(&user).Error; err != nil {
+		slog.Error("Failed to unfreeze user", "user_id", user.ID, "error", err)
+		common.RespondError(c, http.StatusInternalServerError, common.ErrInternalServerError)
+		return
+	}
+	slog.Info("User unfreezed and activated by admin", "target_user_id", user.ID, "username", user.Username)
+	c.JSON(http.StatusOK, gin.H{"message": "User unlocked and activated successfully", "status": user.Status})
+}
+
+// -------------------------------------------------------------
+// Roles Management (Requirement 8)
+// -------------------------------------------------------------
+
+type RoleDTO struct {
+	ID                  uint      `json:"id"`
+	Name                string    `json:"name"`
+	DisplayName         string    `json:"display_name"`
+	QuotaBytes          int64     `json:"quota_bytes"`
+	AllowedFormats      string    `json:"allowed_formats"`
+	MaxSingleFileSizeMB int64     `json:"max_single_file_size_mb"`
+	IsSystem            bool      `json:"is_system"`
+	UserCount           int64     `json:"user_count"`
+	PolicyIDs           []uint    `json:"policy_ids"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+func (ctrl *AdminController) ListRoles(c *gin.Context) {
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "asc"
+	}
+	allowed := map[string]string{
+		"id":           "id",
+		"name":         "name",
+		"display_name": "display_name",
+		"quota_bytes":  "quota_bytes",
+		"created_at":   "created_at",
+	}
+	query := ctrl.db.Preload("Policies")
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id ASC")
+	}
+
+	var roles []model.Role
+	query.Find(&roles)
+
+	dtos := make([]RoleDTO, 0, len(roles))
+	for _, r := range roles {
+		var uCount int64
+		ctrl.db.Model(&model.User{}).Where("role_id = ?", r.ID).Count(&uCount)
+
+		policyIDs := make([]uint, 0, len(r.Policies))
+		for _, p := range r.Policies {
+			policyIDs = append(policyIDs, p.ID)
+		}
+
+		dtos = append(dtos, RoleDTO{
+			ID:                  r.ID,
+			Name:                r.Name,
+			DisplayName:         r.DisplayName,
+			QuotaBytes:          r.QuotaBytes,
+			AllowedFormats:      r.AllowedFormats,
+			MaxSingleFileSizeMB: r.MaxSingleFileSizeMB,
+			IsSystem:            r.IsSystem,
+			UserCount:           uCount,
+			PolicyIDs:           policyIDs,
+			CreatedAt:           r.CreatedAt,
+			UpdatedAt:           r.UpdatedAt,
+		})
+	}
+
+	c.JSON(http.StatusOK, dtos)
+}
+
+func (ctrl *AdminController) CreateRole(c *gin.Context) {
+	var req struct {
+		Name                string `json:"name" binding:"required"`
+		DisplayName         string `json:"display_name" binding:"required"`
+		QuotaBytes          int64  `json:"quota_bytes"`
+		AllowedFormats      string `json:"allowed_formats"`
+		MaxSingleFileSizeMB int64  `json:"max_single_file_size_mb"`
+		PolicyIDs           []uint `json:"policy_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Name == "guest" && len(req.PolicyIDs) != 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "游客角色组必须且只能绑定一个存储策略"})
+		return
+	}
+
+	role := model.Role{
+		Name:                req.Name,
+		DisplayName:         req.DisplayName,
+		QuotaBytes:          req.QuotaBytes,
+		AllowedFormats:      strings.TrimSpace(req.AllowedFormats),
+		MaxSingleFileSizeMB: req.MaxSingleFileSizeMB,
+		IsSystem:            false,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
+	}
+
+	if err := ctrl.db.Create(&role).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "创建角色失败: " + common.SanitizeError(err)})
+		return
+	}
+
+	for _, pid := range req.PolicyIDs {
+		ctrl.db.Create(&model.RolePolicy{RoleID: role.ID, PolicyID: pid})
+	}
+
+	c.JSON(http.StatusOK, role)
+}
+
+func (ctrl *AdminController) UpdateRole(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var role model.Role
+	if err := ctrl.db.Where("id = ?", id).First(&role).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "角色不存在"})
+		return
+	}
+
+	var req struct {
+		DisplayName         string  `json:"display_name"`
+		QuotaBytes          *int64  `json:"quota_bytes"`
+		AllowedFormats      *string `json:"allowed_formats"`
+		MaxSingleFileSizeMB *int64  `json:"max_single_file_size_mb"`
+		PolicyIDs           []uint  `json:"policy_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]any{"updated_at": time.Now()}
+	if req.DisplayName != "" {
+		updates["display_name"] = req.DisplayName
+	}
+	if req.QuotaBytes != nil {
+		updates["quota_bytes"] = *req.QuotaBytes
+	}
+	if req.AllowedFormats != nil {
+		updates["allowed_formats"] = strings.TrimSpace(*req.AllowedFormats)
+	}
+	if req.MaxSingleFileSizeMB != nil {
+		updates["max_single_file_size_mb"] = *req.MaxSingleFileSizeMB
+	}
+
+	if role.Name == "guest" && req.PolicyIDs != nil {
+		if len(req.PolicyIDs) != 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "游客角色组必须且只能绑定一个存储策略"})
+			return
+		}
+	}
+
+	if err := ctrl.db.Model(&role).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "更新角色失败: " + common.SanitizeError(err)})
+		return
+	}
+
+	// Update role policy associations
+	if req.PolicyIDs != nil {
+		ctrl.db.Where("role_id = ?", role.ID).Delete(&model.RolePolicy{})
+		for _, pid := range req.PolicyIDs {
+			ctrl.db.Create(&model.RolePolicy{RoleID: role.ID, PolicyID: pid})
+		}
+	}
+
+	ctrl.db.Preload("Policies").First(&role, role.ID)
+	c.JSON(http.StatusOK, role)
+}
+
+func (ctrl *AdminController) DeleteRole(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var role model.Role
+	if err := ctrl.db.Where("id = ?", id).First(&role).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Role not found"})
+		return
+	}
+
+	if role.IsSystem || role.Name == "admin" || role.Name == "guest" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "System administrator role cannot be deleted"})
+		return
+	}
+
+	var userCount int64
+	ctrl.db.Model(&model.User{}).Where("role_id = ?", role.ID).Count(&userCount)
+	if userCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete role while users are still assigned to it"})
+		return
+	}
+
+	ctrl.db.Where("role_id = ?", role.ID).Delete(&model.RolePolicy{})
+	ctrl.db.Delete(&role)
+	c.JSON(http.StatusOK, gin.H{"message": "Role deleted successfully"})
+}
+
+// -------------------------------------------------------------
+// Storage Policies Management (Requirement 8)
+// -------------------------------------------------------------
+
+type PolicyDTO struct {
+	ID                  uint      `json:"id"`
+	Name                string    `json:"name"`
+	Driver              string    `json:"driver"`
+	Config              string    `json:"config"`
+	MaxCapacityBytes    int64     `json:"max_capacity_bytes"`
+	MaxSingleFileSizeMB int64     `json:"max_single_file_size_mb"`
+	UsedBytes           int64     `json:"used_bytes"`
+	IsDefault           bool      `json:"is_default"`
+	PathPrefix          string    `json:"path_prefix"`
+	NamingRule          string    `json:"naming_rule"`
+	RoleIDs             []uint    `json:"role_ids"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+var policySecretKeys = []string{
+	"secret_access_key", "secret_key", "password", "token", "access_token", "refresh_token",
+	"client_secret", "credentials_json", "account_key", "connection_string", "access_key_secret", "security_key",
+}
+
+func maskPolicyConfig(configStr string) string {
+	if configStr == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(configStr), &m); err != nil {
+		return configStr
+	}
+	for _, k := range policySecretKeys {
+		if val, exists := m[k]; exists && val != nil && val != "" {
+			m[k] = "********"
+		}
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return configStr
+	}
+	return string(b)
+}
+
+func mergeUnmaskedPolicyConfig(newConfigStr, oldConfigStr string) string {
+	if oldConfigStr == "" || !strings.Contains(newConfigStr, "********") {
+		return newConfigStr
+	}
+	var newMap, oldMap map[string]any
+	if err := json.Unmarshal([]byte(newConfigStr), &newMap); err != nil {
+		return newConfigStr
+	}
+	if err := json.Unmarshal([]byte(oldConfigStr), &oldMap); err != nil {
+		return newConfigStr
+	}
+
+	// Prevent credential exfiltration: if endpoint/host/bucket is modified, do NOT auto-restore masked credentials
+	endpointKeys := []string{"endpoint", "bucket_url", "custom_domain", "bucket", "owner", "repo"}
+	endpointChanged := false
+	for _, ek := range endpointKeys {
+		if newEp, exists := newMap[ek]; exists && newEp != nil {
+			if oldEp, ok := oldMap[ek]; ok && oldEp != nil {
+				if fmt.Sprintf("%v", newEp) != fmt.Sprintf("%v", oldEp) {
+					endpointChanged = true
+					break
+				}
+			}
+		}
+	}
+
+	for _, k := range policySecretKeys {
+		if val, exists := newMap[k]; exists && val == "********" {
+			if endpointChanged {
+				newMap[k] = "" // Erase secret to avoid transmitting old secret to newly modified target
+			} else if oldVal, ok := oldMap[k]; ok {
+				newMap[k] = oldVal
+			}
+		}
+	}
+	b, err := json.Marshal(newMap)
+	if err != nil {
+		return newConfigStr
+	}
+	return string(b)
+}
+
+func policyToDTO(p model.StoragePolicy) PolicyDTO {
+	roleIDs := make([]uint, 0, len(p.Roles))
+	for _, r := range p.Roles {
+		roleIDs = append(roleIDs, r.ID)
+	}
+	return PolicyDTO{
+		ID:                  p.ID,
+		Name:                p.Name,
+		Driver:              p.Driver,
+		Config:              maskPolicyConfig(p.Config),
+		MaxCapacityBytes:    p.MaxCapacityBytes,
+		MaxSingleFileSizeMB: p.MaxSingleFileSizeMB,
+		UsedBytes:           p.UsedBytes,
+		IsDefault:           p.IsDefault,
+		PathPrefix:          p.PathPrefix,
+		NamingRule:          p.NamingRule,
+		RoleIDs:             roleIDs,
+		CreatedAt:           p.CreatedAt,
+		UpdatedAt:           p.UpdatedAt,
+	}
+}
+
+func (ctrl *AdminController) ListPolicies(c *gin.Context) {
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "asc"
+	}
+	allowed := map[string]string{
+		"id":                 "id",
+		"name":               "name",
+		"driver":             "driver",
+		"used_bytes":         "used_bytes",
+		"max_capacity_bytes": "max_capacity_bytes",
+		"created_at":         "created_at",
+	}
+	query := ctrl.db.Preload("Roles")
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id ASC")
+	}
+
+	var policies []model.StoragePolicy
+	query.Find(&policies)
+
+	dtos := make([]PolicyDTO, 0, len(policies))
+	for _, p := range policies {
+		dtos = append(dtos, policyToDTO(p))
+	}
+	c.JSON(http.StatusOK, dtos)
+}
+
+func (ctrl *AdminController) ListDrivers(c *gin.Context) {
+	c.JSON(http.StatusOK, storage.SupportedDrivers())
+}
+
+func (ctrl *AdminController) checkPathPrefixDuplicate(excludeID uint, driver, pathPrefix string) string {
+	normPrefix := strings.Trim(pathclean.CleanPath(pathPrefix), "/")
+	var otherPolicies []model.StoragePolicy
+	ctrl.db.Where("driver = ? AND id != ?", driver, excludeID).Find(&otherPolicies)
+	for _, op := range otherPolicies {
+		opPrefix := strings.Trim(pathclean.CleanPath(op.PathPrefix), "/")
+		if opPrefix == normPrefix {
+			return fmt.Sprintf("该路径已被策略「%s」使用，混用路径可能会导致文件冲突", op.Name)
+		}
+	}
+	return ""
+}
+
+func (ctrl *AdminController) TestPolicy(c *gin.Context) {
+	var req struct {
+		ID     uint   `json:"id"`
+		Driver string `json:"driver"`
+		Config string `json:"config"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	driverType := req.Driver
+	configStr := req.Config
+	if req.ID > 0 {
+		var p model.StoragePolicy
+		if err := ctrl.db.First(&p, req.ID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
+			return
+		}
+		if driverType == "" {
+			driverType = p.Driver
+		}
+		configStr = mergeUnmaskedPolicyConfig(configStr, p.Config)
+	}
+
+	if driverType == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "存储驱动类型不能为空"})
+		return
+	}
+
+	if driverType == "local" {
+		configStr = `{"base_path":"data/storage"}`
+	}
+
+	policy := model.StoragePolicy{
+		Driver: driverType,
+		Config: configStr,
+	}
+	drv, err := storage.BuildDriver(c.Request.Context(), policy, ctrl.db)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "驱动初始化失败: " + err.Error()})
+		return
+	}
+
+	if err := drv.Test(c.Request.Context()); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "连接测试失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "连接测试成功"})
+}
+
+func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
+	var req struct {
+		Name                string  `json:"name" binding:"required"`
+		Driver              string  `json:"driver" binding:"required"`
+		Config              string  `json:"config"`
+		MaxCapacityBytes    int64   `json:"max_capacity_bytes"`
+		MaxSingleFileSizeMB int64   `json:"max_single_file_size_mb"`
+		IsDefault           bool    `json:"is_default"`
+		PathPrefix          *string `json:"path_prefix"`
+		NamingRule          string  `json:"naming_rule"`
+		RoleIDs             []uint  `json:"role_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if _, ok := storage.GetDriverFactory(req.Driver); !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的存储驱动类型: " + req.Driver})
+		return
+	}
+
+	if req.Driver == "local" {
+		req.Config = `{"base_path":"data/storage"}`
+	}
+
+	if req.NamingRule == "" {
+		req.NamingRule = "{Y}/{m}/{d}/{random:16}.{ext}"
+	}
+	pathPrefix := ""
+	if req.PathPrefix != nil {
+		pathPrefix = strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
+	}
+	warnMsg := ctrl.checkPathPrefixDuplicate(0, req.Driver, pathPrefix)
+
+	var sysSetting model.Setting
+	sysLimitMB := int64(50)
+	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
+		if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
+			sysLimitMB = v
+		}
+	}
+	if req.MaxSingleFileSizeMB > sysLimitMB {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限: %d MB", sysLimitMB)})
+		return
+	}
+
+	if req.IsDefault {
+		ctrl.db.Model(&model.StoragePolicy{}).Where("1 = 1").Update("is_default", false)
+	}
+
+	cfg := req.Config
+	if cfg == "" && req.Driver == "local" {
+		cfg = `{"base_path":"data/storage"}`
+	}
+
+	policy := model.StoragePolicy{
+		Name:                req.Name,
+		Driver:              req.Driver,
+		Config:              cfg,
+		MaxCapacityBytes:    req.MaxCapacityBytes,
+		MaxSingleFileSizeMB: req.MaxSingleFileSizeMB,
+		IsDefault:           req.IsDefault,
+		PathPrefix:          pathPrefix,
+		NamingRule:          req.NamingRule,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
+	}
+
+	if err := ctrl.db.Create(&policy).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	for _, rid := range req.RoleIDs {
+		var guestRole model.Role
+		if ctrl.db.Where("name = 'guest'").First(&guestRole).Error == nil && rid == guestRole.ID {
+			ctrl.db.Where("role_id = ?", guestRole.ID).Delete(&model.RolePolicy{})
+		}
+		ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
+	}
+
+	ctrl.db.Preload("Roles").First(&policy, policy.ID)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "存储策略保存成功",
+		"warning": warnMsg,
+		"policy":  policyToDTO(policy),
+	})
+}
+
+func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var policy model.StoragePolicy
+	if err := ctrl.db.Where("id = ?", id).First(&policy).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
+		return
+	}
+
+	var req struct {
+		Name                string  `json:"name"`
+		Driver              string  `json:"driver"`
+		Config              *string `json:"config"`
+		MaxCapacityBytes    *int64  `json:"max_capacity_bytes"`
+		MaxSingleFileSizeMB *int64  `json:"max_single_file_size_mb"`
+		IsDefault           bool    `json:"is_default"`
+		PathPrefix          *string `json:"path_prefix"`
+		NamingRule          string  `json:"naming_rule"`
+		RoleIDs             []uint  `json:"role_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var sysSetting model.Setting
+	sysLimitMB := int64(50)
+	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
+		if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
+			sysLimitMB = v
+		}
+	}
+
+	updates := map[string]any{
+		"updated_at": time.Now(),
+		"is_default": req.IsDefault,
+	}
+
+	if req.Driver != "" {
+		if _, ok := storage.GetDriverFactory(req.Driver); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的存储驱动类型: " + req.Driver})
+			return
+		}
+		updates["driver"] = req.Driver
+	}
+	if req.Config != nil {
+		updates["config"] = mergeUnmaskedPolicyConfig(*req.Config, policy.Config)
+	}
+
+	targetDriver := policy.Driver
+	if req.Driver != "" {
+		targetDriver = req.Driver
+	}
+	if targetDriver == "local" {
+		updates["config"] = `{"base_path":"data/storage"}`
+	}
+	if req.Name != "" {
+		updates["name"] = req.Name
+	}
+	if req.MaxCapacityBytes != nil {
+		updates["max_capacity_bytes"] = *req.MaxCapacityBytes
+	}
+	if req.MaxSingleFileSizeMB != nil {
+		if *req.MaxSingleFileSizeMB > sysLimitMB {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限: %d MB", sysLimitMB)})
+			return
+		}
+		updates["max_single_file_size_mb"] = *req.MaxSingleFileSizeMB
+	}
+	var warnMsg string
+	if req.PathPrefix != nil {
+		cleanPrefix := strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
+		warnMsg = ctrl.checkPathPrefixDuplicate(policy.ID, targetDriver, cleanPrefix)
+		updates["path_prefix"] = cleanPrefix
+	}
+	if req.NamingRule != "" {
+		updates["naming_rule"] = req.NamingRule
+	}
+
+	if req.IsDefault {
+		ctrl.db.Model(&model.StoragePolicy{}).Where("id != ?", policy.ID).Update("is_default", false)
+	}
+
+	ctrl.db.Model(&policy).Updates(updates)
+
+	if ctrl.driverManager != nil {
+		ctrl.driverManager.Invalidate(policy.ID)
+	}
+
+	// Update role policy associations
+	if req.RoleIDs != nil {
+		var guestRole model.Role
+		hasGuestRole := ctrl.db.Where("name = 'guest'").First(&guestRole).Error == nil
+		guestInReq := false
+		for _, rid := range req.RoleIDs {
+			if hasGuestRole && rid == guestRole.ID {
+				guestInReq = true
+				break
+			}
+		}
+		if guestInReq {
+			ctrl.db.Where("role_id = ? AND policy_id != ?", guestRole.ID, policy.ID).Delete(&model.RolePolicy{})
+		} else if hasGuestRole {
+			var currentOnThisPolicy int64
+			ctrl.db.Model(&model.RolePolicy{}).Where("role_id = ? AND policy_id = ?", guestRole.ID, policy.ID).Count(&currentOnThisPolicy)
+			if currentOnThisPolicy > 0 {
+				var otherPolicyCount int64
+				ctrl.db.Model(&model.RolePolicy{}).Where("role_id = ? AND policy_id != ?", guestRole.ID, policy.ID).Count(&otherPolicyCount)
+				if otherPolicyCount == 0 {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "游客角色组必须且只能绑定一个存储策略，不能直接解除其仅有的策略"})
+					return
+				}
+			}
+		}
+		ctrl.db.Where("policy_id = ?", policy.ID).Delete(&model.RolePolicy{})
+		for _, rid := range req.RoleIDs {
+			ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
+		}
+	}
+
+	ctrl.db.Preload("Roles").First(&policy, policy.ID)
+	ctrl.db.Preload("Roles").First(&policy, policy.ID)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "存储策略保存成功",
+		"warning": warnMsg,
+		"policy":  policyToDTO(policy),
+	})
+}
+
+func (ctrl *AdminController) DeletePolicy(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var policy model.StoragePolicy
+	if err := ctrl.db.Where("id = ?", id).First(&policy).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
+		return
+	}
+
+	if policy.IsDefault {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "默认存储策略无法删除"})
+		return
+	}
+
+	var fileCount, replicaCount int64
+	ctrl.db.Model(&model.FileRecord{}).Where("policy_id = ?", policy.ID).Count(&fileCount)
+	ctrl.db.Model(&model.FilePolicyReplica{}).Where("policy_id = ?", policy.ID).Count(&replicaCount)
+	if fileCount > 0 || replicaCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "存储策略下存在文件副本，无法删除"})
+		return
+	}
+
+	if ctrl.driverManager != nil {
+		ctrl.driverManager.Invalidate(policy.ID)
+	}
+
+	ctrl.db.Where("policy_id = ?", policy.ID).Delete(&model.RolePolicy{})
+	ctrl.db.Delete(&policy)
+	c.JSON(http.StatusOK, gin.H{"message": "存储策略删除成功"})
+}
+
+// -------------------------------------------------------------
+// Image Presets
+// -------------------------------------------------------------
+
+func (ctrl *AdminController) ListPresets(c *gin.Context) {
+	var presets []model.ImagePreset
+	ctrl.db.Find(&presets)
+	c.JSON(http.StatusOK, presets)
+}
+
+func (ctrl *AdminController) CreatePreset(c *gin.Context) {
+	var preset model.ImagePreset
+	if err := c.ShouldBindJSON(&preset); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ctrl.db.Create(&preset).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, preset)
+}
+
+func (ctrl *AdminController) DeletePreset(c *gin.Context) {
+	id := c.Param("id")
+	ctrl.db.Where("id = ?", id).Delete(&model.ImagePreset{})
+	c.JSON(http.StatusOK, gin.H{"message": "Preset deleted"})
+}
+
+// -------------------------------------------------------------
+// Database Status & Migration
+// -------------------------------------------------------------
+
+func (ctrl *AdminController) GetDatabaseStatus(c *gin.Context) {
+	var userCount, fileCount, policyCount, roleCount int64
+	ctrl.db.Model(&model.User{}).Count(&userCount)
+	ctrl.db.Model(&model.FileRecord{}).Count(&fileCount)
+	ctrl.db.Model(&model.StoragePolicy{}).Count(&policyCount)
+	ctrl.db.Model(&model.Role{}).Count(&roleCount)
+
+	currentDriver := ctrl.db.Dialector.Name()
+
+	c.JSON(http.StatusOK, gin.H{
+		"driver": currentDriver,
+		"counts": gin.H{
+			"users":            userCount,
+			"files":            fileCount,
+			"roles":            roleCount,
+			"storage_policies": policyCount,
+		},
+	})
+}
+
+// -------------------------------------------------------------
+// Site-wide Files Management (Requirement 1)
+// -------------------------------------------------------------
+
+type AdminFileItem struct {
+	ID            uint                       `json:"id"`
+	PublicPath    string                     `json:"public_path"`
+	StorageKey    string                     `json:"storage_key"`
+	DisplayName   string                     `json:"display_name"`
+	MimeType      string                     `json:"mime_type"`
+	Size          int64                      `json:"size"`
+	Width         int                        `json:"width"`
+	Height        int                        `json:"height"`
+	Sha256        string                     `json:"sha256"`
+	IsImage       bool                       `json:"is_image"`
+	CreatedAt     time.Time                  `json:"created_at"`
+	UpdatedAt     time.Time                  `json:"updated_at"`
+	URL           string                     `json:"url"`
+	ThumbnailURL  string                     `json:"thumbnail_url"`
+	TempLinkCount int64                      `json:"temp_link_count"`
+	TotalCalls    int64                      `json:"total_calls"`
+	TotalUV       int64                      `json:"total_uv"`
+	Replicas      []*model.FilePolicyReplica `json:"replicas,omitempty"`
+	User          struct {
+		ID       uint   `json:"id"`
+		Username string `json:"username"`
+		Nickname string `json:"nickname"`
+		Email    string `json:"email"`
+	} `json:"user"`
+	Policy struct {
+		ID     uint   `json:"id"`
+		Name   string `json:"name"`
+		Driver string `json:"driver"`
+	} `json:"policy"`
+}
+
+func (ctrl *AdminController) ListAllFiles(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	query := ctrl.db.Model(&model.FileRecord{})
+	query = ApplyAdvancedFileFilters(query, ctrl.db, c, true)
+
+	var total int64
+	query.Count(&total)
+
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "desc"
+	}
+
+	fileSortableColumns := map[string]string{
+		"id":           "file_records.id",
+		"display_name": "file_records.display_name",
+		"size":         "file_records.size",
+		"width":        "file_records.width",
+		"height":       "file_records.height",
+		"mime_type":    "file_records.mime_type",
+		"created_at":   "file_records.created_at",
+		"updated_at":   "file_records.updated_at",
+	}
+
+	if sortBy == "total_calls" {
+		query = query.Joins("LEFT JOIN (SELECT file_id, sum(count) as total_pv FROM image_call_stats GROUP BY file_id) stat_calls ON stat_calls.file_id = file_records.id").
+			Order("COALESCE(stat_calls.total_pv, 0) " + strings.ToUpper(order) + ", file_records.id DESC")
+	} else if col, ok := fileSortableColumns[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("file_records.id DESC")
+	}
+
+	var files []model.FileRecord
+	query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&files)
+
+	userIDs := make([]uint, 0, len(files))
+	policyIDs := make([]uint, 0, len(files))
+	fileIDs := make([]uint, 0, len(files))
+	for _, f := range files {
+		userIDs = append(userIDs, f.UserID)
+		policyIDs = append(policyIDs, f.PolicyID)
+		fileIDs = append(fileIDs, f.ID)
+	}
+
+	usersMap := make(map[uint]model.User)
+	if len(userIDs) > 0 {
+		var users []model.User
+		ctrl.db.Where("id IN (?)", userIDs).Find(&users)
+		for _, u := range users {
+			usersMap[u.ID] = u
+		}
+	}
+
+	policiesMap := make(map[uint]model.StoragePolicy)
+	if len(policyIDs) > 0 {
+		var policies []model.StoragePolicy
+		ctrl.db.Where("id IN (?)", policyIDs).Find(&policies)
+		for _, p := range policies {
+			policiesMap[p.ID] = p
+		}
+	}
+
+	linkCountMap := make(map[uint]int64)
+	if len(fileIDs) > 0 {
+		type countResult struct {
+			FileID uint  `gorm:"column:file_id"`
+			Cnt    int64 `gorm:"column:cnt"`
+		}
+		var counts []countResult
+		ctrl.db.Model(&model.TemporaryLink{}).
+			Select("file_id, count(*) as cnt").
+			Where("file_id IN (?) AND revoked_at IS NULL AND expires_at > ?", fileIDs, time.Now()).
+			Group("file_id").
+			Scan(&counts)
+		for _, cr := range counts {
+			linkCountMap[cr.FileID] = cr.Cnt
+		}
+	}
+
+	callCountMap := make(map[uint]int64)
+	callUVMap := make(map[uint]int64)
+	if len(fileIDs) > 0 {
+		type callResult struct {
+			FileID uint  `gorm:"column:file_id"`
+			Cnt    int64 `gorm:"column:cnt"`
+		}
+		var calls []callResult
+		ctrl.db.Model(&model.ImageCallStat{}).
+			Select("file_id, sum(count) as cnt").
+			Where("file_id IN (?)", fileIDs).
+			Group("file_id").
+			Scan(&calls)
+		for _, cr := range calls {
+			callCountMap[cr.FileID] = cr.Cnt
+		}
+
+		type uvResult struct {
+			FileID uint  `gorm:"column:file_id"`
+			UV     int64 `gorm:"column:uv"`
+		}
+		var uvs []uvResult
+		ctrl.db.Model(&model.ImageCallVisitor{}).
+			Select("file_id, count(distinct visitor_id) as uv").
+			Where("file_id IN (?)", fileIDs).
+			Group("file_id").
+			Scan(&uvs)
+		for _, ur := range uvs {
+			callUVMap[ur.FileID] = ur.UV
+		}
+	}
+
+	var allReplicas []model.FilePolicyReplica
+	if len(fileIDs) > 0 {
+		ctrl.db.Preload("Policy").Where("file_id IN (?)", fileIDs).Find(&allReplicas)
+	}
+	repMap := make(map[uint][]*model.FilePolicyReplica)
+	for i := range allReplicas {
+		if allReplicas[i].Policy != nil {
+			allReplicas[i].PolicyName = allReplicas[i].Policy.Name
+		}
+		repMap[allReplicas[i].FileID] = append(repMap[allReplicas[i].FileID], &allReplicas[i])
+	}
+
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	items := make([]AdminFileItem, 0, len(files))
+	for _, f := range files {
+		cleanPath := strings.TrimPrefix(f.PublicPath, "/")
+		var fileURL, thumbURL string
+		if currentBaseURL != "" {
+			fileURL = fmt.Sprintf("%s/%s", currentBaseURL, cleanPath)
+			if f.IsImage {
+				thumbURL = fmt.Sprintf("%s/%s?s=thumb", currentBaseURL, cleanPath)
+			} else {
+				thumbURL = fileURL
+			}
+		} else {
+			fileURL = fmt.Sprintf("/%s", cleanPath)
+			if f.IsImage {
+				thumbURL = fmt.Sprintf("/%s?s=thumb", cleanPath)
+			} else {
+				thumbURL = fileURL
+			}
+		}
+		item := AdminFileItem{
+			ID:            f.ID,
+			PublicPath:    f.PublicPath,
+			StorageKey:    f.StorageKey,
+			DisplayName:   f.DisplayName,
+			MimeType:      f.MimeType,
+			Size:          f.Size,
+			Width:         f.Width,
+			Height:        f.Height,
+			Sha256:        f.Sha256,
+			IsImage:       f.IsImage,
+			CreatedAt:     f.CreatedAt,
+			UpdatedAt:     f.UpdatedAt,
+			URL:           fileURL,
+			ThumbnailURL:  thumbURL,
+			TempLinkCount: linkCountMap[f.ID],
+			TotalCalls:    callCountMap[f.ID],
+			TotalUV:       callUVMap[f.ID],
+			Replicas:      repMap[f.ID],
+		}
+		if u, ok := usersMap[f.UserID]; ok {
+			item.User.ID = u.ID
+			item.User.Username = u.Username
+			item.User.Nickname = u.Nickname
+			if u.Email != nil {
+				item.User.Email = *u.Email
+			}
+		}
+		if p, ok := policiesMap[f.PolicyID]; ok {
+			item.Policy.ID = p.ID
+			item.Policy.Name = p.Name
+			item.Policy.Driver = p.Driver
+		}
+		items = append(items, item)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"items":     items,
+		"base_url":  currentBaseURL,
+		"base_urls": GetConfiguredBaseURLs(c, ctrl.db, ctrl.baseURL),
+	})
+}
+
+func (ctrl *AdminController) GetAllFileDetails(c *gin.Context) {
+	id := c.Param("id")
+	var file model.FileRecord
+	if err := ctrl.db.Where("id = ?", id).First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	var user model.User
+	ctrl.db.Where("id = ?", file.UserID).First(&user)
+
+	var policy model.StoragePolicy
+	ctrl.db.Where("id = ?", file.PolicyID).First(&policy)
+
+	var replicas []model.FilePolicyReplica
+	ctrl.db.Preload("Policy").Where("file_id = ?", file.ID).Find(&replicas)
+	for i := range replicas {
+		if replicas[i].Policy != nil {
+			replicas[i].PolicyName = replicas[i].Policy.Name
+		}
+	}
+
+	var tempLinks []model.TemporaryLink
+	ctrl.db.Where("file_id = ?", file.ID).Order("id DESC").Find(&tempLinks)
+
+	currentBaseURL := ctrl.resolveBaseURL(c)
+	cleanPath := strings.TrimPrefix(file.PublicPath, "/")
+	ext := filepath.Ext(file.PublicPath)
+	baseNoExt := strings.TrimSuffix(cleanPath, ext)
+
+	var rawURL, webpURL string
+	if currentBaseURL != "" {
+		rawURL = fmt.Sprintf("%s/%s", currentBaseURL, cleanPath)
+		webpURL = fmt.Sprintf("%s/%s.webp", currentBaseURL, baseNoExt)
+	} else {
+		rawURL = fmt.Sprintf("/%s", cleanPath)
+		webpURL = fmt.Sprintf("/%s.webp", baseNoExt)
+	}
+
+	safeHTMLName := html.EscapeString(file.DisplayName)
+	safeMdName := strings.ReplaceAll(strings.ReplaceAll(file.DisplayName, "[", "\\["), "]", "\\]")
+
+	links := map[string]string{
+		"url":           rawURL,
+		"webp_url":      webpURL,
+		"markdown":      fmt.Sprintf("![%s](%s)", safeMdName, rawURL),
+		"bbcode":        fmt.Sprintf("[img]%s[/img]", rawURL),
+		"html":          fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", rawURL, safeHTMLName),
+		"webp_markdown": fmt.Sprintf("![%s](%s)", safeMdName, webpURL),
+		"webp_html":     fmt.Sprintf("<img src=\"%s\" alt=\"%s\" />", webpURL, safeHTMLName),
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"file": file,
+		"user": gin.H{
+			"id":       user.ID,
+			"username": user.Username,
+			"nickname": user.Nickname,
+			"email":    user.Email,
+		},
+		"policy":     policy,
+		"replicas":   replicas,
+		"links":      links,
+		"temp_links": tempLinks,
+		"call_stats": func() []model.ImageCallStat {
+			var stats []model.ImageCallStat
+			ctrl.db.Where("file_id = ?", file.ID).Order("count DESC").Find(&stats)
+			return stats
+		}(),
+		"total_calls": func() int64 {
+			var sum *int64
+			ctrl.db.Model(&model.ImageCallStat{}).Where("file_id = ?", file.ID).Select("sum(count)").Scan(&sum)
+			if sum != nil {
+				return *sum
+			}
+			return 0
+		}(),
+		"total_uv": func() int64 {
+			var count int64
+			ctrl.db.Model(&model.ImageCallVisitor{}).Where("file_id = ?", file.ID).Distinct("visitor_id").Count(&count)
+			return count
+		}(),
+	})
+}
+
+func (ctrl *AdminController) DeleteSiteFile(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file ID"})
+		return
+	}
+
+	deleteRemote := c.DefaultQuery("delete_remote", "true") != "false"
+	force := c.DefaultQuery("force", "false") == "true"
+
+	err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true, service.DeleteOptions{
+		DeleteRemote: deleteRemote,
+		ForceDB:      force,
+	})
+	if err != nil {
+		var rErr *service.RemoteDeleteError
+		if errors.As(err, &rErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":      "REMOTE_DELETE_FAILED",
+				"error":     "远程物理文件删除失败",
+				"detail":    rErr.Error(),
+				"can_force": true,
+			})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "File deleted successfully"})
+}
+
+func (ctrl *AdminController) BatchDeleteSiteFiles(c *gin.Context) {
+	var req struct {
+		IDs          []uint `json:"ids" binding:"required"`
+		DeleteRemote *bool  `json:"delete_remote"`
+		Force        bool   `json:"force"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	deleteRemote := true
+	if req.DeleteRemote != nil {
+		deleteRemote = *req.DeleteRemote
+	}
+
+	deletedCount := 0
+	var remoteErrors []string
+	for _, id := range req.IDs {
+		err := ctrl.uploadService.DeleteFile(c.Request.Context(), id, 0, true, service.DeleteOptions{
+			DeleteRemote: deleteRemote,
+			ForceDB:      req.Force,
+		})
+		if err != nil {
+			var rErr *service.RemoteDeleteError
+			if errors.As(err, &rErr) {
+				remoteErrors = append(remoteErrors, fmt.Sprintf("文件 #%d: %s", id, rErr.Error()))
+			}
+		} else {
+			deletedCount++
+		}
+	}
+
+	if len(remoteErrors) > 0 && !req.Force {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":      "REMOTE_DELETE_FAILED",
+			"error":     "部分或全部远程物理文件删除失败，是否仅删除系统中的记录？",
+			"detail":    strings.Join(remoteErrors, "; "),
+			"deleted":   deletedCount,
+			"can_force": true,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"deleted": deletedCount})
+}
+
+type AdminWatermarkDTO struct {
+	ID            uint      `json:"id"`
+	OwnerID       *uint     `json:"owner_id"`
+	OwnerName     string    `json:"owner_name"`
+	OwnerUsername string    `json:"owner_username,omitempty"`
+	OwnerNickname string    `json:"owner_nickname,omitempty"`
+	IsSystem      bool      `json:"is_system"`
+	Name          string    `json:"name"`
+	Layers        string    `json:"layers"`
+	Version       int64     `json:"version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (ctrl *AdminController) ListAllWatermarks(c *gin.Context) {
+	sortBy := strings.TrimSpace(strings.ToLower(c.Query("sort_by")))
+	order := strings.TrimSpace(strings.ToLower(c.Query("order")))
+	if order != "asc" && order != "desc" {
+		order = "desc"
+	}
+	allowed := map[string]string{
+		"id":         "id",
+		"name":       "name",
+		"is_system":  "is_system",
+		"owner_id":   "owner_id",
+		"created_at": "created_at",
+		"updated_at": "updated_at",
+	}
+	query := ctrl.db.Model(&model.WatermarkTemplate{})
+	if col, ok := allowed[sortBy]; ok {
+		query = query.Order(col + " " + strings.ToUpper(order))
+	} else {
+		query = query.Order("id DESC")
+	}
+
+	var templates []model.WatermarkTemplate
+	query.Find(&templates)
+
+	userIDs := make([]uint, 0)
+	for _, t := range templates {
+		if t.OwnerID != nil {
+			userIDs = append(userIDs, *t.OwnerID)
+		}
+	}
+	userMap := make(map[uint]model.User)
+	if len(userIDs) > 0 {
+		var users []model.User
+		ctrl.db.Where("id IN ?", userIDs).Find(&users)
+		for _, u := range users {
+			userMap[u.ID] = u
+		}
+	}
+
+	dtos := make([]AdminWatermarkDTO, 0, len(templates))
+	for _, t := range templates {
+		ownerName := "系统"
+		ownerUsername := ""
+		ownerNickname := ""
+		if t.OwnerID != nil {
+			if u, ok := userMap[*t.OwnerID]; ok {
+				ownerUsername = u.Username
+				ownerNickname = u.Nickname
+				if u.Nickname != "" {
+					ownerName = u.Nickname
+				} else {
+					ownerName = u.Username
+				}
+			} else {
+				ownerName = fmt.Sprintf("User #%d", *t.OwnerID)
+			}
+		}
+		isSys := t.IsSystem || t.OwnerID == nil
+		dtos = append(dtos, AdminWatermarkDTO{
+			ID:            t.ID,
+			OwnerID:       t.OwnerID,
+			OwnerName:     ownerName,
+			OwnerUsername: ownerUsername,
+			OwnerNickname: ownerNickname,
+			IsSystem:      isSys,
+			Name:          t.Name,
+			Layers:        t.Layers,
+			Version:       t.Version,
+			CreatedAt:     t.CreatedAt,
+			UpdatedAt:     t.UpdatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, dtos)
+}
+
+func (ctrl *AdminController) CreateAdminWatermark(c *gin.Context) {
+	var req struct {
+		Name   string `json:"name" binding:"required"`
+		Layers string `json:"layers" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "水印名称不能为空"})
+		return
+	}
+	if len(req.Layers) > 65536 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "水印图层配置过大"})
+		return
+	}
+	if !json.Valid([]byte(req.Layers)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "水印图层配置必须是合法JSON"})
+		return
+	}
+
+	tmpl := model.WatermarkTemplate{
+		Name:      req.Name,
+		Layers:    req.Layers,
+		OwnerID:   nil,
+		IsSystem:  true,
+		Version:   1,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := ctrl.db.Create(&tmpl).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": common.SanitizeError(err)})
+		return
+	}
+	c.JSON(http.StatusOK, tmpl)
+}
+
+func (ctrl *AdminController) UpdateAdminWatermark(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var tmpl model.WatermarkTemplate
+	if err := ctrl.db.Where("id = ?", id).First(&tmpl).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark not found"})
+		return
+	}
+
+	if tmpl.OwnerID != nil || !tmpl.IsSystem {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "仅允许编辑系统水印，用户私有水印不可在此编辑"})
+		return
+	}
+
+	var req struct {
+		Name   string `json:"name"`
+		Layers string `json:"layers"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]any{
+		"updated_at": time.Now(),
+		"version":    gorm.Expr("version + 1"),
+	}
+	if req.Name != "" {
+		trimmed := strings.TrimSpace(req.Name)
+		updates["name"] = trimmed
+	}
+	if req.Layers != "" {
+		if len(req.Layers) > 65536 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "水印图层配置过大"})
+			return
+		}
+		if !json.Valid([]byte(req.Layers)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "水印图层配置必须是合法JSON"})
+			return
+		}
+		updates["layers"] = req.Layers
+	}
+
+	ctrl.db.Model(&tmpl).Updates(updates)
+	ctrl.db.Where("id = ?", id).First(&tmpl)
+
+	// Invalidate client keys for affected files (direct template usage or system watermark inheritance)
+	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ? OR watermark_template_id IS NULL", tmpl.ID).Update("sign_version", gorm.Expr("sign_version + 1"))
+
+	c.JSON(http.StatusOK, tmpl)
+}
+
+func (ctrl *AdminController) DeleteAdminWatermark(c *gin.Context) {
+	id := ParseUintSafe(c.Param("id"), 0)
+	var tmpl model.WatermarkTemplate
+	if err := ctrl.db.Where("id = ?", id).First(&tmpl).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Watermark not found"})
+		return
+	}
+	if tmpl.OwnerID != nil || !tmpl.IsSystem {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "仅允许删除系统水印，用户私有水印不可在此删除"})
+		return
+	}
+
+	if err := ctrl.db.Delete(&tmpl).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": common.SanitizeError(err)})
+		return
+	}
+	ctrl.db.Model(&model.FileRecord{}).Where("watermark_template_id = ?", id).Updates(map[string]any{
+		"watermark_template_id": nil,
+		"sign_version":          gorm.Expr("sign_version + 1"),
+	})
+	c.JSON(http.StatusOK, gin.H{"message": "Watermark template deleted"})
+}
+
+func (ctrl *AdminController) OneDriveDeviceCode(c *gin.Context) {
+	var req struct {
+		ClientID    string `json:"client_id"`
+		AccountType string `json:"account_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	clientID := strings.TrimSpace(req.ClientID)
+	if clientID == "" {
+		clientID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+	}
+
+	deviceEndpoint := "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode"
+	if strings.ToLower(req.AccountType) == "china" {
+		deviceEndpoint = "https://login.partner.microsoftonline.cn/common/oauth2/v2.0/devicecode"
+	}
+
+	form := url.Values{}
+	form.Set("client_id", clientID)
+	form.Set("scope", "offline_access Files.ReadWrite Files.ReadWrite.All")
+
+	resp, err := http.PostForm(deviceEndpoint, form)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无法连接微软授权服务: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var res map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解析微软授权响应失败"})
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("微软服务返回错误: %v", res["error_description"])})
+		return
+	}
+
+	res["client_id"] = clientID
+	c.JSON(http.StatusOK, res)
+}
+
+func (ctrl *AdminController) OneDriveDeviceToken(c *gin.Context) {
+	var req struct {
+		ClientID    string `json:"client_id" binding:"required"`
+		DeviceCode  string `json:"device_code" binding:"required"`
+		AccountType string `json:"account_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	tokenEndpoint := "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+	if strings.ToLower(req.AccountType) == "china" {
+		tokenEndpoint = "https://login.partner.microsoftonline.cn/common/oauth2/v2.0/token"
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+	form.Set("client_id", req.ClientID)
+	form.Set("device_code", req.DeviceCode)
+
+	resp, err := http.PostForm(tokenEndpoint, form)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无法连接微软令牌服务: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var tokenRes map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&tokenRes); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解析微软令牌响应失败"})
+		return
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		c.JSON(http.StatusOK, gin.H{
+			"status":        "success",
+			"refresh_token": tokenRes["refresh_token"],
+			"access_token":  tokenRes["access_token"],
+		})
+		return
+	}
+
+	errCode, _ := tokenRes["error"].(string)
+	if errCode == "authorization_pending" {
+		c.JSON(http.StatusOK, gin.H{"status": "pending"})
+		return
+	}
+
+	errDesc, _ := tokenRes["error_description"].(string)
+	c.JSON(http.StatusBadRequest, gin.H{"error": errDesc, "code": errCode})
+}

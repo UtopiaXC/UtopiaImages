@@ -1,0 +1,265 @@
+package repository
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/UtopiaXC/UtopiaImages/internal/config"
+	appLogger "github.com/UtopiaXC/UtopiaImages/internal/logger"
+	"github.com/UtopiaXC/UtopiaImages/internal/model"
+	"github.com/glebarez/sqlite"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+func InitDB(cfg *config.Config) (*gorm.DB, error) {
+	var dialector gorm.Dialector
+
+	switch strings.ToLower(cfg.Database.Driver) {
+	case "sqlite", "sqlite3":
+		dir := filepath.Dir(cfg.Database.DSN)
+		if dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return nil, fmt.Errorf("failed to create sqlite dir: %w", err)
+			}
+		}
+		// Enable WAL mode and busy timeout for concurrent read/write stability
+		dsn := cfg.Database.DSN
+		if !strings.Contains(dsn, "?") {
+			dsn += "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		}
+		dialector = sqlite.Open(dsn)
+	case "postgres", "postgresql":
+		dialector = postgres.Open(cfg.Database.DSN)
+	case "mysql":
+		dialector = mysql.Open(cfg.Database.DSN)
+	default:
+		return nil, fmt.Errorf("unsupported database driver: %s", cfg.Database.Driver)
+	}
+
+	db, err := gorm.Open(dialector, &gorm.Config{
+		Logger: appLogger.NewGormLogger(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	// Auto Migrate tables
+	err = db.AutoMigrate(
+		&model.Role{},
+		&model.StoragePolicy{},
+		&model.RolePolicy{},
+		&model.User{},
+		&model.FileRecord{},
+		&model.TemporaryLink{},
+		&model.Session{},
+		&model.ApiToken{},
+		&model.TOTPSecret{},
+		&model.WebAuthnCredential{},
+		&model.RecoveryCode{},
+		&model.WatermarkTemplate{},
+		&model.ImagePreset{},
+		&model.ImportJob{},
+		&model.Setting{},
+		&model.PasswordResetToken{},
+		&model.ImageCallStat{},
+		&model.ImageCallVisitor{},
+		&model.FilePolicyReplica{},
+		&model.FileBlob{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to auto migrate database tables: %w", err)
+	}
+
+	// Remove legacy unique constraint on storage policy name to allow duplicate display names
+	if db.Migrator().HasIndex(&model.StoragePolicy{}, "idx_storage_policies_name") {
+		_ = db.Migrator().DropIndex(&model.StoragePolicy{}, "idx_storage_policies_name")
+	}
+
+	// Compatibility fix for legacy require2_fa column in users table
+	if db.Migrator().HasColumn(&model.User{}, "require2_fa") && !db.Migrator().HasColumn(&model.User{}, "require_2fa") {
+		_ = db.Migrator().RenameColumn(&model.User{}, "require2_fa", "require_2fa")
+	}
+
+	// Backfill existing FileRecord entries into FilePolicyReplica
+	var unmigratedFiles []model.FileRecord
+	_ = db.Unscoped().
+		Where("id NOT IN (SELECT file_id FROM file_policy_replicas)").
+		FindInBatches(&unmigratedFiles, 500, func(tx *gorm.DB, batch int) error {
+			replicas := make([]model.FilePolicyReplica, 0, len(unmigratedFiles))
+			for _, f := range unmigratedFiles {
+				replicas = append(replicas, model.FilePolicyReplica{
+					FileID:     f.ID,
+					PolicyID:   f.PolicyID,
+					PublicPath: f.PublicPath,
+					StorageKey: f.StorageKey,
+					Size:       f.Size,
+					Status:     "ready",
+					CreatedAt:  f.CreatedAt,
+					UpdatedAt:  f.UpdatedAt,
+				})
+			}
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&replicas).Error
+		}).Error
+
+	// Seed defaults
+	if err := SeedDefaults(db); err != nil {
+		return nil, fmt.Errorf("failed to seed database defaults: %w", err)
+	}
+
+	return db, nil
+}
+
+// SeedDefaults initializes default roles, policies, image presets and system settings
+func SeedDefaults(db *gorm.DB) error {
+	// 1. Built-in Roles (admin, user)
+	var roleCount int64
+	db.Model(&model.Role{}).Count(&roleCount)
+	if roleCount == 0 {
+		defaultRoles := []model.Role{
+			{
+				ID:          1,
+				Name:        "admin",
+				DisplayName: "系统管理员",
+				QuotaBytes:  0, // 0 = unlimited
+				IsSystem:    true,
+			},
+			{
+				ID:          2,
+				Name:        "user",
+				DisplayName: "普通用户",
+				QuotaBytes:  10737418240, // 10 GB
+				IsSystem:    true,
+			},
+		}
+		for _, r := range defaultRoles {
+			if err := db.FirstOrCreate(&r, model.Role{ID: r.ID}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	// Ensure admin role quota is always 0 (unlimited)
+	db.Model(&model.Role{}).Where("id = 1 OR name = 'admin'").Update("quota_bytes", 0)
+
+	// 2. Default Local Storage Policies (Requirement 4: admin: uploads, user: {username}/uploads)
+	var policyCount int64
+	db.Model(&model.StoragePolicy{}).Count(&policyCount)
+	if policyCount == 0 {
+		adminPolicy := model.StoragePolicy{
+			ID:               1,
+			Name:             "管理员本地存储",
+			Driver:           "local",
+			Config:           `{"base_path":"data/storage"}`,
+			MaxCapacityBytes: 0, // unlimited
+			IsDefault:        true,
+			PathPrefix:       "uploads",
+			NamingRule:       "{Y}/{m}/{d}/{random:16}.{ext}",
+		}
+		userPolicy := model.StoragePolicy{
+			ID:               2,
+			Name:             "用户本地存储",
+			Driver:           "local",
+			Config:           `{"base_path":"data/storage"}`,
+			MaxCapacityBytes: 10737418240, // 10 GB (Requirement 4)
+			IsDefault:        true,
+			PathPrefix:       "{username}/uploads",
+			NamingRule:       "{Y}/{m}/{d}/{random:16}.{ext}",
+		}
+		if err := db.Create(&adminPolicy).Error; err != nil {
+			return err
+		}
+		if err := db.Create(&userPolicy).Error; err != nil {
+			return err
+		}
+
+		// Link policies: Role 1 -> Policy 1, Role 2 -> Policy 2
+		db.FirstOrCreate(&model.RolePolicy{RoleID: 1, PolicyID: 1}, model.RolePolicy{RoleID: 1, PolicyID: 1})
+		db.FirstOrCreate(&model.RolePolicy{RoleID: 2, PolicyID: 2}, model.RolePolicy{RoleID: 2, PolicyID: 2})
+	}
+
+	// Migrate legacy policy base path config if needed
+	db.Model(&model.StoragePolicy{}).Where("config = '{\"base_path\":\"storage\"}'").Update("config", `{"base_path":"data/storage"}`)
+
+	// Ensure Role 1 has Policy 1, Role 2 has Policy 2 if existing
+	var adminP, userP model.StoragePolicy
+	if err := db.Where("id = 1").First(&adminP).Error; err == nil {
+		db.FirstOrCreate(&model.RolePolicy{RoleID: 1, PolicyID: adminP.ID}, model.RolePolicy{RoleID: 1, PolicyID: adminP.ID})
+	}
+	if err := db.Where("id = 2").First(&userP).Error; err == nil {
+		db.FirstOrCreate(&model.RolePolicy{RoleID: 2, PolicyID: userP.ID}, model.RolePolicy{RoleID: 2, PolicyID: userP.ID})
+	}
+
+	// Default System Settings
+	db.FirstOrCreate(&model.Setting{Key: "allow_registration", Value: "false"}, model.Setting{Key: "allow_registration"})
+	db.FirstOrCreate(&model.Setting{Key: "default_register_role_id", Value: "2"}, model.Setting{Key: "default_register_role_id"})
+	db.FirstOrCreate(&model.Setting{Key: "log_permanent_level", Value: "error"}, model.Setting{Key: "log_permanent_level"})
+
+	// 3. Default Image Presets
+	var presetCount int64
+	db.Model(&model.ImagePreset{}).Count(&presetCount)
+	if presetCount == 0 {
+		defaultPresets := []model.ImagePreset{
+			{Name: "thumb", Width: 200, Height: 200, Fit: "cover", Format: "webp", Quality: 80},
+			{Name: "small", Width: 480, Height: 0, Fit: "contain", Format: "webp", Quality: 85},
+			{Name: "medium", Width: 1080, Height: 0, Fit: "contain", Format: "webp", Quality: 85},
+			{Name: "large", Width: 1920, Height: 0, Fit: "contain", Format: "webp", Quality: 88},
+		}
+		for _, p := range defaultPresets {
+			db.Create(&p)
+		}
+	}
+
+	return nil
+}
+
+// ConnectTargetDB connects to a specified database driver and dsn (used for setup wizard testing)
+func ConnectTargetDB(driver, dsn string) (*gorm.DB, error) {
+	var dialector gorm.Dialector
+
+	switch strings.ToLower(driver) {
+	case "sqlite", "sqlite3":
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(dsn)), "file:") {
+			return nil, fmt.Errorf("invalid sqlite dsn: file uri scheme not allowed")
+		}
+		cleanDSN := filepath.Clean(dsn)
+		if strings.Contains(cleanDSN, "..") {
+			return nil, fmt.Errorf("invalid sqlite dsn path: directory traversal not allowed")
+		}
+		if filepath.IsAbs(cleanDSN) {
+			absData, _ := filepath.Abs("data")
+			rel, err := filepath.Rel(absData, cleanDSN)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				return nil, fmt.Errorf("sqlite database path must be within data directory")
+			}
+		} else {
+			slash := filepath.ToSlash(cleanDSN)
+			if slash != "data" && !strings.HasPrefix(slash, "data/") {
+				return nil, fmt.Errorf("sqlite database path must be within data directory: %s", cleanDSN)
+			}
+		}
+		dir := filepath.Dir(dsn)
+		if dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return nil, fmt.Errorf("failed to create sqlite dir: %w", err)
+			}
+		}
+		if !strings.Contains(dsn, "?") {
+			dsn += "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		}
+		dialector = sqlite.Open(dsn)
+	case "postgres", "postgresql":
+		dialector = postgres.Open(dsn)
+	case "mysql":
+		dialector = mysql.Open(dsn)
+	default:
+		return nil, fmt.Errorf("unsupported database driver: %s", driver)
+	}
+
+	return gorm.Open(dialector, &gorm.Config{
+		Logger: appLogger.NewGormLogger(),
+	})
+}
