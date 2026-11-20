@@ -4,10 +4,18 @@
 
 Utopia Images是一个自托管图床系统，集成了图片编辑、水印、多存储策略、多语言、批量导入与路径映射等特性，并且除了图片外，也支持上传其他类型的文件比如CSS与JS。使用相对高效快速的Go语言开发。  
 
-在线演示与Demo图请见最底部。
+
 
 ---
+## 在线演示
 
+在线演示请访问：[Render: Utopia Images Demo](https://utopia-images-demo.onrender.com/)  
+由于Render限制，长时间没有访问的容器需冷启动，因此首次打开可能速度较慢。  
+在线Demo环境每三十分钟重置一次，且部署的是特化版本，因此仅供演示使用，禁止上传个人文件。  
+  
+另外，Demo图请见最底部。
+
+---
 ## 快速上手
 
 注：在任何情况下，任何软件我都推荐使用隔离环境内部署。尽可能使用独立虚拟机或rootless docker，而不是直接在物理机上运行任何程序。  
@@ -196,22 +204,6 @@ go build -ldflags="-s -w" -o utopia_images ./cmd/utopia_images/main.go
 
 ---
 
-## 在线演示
-
-> 注：该功能不太好用，暂不推荐使用。我正在尝试用更方便的办法来实现。  
-> 另外本演示使用的源码为最新源码，可能与docker发行版不一致。
-
-如果希望在线尝试，可以点击下方徽章打开GitHub Codespaces免费尝试（GitHub每个月为每名用户提供120核时免费），需要登录GitHub账号，默认端口2983。
-
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/UtopiaXC/UtopiaImages)
-
-创建了新的Codespace后，将会自动执行拉取代码并编译启动，在编译过程中不需要任何操作。等待终端中出现
-```log
-time=xxx level=INFO msg="Utopia Images server listening" addr=0.0.0.0:2983 mode=release
-```
-类似这样的字样后，点击端口，查看转发地址，点击地球icon，跳转到对应端口，即可访问在线演示Demo。  
-
----
 
 ## Demo
 ### 面板
