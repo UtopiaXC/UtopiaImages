@@ -22,14 +22,17 @@
     <n-tabs type="line" animated default-value="system">
       <!-- 1. System Tab -->
       <n-tab-pane name="system" :tab="$t('adminSettings.tabSystem')">
+        <n-alert type="info" style="margin-top: 12px; margin-bottom: 16px; font-size: 13px;">
+          {{ $t('adminSettings.demoSystemTabLockedTip') }}
+        </n-alert>
         <!-- 1.1 Site Info -->
-        <n-card :title="$t('adminSettings.siteInfo')" style="border-radius: 8px; margin-top: 12px; margin-bottom: 16px;">
+        <n-card :title="$t('adminSettings.siteInfo')" style="border-radius: 8px; margin-bottom: 16px;">
           <n-form label-placement="left" label-width="150">
             <n-form-item :label="$t('adminSettings.siteName')">
-              <n-input v-model:value="settings.site_name" placeholder="Utopia Images" style="max-width: 400px;" />
+              <n-input v-model:value="settings.site_name" disabled placeholder="Utopia Images" style="max-width: 400px;" />
             </n-form-item>
             <n-form-item :label="$t('adminSettings.siteDesc')">
-              <n-input v-model:value="settings.site_description" style="max-width: 400px;" />
+              <n-input v-model:value="settings.site_description" disabled style="max-width: 400px;" />
             </n-form-item>
             <n-form-item :label="$t('adminSettings.baseUrl')">
               <div style="display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 500px;">
@@ -47,7 +50,7 @@
             <n-form-item :label="$t('adminSettings.restrictDomains')">
               <div style="display: flex; flex-direction: column; gap: 6px; max-width: 500px;">
                 <div style="display: flex; align-items: center; gap: 10px;">
-                  <n-switch v-model:value="restrictDomains" />
+                  <n-switch v-model:value="restrictDomains" disabled />
                   <n-tooltip trigger="hover">
                     <template #trigger>
                       <n-icon size="16" style="color: #888; cursor: pointer;">
@@ -73,13 +76,14 @@
                   <n-upload
                     :custom-request="handleFaviconUpload"
                     :show-file-list="false"
+                    :disabled="true"
                     accept=".ico,.png,.svg,.jpg,.jpeg,.webp"
                   >
-                    <n-button size="small" type="primary" secondary :loading="uploadingFavicon">
+                    <n-button size="small" type="primary" secondary disabled :loading="uploadingFavicon">
                       {{ $t('adminSettings.uploadFavicon') }}
                     </n-button>
                   </n-upload>
-                  <n-button size="small" quaternary @click="handleRestoreDefaultFavicon" :loading="restoringFavicon">
+                  <n-button size="small" quaternary disabled @click="handleRestoreDefaultFavicon" :loading="restoringFavicon">
                     {{ $t('adminSettings.restoreDefaultFavicon') }}
                   </n-button>
                 </div>
@@ -99,6 +103,7 @@
                 <n-select
                   v-model:value="settings.log_level"
                   :options="logLevelOptions"
+                  disabled
                   style="width: 280px;"
                 />
                 <n-tooltip trigger="hover">
@@ -117,6 +122,7 @@
                 <n-select
                   v-model:value="settings.log_permanent_level"
                   :options="permanentLogLevelOptions"
+                  disabled
                   style="width: 280px;"
                 />
                 <n-tooltip trigger="hover">
@@ -132,7 +138,7 @@
 
             <n-form-item :label="$t('adminSettings.logMaxSize')">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <n-input-number v-model:value="logMaxSize" :min="1" :max="500" style="max-width: 200px;" />
+                <n-input-number v-model:value="logMaxSize" disabled :min="1" :max="500" style="max-width: 200px;" />
                 <span style="color: #888; font-size: 13px;">MB</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
@@ -147,7 +153,7 @@
 
             <n-form-item :label="$t('adminSettings.logMaxBackups')">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <n-input-number v-model:value="logMaxBackups" :min="1" :max="100" style="max-width: 200px;" />
+                <n-input-number v-model:value="logMaxBackups" disabled :min="1" :max="100" style="max-width: 200px;" />
                 <span style="color: #888; font-size: 13px;">{{ $t('adminSettings.backupUnits') }}</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
@@ -162,7 +168,7 @@
 
             <n-form-item :label="$t('adminSettings.logMaxAge')">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <n-input-number v-model:value="logMaxAge" :min="1" :max="365" style="max-width: 200px;" />
+                <n-input-number v-model:value="logMaxAge" disabled :min="1" :max="365" style="max-width: 200px;" />
                 <span style="color: #888; font-size: 13px;">{{ $t('adminSettings.daysUnit') }}</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
@@ -210,6 +216,7 @@
               <div style="display: flex; flex-direction: column; gap: 4px;">
                 <n-input
                   v-model:value="settings.derived_cache_max_size_mb"
+                  disabled
                   placeholder="0"
                   style="max-width: 400px;"
                 >
@@ -225,6 +232,7 @@
               <div style="display: flex; flex-direction: column; gap: 4px;">
                 <n-input
                   v-model:value="settings.derived_cache_ttl_days"
+                  disabled
                   placeholder="0"
                   style="max-width: 400px;"
                 >
@@ -239,7 +247,7 @@
             <n-form-item :label="$t('adminSettings.globalCallStat')">
               <div style="display: flex; flex-direction: column; gap: 6px; max-width: 500px;">
                 <div style="display: flex; align-items: center; gap: 10px;">
-                  <n-switch v-model:value="globalCallStat" />
+                  <n-switch v-model:value="globalCallStat" disabled />
                   <n-tooltip trigger="hover">
                     <template #trigger>
                       <n-icon size="16" style="color: #888; cursor: pointer;">
@@ -257,17 +265,12 @@
           </n-form>
 
           <div style="display: flex; gap: 12px; margin-top: 8px;">
-            <n-button type="primary" secondary :loading="pruningCache" @click="pruneDerivedCache">
+            <n-button type="primary" secondary disabled :loading="pruningCache" @click="pruneDerivedCache">
               {{ $t('adminSettings.pruneCache') }}
             </n-button>
-            <n-popconfirm @positive-click="clearDerivedCache">
-              <template #trigger>
-                <n-button type="warning" ghost :loading="clearingCache">
-                  {{ $t('adminSettings.clearCache') }}
-                </n-button>
-              </template>
-              {{ $t('adminSettings.confirmClearCache') }}
-            </n-popconfirm>
+            <n-button type="warning" ghost disabled :loading="clearingCache">
+              {{ $t('adminSettings.clearCache') }}
+            </n-button>
           </div>
         </n-card>
       </n-tab-pane>
@@ -308,8 +311,8 @@
 
             <n-form-item :label="$t('adminSettings.maxFileSize')">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <n-input-number v-model:value="maxFileSize" :min="0" :max="102400" style="max-width: 200px;" />
-                <span style="color: #888; font-size: 13px;">MB (0 为无限制)</span>
+                <n-input-number v-model:value="maxFileSize" disabled :min="0" :max="102400" style="max-width: 200px;" />
+                <span style="color: #888; font-size: 13px;">MB ({{ $t('adminSettings.demoLockedDefault') }})</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
                     <n-icon size="16" style="color: #888; cursor: pointer;">
@@ -323,8 +326,8 @@
 
             <n-form-item :label="$t('adminSettings.maxProcessSize')">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <n-input-number v-model:value="maxProcessSize" :min="1" :max="100" style="max-width: 200px;" />
-                <span style="color: #888; font-size: 13px;">MB</span>
+                <n-input-number v-model:value="maxProcessSize" disabled :min="1" :max="100" style="max-width: 200px;" />
+                <span style="color: #888; font-size: 13px;">MB ({{ $t('adminSettings.demoLockedDefault') }})</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
                     <n-icon size="16" style="color: #888; cursor: pointer;">
@@ -359,7 +362,10 @@
             </n-form-item>
             <n-form-item :label="$t('adminSettings.force2fa')">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <n-switch v-model:value="require2FA" />
+                <n-switch v-model:value="require2FA" disabled />
+                <n-tag size="small" type="warning" :bordered="false">
+                  {{ $t('adminSettings.demoForce2faLocked') }}
+                </n-tag>
                 <n-tooltip trigger="hover">
                   <template #trigger>
                     <n-icon size="16" style="color: #888; cursor: pointer;">
@@ -426,59 +432,16 @@
       <n-tab-pane name="user" :tab="$t('adminSettings.tabUser')">
         <!-- 4.1 Mail Notification Service -->
         <n-card :title="$t('adminSettings.smtpTitle')" style="border-radius: 8px; margin-top: 12px; margin-bottom: 16px;">
-          <p style="font-size: 13px; color: #aaa; margin-top: 0; margin-bottom: 16px;">
-            {{ $t('adminSettings.smtpDesc') }}
-          </p>
+          <n-alert type="warning" style="margin-bottom: 16px; font-size: 13px;">
+            {{ $t('adminSettings.demoSmtpDisabledTip') }}
+          </n-alert>
           <n-form label-placement="left" label-width="150">
             <n-form-item :label="$t('adminSettings.enableSmtp')">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <n-switch v-model:value="smtpEnabled" />
-                <n-tooltip trigger="hover">
-                  <template #trigger>
-                    <n-icon size="16" style="color: #888; cursor: pointer;">
-                      <InformationCircleOutline />
-                    </n-icon>
-                  </template>
-                  {{ $t('adminSettings.smtpOptionalTip') }}
-                </n-tooltip>
+                <n-switch :value="false" disabled />
+                <n-tag size="small" type="default" :bordered="false">{{ $t('common.disabled') }}</n-tag>
               </div>
             </n-form-item>
-
-            <template v-if="smtpEnabled">
-              <n-form-item :label="$t('setup.smtpHost')">
-                <n-input v-model:value="settings.smtp_host" placeholder="smtp.example.com" style="max-width: 400px;" />
-              </n-form-item>
-
-              <n-form-item :label="$t('setup.smtpPort')">
-                <n-input-number v-model:value="smtpPort" :min="1" :max="65535" style="max-width: 200px;" />
-              </n-form-item>
-
-              <n-form-item :label="$t('setup.smtpEncryption')">
-                <n-select v-model:value="settings.smtp_encryption" :options="encryptionOptions" style="max-width: 200px;" />
-              </n-form-item>
-
-              <n-form-item :label="$t('setup.smtpFrom')">
-                <n-input v-model:value="settings.smtp_from" placeholder="noreply@example.com" style="max-width: 400px;" />
-              </n-form-item>
-
-              <n-form-item :label="$t('setup.smtpFromName')">
-                <n-input v-model:value="settings.smtp_from_name" placeholder="Utopia Images" style="max-width: 400px;" />
-              </n-form-item>
-
-              <n-form-item :label="$t('setup.smtpUser')">
-                <n-input v-model:value="settings.smtp_user" placeholder="username@example.com" style="max-width: 400px;" />
-              </n-form-item>
-
-              <n-form-item :label="$t('setup.smtpPassword')">
-                <n-input v-model:value="settings.smtp_password" type="password" show-password-on="click" placeholder="••••••••" style="max-width: 400px;" />
-              </n-form-item>
-
-              <n-form-item label=" ">
-                <n-button type="info" ghost :loading="testingSmtp" @click="handleTestSmtp">
-                  {{ $t('setup.testSmtp') }}
-                </n-button>
-              </n-form-item>
-            </template>
           </n-form>
         </n-card>
 
@@ -487,7 +450,8 @@
           <n-form label-placement="left" label-width="150">
             <n-form-item :label="$t('adminSettings.allowRegistration')">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <n-switch v-model:value="allowRegistration" />
+                <n-switch v-model:value="allowRegistration" disabled />
+                <span style="color: #888; font-size: 13px;">({{ $t('adminSettings.demoLockedDefault') }})</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
                     <n-icon size="16" style="color: #888; cursor: pointer;">
@@ -504,8 +468,10 @@
                 <n-select
                   v-model:value="defaultRegisterRoleId"
                   :options="roleOptions"
+                  disabled
                   style="width: 280px;"
                 />
+                <span style="color: #888; font-size: 13px;">({{ $t('adminSettings.demoLockedDefault') }})</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
                     <n-icon size="16" style="color: #888; cursor: pointer;">
@@ -656,10 +622,10 @@ const settings = ref<any>({
   log_max_age_days: '30',
   derived_cache_max_size_mb: '5120',
   derived_cache_ttl_days: '0',
-  allow_registration: 'false',
+  allow_registration: 'true',
   default_register_role_id: '2',
   restrict_domains: 'false',
-  global_call_stat: 'false',
+  global_call_stat: 'true',
   smtp_enabled: 'false',
   smtp_host: '',
   smtp_port: '587',
@@ -712,7 +678,7 @@ const handleRestoreDefaultFavicon = async () => {
 const rolesList = ref<any[]>([])
 const roleOptions = computed(() => {
   return rolesList.value
-    .filter(r => !r.is_guest && r.name !== 'guest')
+    .filter(r => !r.is_guest && r.name !== 'guest' && r.id !== 1 && r.name !== 'admin')
     .map(r => ({
       label: `${r.display_name} (${r.name})`,
       value: r.id
@@ -765,7 +731,6 @@ const hotlinkActionOptions = computed(() => [
 
 const captchaOptions = computed(() => [
   { label: t('adminSettings.captchaAltcha'), value: 'altcha' },
-  { label: t('adminSettings.captchaTurnstile'), value: 'turnstile' },
   { label: t('adminSettings.captchaNone'), value: 'none' }
 ])
 

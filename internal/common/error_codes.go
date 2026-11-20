@@ -49,6 +49,16 @@ const (
 	ErrDatabaseError       = "DATABASE_ERROR"
 	ErrInternalServerError = "INTERNAL_SERVER_ERROR"
 	ErrOperationFailed     = "OPERATION_FAILED"
+
+	// Demo Restrictions
+	ErrDemoAdminLocked         = "DEMO_ADMIN_LOCKED"
+	ErrDemoAdmin2FAForbidden   = "DEMO_ADMIN_2FA_FORBIDDEN"
+	ErrDemoSingleAdminOnly     = "DEMO_SINGLE_ADMIN_ONLY"
+	ErrDemoAdminRoleLocked     = "DEMO_ADMIN_ROLE_LOCKED"
+	ErrDemoSMTPDisabled        = "DEMO_SMTP_DISABLED"
+	ErrDemoSystemSettingLocked = "DEMO_SYSTEM_SETTING_LOCKED"
+	ErrDemoPolicyLocked        = "DEMO_POLICY_LOCKED"
+	ErrDemoFaviconLocked       = "DEMO_FAVICON_LOCKED"
 )
 
 // RespondError sends a standardized error response containing machine-readable error codes
@@ -56,5 +66,14 @@ func RespondError(c *gin.Context, httpStatus int, errorCode string) {
 	c.JSON(httpStatus, gin.H{
 		"code":  errorCode,
 		"error": errorCode,
+	})
+}
+
+// RespondDemoError sends a standardized error response with both machine-readable code and message
+func RespondDemoError(c *gin.Context, httpStatus int, errorCode, message string) {
+	c.JSON(httpStatus, gin.H{
+		"code":    errorCode,
+		"error":   message,
+		"message": message,
 	})
 }

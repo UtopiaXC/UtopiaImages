@@ -17,7 +17,6 @@ import (
 	"github.com/UtopiaXC/UtopiaImages/internal/common"
 	"github.com/UtopiaXC/UtopiaImages/internal/config"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
-	"github.com/UtopiaXC/UtopiaImages/internal/pkg/mailer"
 	"github.com/UtopiaXC/UtopiaImages/internal/repository"
 	"github.com/UtopiaXC/UtopiaImages/internal/service"
 	"github.com/gin-gonic/gin"
@@ -298,42 +297,7 @@ func (ctrl *AuthController) TestDatabaseConnection(c *gin.Context) {
 }
 
 func (ctrl *AuthController) TestSMTPConnection(c *gin.Context) {
-	if !ctrl.verifySetupAccess(c) {
-		return
-	}
-	var req struct {
-		Host       string `json:"host" binding:"required"`
-		Port       int    `json:"port" binding:"required"`
-		From       string `json:"from"`
-		User       string `json:"user"`
-		Password   string `json:"password"`
-		Encryption string `json:"encryption"`
-		TestTo     string `json:"test_to"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请填写完整的 SMTP 主机和端口"})
-		return
-	}
-
-	testCfg := config.SMTPConfig{
-		Enabled:    true,
-		Host:       req.Host,
-		Port:       req.Port,
-		From:       req.From,
-		User:       req.User,
-		Password:   req.Password,
-		Encryption: req.Encryption,
-	}
-
-	if err := mailer.TestConnection(testCfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "SMTP 服务器连接测试失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "SMTP 服务器连接测试成功",
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSMTPDisabled, "演示环境已禁用 SMTP 邮件服务")
 }
 
 func (ctrl *AuthController) SetupInitialAdmin(c *gin.Context) {
@@ -634,282 +598,37 @@ func (ctrl *AuthController) Register(c *gin.Context) {
 		return
 	}
 
-	// Requirement 5: System MUST have SMTP configured to enable registration
-	if !ctrl.cfg.SMTP.Enabled || ctrl.cfg.SMTP.Host == "" {
-		common.RespondError(c, http.StatusBadRequest, common.ErrRegistrationSMTPRequired)
-		return
-	}
-
-	user, token, errCode := ctrl.authService.Register(req.Username, req.Email, req.Password, req.Nickname)
+	user, _, errCode := ctrl.authService.Register(req.Username, req.Email, req.Password, req.Nickname)
 	if errCode != "" {
 		common.RespondError(c, http.StatusBadRequest, errCode)
 		return
 	}
 
-	// Send email with activation link
-	baseURL := ctrl.resolveBaseURL(c)
-	activationLink := fmt.Sprintf("%s/usr/login?action=activate&token=%s", baseURL, token)
-	toEmail := *user.Email
-	username := user.Username
-	go func() {
-		if err := ctrl.sendActivationEmail(toEmail, username, activationLink); err != nil {
-			slog.Error("Failed to send activation email asynchronously", "error", err, "email", toEmail)
-		}
-	}()
-
 	c.JSON(http.StatusOK, gin.H{
-		"code":    "ACTIVATION_EMAIL_SENT",
-		"message": "Activation email sent",
+		"code":    "REGISTER_SUCCESS",
+		"message": "Registration successful",
 		"user":    user,
 	})
 }
 
 func (ctrl *AuthController) ActivateAccount(c *gin.Context) {
-	var req struct {
-		Token string `json:"token" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
-		return
-	}
-
-	errCode := ctrl.authService.ActivateAccount(req.Token)
-	if errCode != "" {
-		common.RespondError(c, http.StatusBadRequest, errCode)
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    "SUCCESS",
-		"message": "Account activated successfully",
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSMTPDisabled, "演示环境已免除邮箱验证，注册账号已直接激活")
 }
 
 func (ctrl *AuthController) ForgotPassword(c *gin.Context) {
-	var req struct {
-		Email   string `json:"email"`
-		Account string `json:"account"`
-		Captcha string `json:"captcha"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
-		return
-	}
-
-	if !ctrl.authService.VerifyCaptcha(req.Captcha, c.ClientIP()) {
-		common.RespondError(c, http.StatusBadRequest, common.ErrAuthCaptchaRequired)
-		return
-	}
-
-	ident := strings.TrimSpace(req.Email)
-	if ident == "" {
-		ident = strings.TrimSpace(req.Account)
-	}
-	if ident == "" {
-		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
-		return
-	}
-
-	if !ctrl.cfg.SMTP.Enabled || ctrl.cfg.SMTP.Host == "" {
-		common.RespondError(c, http.StatusBadRequest, common.ErrSMTPNotConfigured)
-		return
-	}
-
-	user, token, errCode := ctrl.authService.RequestPasswordReset(ident)
-	if errCode != "" {
-		if errCode == common.ErrAuthUserNotFound || errCode == common.ErrAuthUserBanned || errCode == common.ErrAuthUserInactive {
-			// Prevent username/email enumeration and deny reset for banned/inactive users
-			c.JSON(http.StatusOK, gin.H{
-				"code":    "RESET_EMAIL_SENT",
-				"message": "Password reset email sent",
-			})
-			return
-		}
-		common.RespondError(c, http.StatusBadRequest, errCode)
-		return
-	}
-
-	// Send email with reset token link
-	baseURL := ctrl.resolveBaseURL(c)
-	resetLink := fmt.Sprintf("%s/usr/login?action=reset&token=%s", baseURL, token)
-	toEmail := *user.Email
-	username := user.Username
-	go func() {
-		if err := ctrl.sendPasswordResetEmail(toEmail, username, resetLink); err != nil {
-			slog.Error("Failed to send password reset email asynchronously", "error", err, "email", toEmail)
-		}
-	}()
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    "RESET_EMAIL_SENT",
-		"message": "Password reset email sent",
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSMTPDisabled, "演示环境已禁用 SMTP 邮件服务，不支持邮件找回密码")
 }
 
 func (ctrl *AuthController) ResetPassword(c *gin.Context) {
-	var req struct {
-		Token       string `json:"token" binding:"required"`
-		NewPassword string `json:"new_password" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
-		return
-	}
-
-	errCode := ctrl.authService.ResetPasswordWithToken(req.Token, req.NewPassword)
-	if errCode != "" {
-		common.RespondError(c, http.StatusBadRequest, errCode)
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    "PASSWORD_RESET_SUCCESS",
-		"message": "Password reset successfully",
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSMTPDisabled, "演示环境已禁用 SMTP 邮件服务")
 }
 
 func (ctrl *AuthController) Forgot2FA(c *gin.Context) {
-	var req struct {
-		MFAToken string `json:"mfa_token"`
-		Email    string `json:"email"`
-		Username string `json:"username"`
-		Account  string `json:"account"`
-		Captcha  string `json:"captcha"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
-		return
-	}
-
-	if !ctrl.cfg.SMTP.Enabled || ctrl.cfg.SMTP.Host == "" {
-		common.RespondError(c, http.StatusBadRequest, common.ErrSMTPNotConfigured)
-		return
-	}
-
-	var (
-		user    *model.User
-		token   string
-		errCode string
-	)
-
-	if req.MFAToken != "" {
-		// Validated via password authentication: resolve user securely from mfa token
-		userID, ok := ctrl.authService.ValidateMFAToken(req.MFAToken)
-		if !ok {
-			common.RespondError(c, http.StatusUnauthorized, common.ErrAuthUnauthorized)
-			return
-		}
-		user, token, errCode = ctrl.authService.Request2FAResetByID(userID)
-	} else {
-		// Unauthenticated reset: verify captcha and resolve by email or account
-		if !ctrl.authService.VerifyCaptcha(req.Captcha, c.ClientIP()) {
-			common.RespondError(c, http.StatusBadRequest, common.ErrAuthCaptchaRequired)
-			return
-		}
-
-		ident := strings.TrimSpace(req.Email)
-		if ident == "" {
-			ident = strings.TrimSpace(req.Username)
-		}
-		if ident == "" {
-			ident = strings.TrimSpace(req.Account)
-		}
-		if ident == "" {
-			common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
-			return
-		}
-		user, token, errCode = ctrl.authService.Request2FAReset(ident)
-	}
-
-	if errCode != "" {
-		if errCode == common.ErrAuthUserNotFound || errCode == common.ErrAuthUserBanned || errCode == common.ErrAuthUserInactive {
-			// Prevent user enumeration and deny reset for banned/inactive users
-			c.JSON(http.StatusOK, gin.H{
-				"code":    "2FA_RESET_EMAIL_SENT",
-				"message": "2FA reset email sent",
-			})
-			return
-		}
-		common.RespondError(c, http.StatusBadRequest, errCode)
-		return
-	}
-
-	baseURL := ctrl.resolveBaseURL(c)
-	resetLink := fmt.Sprintf("%s/usr/login?action=reset-2fa&token=%s", baseURL, token)
-	toEmail := *user.Email
-	username := user.Username
-	go func() {
-		if err := ctrl.send2FAResetEmail(toEmail, username, resetLink, token); err != nil {
-			slog.Error("Failed to send 2FA reset email asynchronously", "error", err, "email", toEmail)
-		}
-	}()
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    "2FA_RESET_EMAIL_SENT",
-		"message": "2FA reset email sent",
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSMTPDisabled, "演示环境已禁用 SMTP 邮件服务，不支持邮件解除两步验证")
 }
 
 func (ctrl *AuthController) Reset2FA(c *gin.Context) {
-	var req struct {
-		Token string `json:"token" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondError(c, http.StatusBadRequest, common.ErrValidationFailed)
-		return
-	}
-
-	errCode := ctrl.authService.Reset2FAWithToken(req.Token)
-	if errCode != "" {
-		common.RespondError(c, http.StatusBadRequest, errCode)
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    "2FA_RESET_SUCCESS",
-		"message": "Two-factor authentication reset successfully",
-	})
-}
-
-func (ctrl *AuthController) getSiteName() string {
-	var s model.Setting
-	if err := ctrl.db.Where("key = 'site_name'").First(&s).Error; err == nil && s.Value != "" {
-		return s.Value
-	}
-	if ctrl.cfg != nil && ctrl.cfg.Site.Name != "" {
-		return ctrl.cfg.Site.Name
-	}
-	return "Utopia Images"
-}
-
-func (ctrl *AuthController) send2FAResetEmail(toEmail, username, resetLink, token string) error {
-	siteName := ctrl.getSiteName()
-	subject, htmlBody, textBody := mailer.Render2FAResetEmail(siteName, username, resetLink, token)
-	smtpCfg := ctrl.cfg.SMTP
-	if smtpCfg.FromName == "" || smtpCfg.FromName == "Utopia Images" {
-		smtpCfg.FromName = siteName
-	}
-	return mailer.SendHTMLEmail(smtpCfg, toEmail, subject, htmlBody, textBody)
-}
-
-func (ctrl *AuthController) sendActivationEmail(toEmail, username, activationLink string) error {
-	siteName := ctrl.getSiteName()
-	subject, htmlBody, textBody := mailer.RenderActivationEmail(siteName, username, activationLink)
-	smtpCfg := ctrl.cfg.SMTP
-	if smtpCfg.FromName == "" || smtpCfg.FromName == "Utopia Images" {
-		smtpCfg.FromName = siteName
-	}
-	return mailer.SendHTMLEmail(smtpCfg, toEmail, subject, htmlBody, textBody)
-}
-
-func (ctrl *AuthController) sendPasswordResetEmail(toEmail, username, resetLink string) error {
-	siteName := ctrl.getSiteName()
-	subject, htmlBody, textBody := mailer.RenderPasswordResetEmail(siteName, username, resetLink)
-	smtpCfg := ctrl.cfg.SMTP
-	if smtpCfg.FromName == "" || smtpCfg.FromName == "Utopia Images" {
-		smtpCfg.FromName = siteName
-	}
-	return mailer.SendHTMLEmail(smtpCfg, toEmail, subject, htmlBody, textBody)
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSMTPDisabled, "演示环境已禁用 SMTP 邮件服务")
 }
 
 func (ctrl *AuthController) VerifyMFA(c *gin.Context) {
@@ -1034,6 +753,10 @@ func (ctrl *AuthController) DeleteApiToken(c *gin.Context) {
 func (ctrl *AuthController) SetupTOTP(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
+	if service.IsDemoAdminUser(user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
+		return
+	}
 
 	secret, qrBase64, err := ctrl.authService.TOTPManager().GenerateSecret(user.Username, "Utopia Images")
 	if err != nil {
@@ -1062,6 +785,10 @@ func (ctrl *AuthController) SetupTOTP(c *gin.Context) {
 func (ctrl *AuthController) EnableTOTP(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
+	if service.IsDemoAdminUser(user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
+		return
+	}
 
 	var req struct {
 		Code string `json:"code" binding:"required"`
@@ -1103,6 +830,12 @@ func (ctrl *AuthController) EnableTOTP(c *gin.Context) {
 }
 
 func (ctrl *AuthController) DisableTOTP(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	if service.IsDemoAdminUser(user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
+		return
+	}
 	userID := c.GetUint(auth.CtxUserIDKey)
 	var sysReq2FA model.Setting
 	if err := ctrl.db.Where("key = 'require_2fa'").First(&sysReq2FA).Error; err == nil && sysReq2FA.Value == "true" {
@@ -1120,6 +853,12 @@ func (ctrl *AuthController) DisableTOTP(c *gin.Context) {
 }
 
 func (ctrl *AuthController) ChangeUsername(c *gin.Context) {
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	if service.IsDemoAdminUser(user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdminLocked, "演示管理员账号禁止修改用户名")
+		return
+	}
 	userID := c.GetUint(auth.CtxUserIDKey)
 	var req struct {
 		NewUsername string `json:"new_username" binding:"required"`
@@ -1361,6 +1100,10 @@ func (ctrl *AuthController) BeginPasskeyRegister(c *gin.Context) {
 	}
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
+	if service.IsDemoAdminUser(user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
+		return
+	}
 	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginRegistration(user, getRequestHost(c))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1375,6 +1118,12 @@ func (ctrl *AuthController) BeginPasskeyRegister(c *gin.Context) {
 func (ctrl *AuthController) FinishPasskeyRegister(c *gin.Context) {
 	if ctrl.authService.PasskeyManager() == nil {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "Passkey is not supported"})
+		return
+	}
+	uVal, _ := c.Get(auth.CtxUserKey)
+	user := uVal.(*model.User)
+	if service.IsDemoAdminUser(user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
 		return
 	}
 	sessionKey := c.Query("session_key")
@@ -1489,6 +1238,10 @@ func (ctrl *AuthController) Setup2FATOTPSecret(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
+	if service.IsDemoAdminUser(&user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
+		return
+	}
 	secret, qrBase64, err := ctrl.authService.TOTPManager().GenerateSecret(user.Username, "Utopia Images")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate TOTP secret"})
@@ -1534,6 +1287,10 @@ func (ctrl *AuthController) Setup2FATOTPVerify(c *gin.Context) {
 	var user model.User
 	if err := ctrl.db.Preload("Role").Where("id = ?", userID).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	if service.IsDemoAdminUser(&user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
 		return
 	}
 
@@ -1604,6 +1361,10 @@ func (ctrl *AuthController) Setup2FAPasskeyBegin(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
+	if service.IsDemoAdminUser(&user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
+		return
+	}
 	options, sessionKey, err := ctrl.authService.PasskeyManager().BeginRegistration(&user, getRequestHost(c))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1631,6 +1392,11 @@ func (ctrl *AuthController) Setup2FAPasskeyFinish(c *gin.Context) {
 	userID, err := ctrl.authService.VerifySetupToken(setupToken)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var targetUser model.User
+	if err := ctrl.db.Where("id = ?", userID).First(&targetUser).Error; err == nil && service.IsDemoAdminUser(&targetUser) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdmin2FAForbidden, "演示账号禁止设置二步验证")
 		return
 	}
 

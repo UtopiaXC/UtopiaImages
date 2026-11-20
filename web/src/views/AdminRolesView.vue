@@ -56,7 +56,15 @@
               <td>{{ r.user_count }}</td>
               <td style="text-align: right;">
                 <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                  <n-button size="tiny" quaternary type="primary" @click="openEditModal(r)">
+                  <n-tooltip v-if="isProtectedAdminRole(r)" trigger="hover">
+                    <template #trigger>
+                      <n-button size="tiny" quaternary disabled>
+                        {{ $t('common.edit') }}
+                      </n-button>
+                    </template>
+                    {{ $t('adminRoles.adminRoleLocked') }}
+                  </n-tooltip>
+                  <n-button v-else size="tiny" quaternary type="primary" @click="openEditModal(r)">
                     {{ $t('common.edit') }}
                   </n-button>
                   <n-popconfirm
@@ -294,6 +302,11 @@ const editForm = ref({
   allowed_formats: '',
   policy_ids: [] as number[]
 })
+
+const isProtectedAdminRole = (r: any) => {
+  if (!r) return false
+  return r.id === 1 || String(r.name || '').toLowerCase() === 'admin'
+}
 
 const policyOptions = computed(() => {
   return policies.value.map(p => ({

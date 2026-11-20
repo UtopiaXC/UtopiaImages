@@ -6,11 +6,14 @@
       <!-- Tab 1: Profile -->
       <n-tab-pane name="profile" :tab="$t('settings.tabProfile')">
         <n-card style="border-radius: 8px; margin-top: 12px;">
+          <n-alert v-if="isDemoAdmin" type="warning" style="margin-bottom: 16px; font-size: 13px;">
+            {{ $t('settings.demoAdminProfileLocked') }}
+          </n-alert>
           <n-form label-placement="left" label-width="120">
             <n-form-item :label="$t('settings.currentUsername')">
               <div style="display: flex; align-items: center; gap: 12px; width: 100%;">
                 <n-input :value="profile.username" disabled style="max-width: 320px;" />
-                <n-button type="warning" ghost size="small" @click="showChangeUsernameModal = true">
+                <n-button type="warning" ghost size="small" :disabled="isDemoAdmin" @click="showChangeUsernameModal = true">
                   {{ $t('settings.changeUsername') }}
                 </n-button>
               </div>
@@ -26,14 +29,14 @@
             </n-alert>
 
             <n-form-item :label="$t('settings.nickname')">
-              <n-input v-model:value="profile.nickname" :placeholder="$t('settings.nicknamePlaceholder')" style="max-width: 320px;" />
+              <n-input v-model:value="profile.nickname" :disabled="isDemoAdmin" :placeholder="$t('settings.nicknamePlaceholder')" style="max-width: 320px;" />
             </n-form-item>
 
             <n-form-item :label="$t('settings.email')">
-              <n-input v-model:value="profile.email" placeholder="admin@example.com" style="max-width: 320px;" />
+              <n-input v-model:value="profile.email" :disabled="isDemoAdmin" placeholder="example@example.com" style="max-width: 320px;" />
             </n-form-item>
 
-            <n-form-item v-if="isEmailChanged" :label="$t('settings.currentPassword') || '当前密码'">
+            <n-form-item v-if="isEmailChanged && !isDemoAdmin" :label="$t('settings.currentPassword') || '当前密码'">
               <n-input
                 v-model:value="emailPassword"
                 type="password"
@@ -44,7 +47,7 @@
             </n-form-item>
 
             <div style="display: flex; justify-content: flex-end;">
-              <n-button type="primary" :loading="savingProfile" @click="saveProfile">
+              <n-button type="primary" :loading="savingProfile" :disabled="isDemoAdmin" @click="saveProfile">
                 {{ $t('settings.saveProfile') }}
               </n-button>
             </div>
@@ -55,13 +58,13 @@
           <h3 style="font-size: 16px; margin-bottom: 16px;">{{ $t('settings.passwordChange') }}</h3>
           <n-form label-placement="left" label-width="120">
             <n-form-item :label="$t('settings.oldPassword')">
-              <n-input v-model:value="passwordForm.old_password" type="password" show-password-on="click" :placeholder="$t('settings.oldPasswordPlaceholder')" style="max-width: 320px;" />
+              <n-input v-model:value="passwordForm.old_password" :disabled="isDemoAdmin" type="password" show-password-on="click" :placeholder="$t('settings.oldPasswordPlaceholder')" style="max-width: 320px;" />
             </n-form-item>
             <n-form-item :label="$t('settings.newPassword')">
-              <n-input v-model:value="passwordForm.new_password" type="password" show-password-on="click" :placeholder="$t('settings.newPasswordPlaceholder')" style="max-width: 320px;" />
+              <n-input v-model:value="passwordForm.new_password" :disabled="isDemoAdmin" type="password" show-password-on="click" :placeholder="$t('settings.newPasswordPlaceholder')" style="max-width: 320px;" />
             </n-form-item>
             <div style="display: flex; justify-content: flex-end;">
-              <n-button type="primary" :loading="savingPassword" @click="changePassword">
+              <n-button type="primary" :loading="savingPassword" :disabled="isDemoAdmin" @click="changePassword">
                 {{ $t('settings.updatePassword') }}
               </n-button>
             </div>
@@ -71,6 +74,9 @@
 
       <!-- Tab 2: Security, TOTP & Passkeys -->
       <n-tab-pane name="security" :tab="$t('settings.tabSecurity')">
+        <n-alert v-if="isDemoAdmin" type="warning" style="margin-top: 12px; font-size: 13px;">
+          {{ $t('settings.demoAdmin2FAForbidden') }}
+        </n-alert>
         <!-- TOTP Section -->
         <n-card :title="$t('settings.totpTitle')" style="border-radius: 8px; margin-top: 12px; margin-bottom: 16px;">
           <template #header-extra>
@@ -401,22 +407,38 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 import { InformationCircleOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
-import { api } from '../api/client'
+import { api, getApiErrorMessage } from '../api/client'
 import { siteInfo } from '../utils/site'
 import { userPreferences, fetchUserPreferences, fetchCurrentUser } from '../utils/auth'
 
 const message = useMessage()
+const dialog = useDialog()
 const { t } = useI18n()
 
 const profile = ref<any>({
+  id: 0,
   username: '',
   nickname: '',
   email: '',
+  role_id: 0,
+  role: null,
   require_2fa: false
 })
+const isDemoAdmin = computed(() => {
+  const u = profile.value
+  if (!u) return false
+  return u.id === 1 || String(u.username || '').toLowerCase() === 'admin' || u.role_id === 1 || u.role?.name === 'admin'
+})
+const showDemo2FABlockedModal = () => {
+  dialog.warning({
+    title: t('common.notice'),
+    content: t('settings.demoAdmin2FAForbidden'),
+    positiveText: t('common.confirm')
+  })
+}
 const initialEmail = ref('')
 const emailPassword = ref('')
 const isEmailChanged = computed(() => {
@@ -455,6 +477,10 @@ const registeringPasskey = ref(false)
 const showCreatePasskeyModal = ref(false)
 const newPasskeyName = ref('')
 const openCreatePasskeyModal = () => {
+  if (isDemoAdmin.value) {
+    showDemo2FABlockedModal()
+    return
+  }
   newPasskeyName.value = 'Passkey ' + new Date().toLocaleDateString()
   showCreatePasskeyModal.value = true
 }
@@ -556,6 +582,10 @@ const loadPasskeys = async () => {
 }
 
 const saveProfile = async () => {
+  if (isDemoAdmin.value) {
+    message.warning(t('settings.demoAdminProfileLocked'))
+    return
+  }
   if (isEmailChanged.value && !emailPassword.value) {
     message.warning('修改绑定邮箱需输入当前账户密码进行安全验证')
     return
@@ -576,13 +606,17 @@ const saveProfile = async () => {
     }
     message.success(t('settings.profileSaved'))
   } catch (err: any) {
-    message.error(err.response?.data?.error || t('settings.profileSaved'))
+    message.error(getApiErrorMessage(err))
   } finally {
     savingProfile.value = false
   }
 }
 
 const changePassword = async () => {
+  if (isDemoAdmin.value) {
+    message.warning(t('settings.demoAdminProfileLocked'))
+    return
+  }
   if (!passwordForm.value.old_password || !passwordForm.value.new_password) {
     message.warning(t('settings.oldPasswordPlaceholder'))
     return
@@ -594,13 +628,17 @@ const changePassword = async () => {
     passwordForm.value.old_password = ''
     passwordForm.value.new_password = ''
   } catch (err: any) {
-    message.error(err.response?.data?.error || t('common.save'))
+    message.error(getApiErrorMessage(err))
   } finally {
     savingPassword.value = false
   }
 }
 
 const handleMigrateUsername = async () => {
+  if (isDemoAdmin.value) {
+    message.warning(t('settings.demoAdminProfileLocked'))
+    return
+  }
   if (!newUsername.value) {
     message.warning(t('settings.newUsernamePlaceholder'))
     return
@@ -612,13 +650,17 @@ const handleMigrateUsername = async () => {
     profile.value.username = newUsername.value
     showChangeUsernameModal.value = false
   } catch (err: any) {
-    message.error(err.response?.data?.error || t('common.save'))
+    message.error(getApiErrorMessage(err))
   } finally {
     migratingUsername.value = false
   }
 }
 
 const startTotpSetup = async () => {
+  if (isDemoAdmin.value) {
+    showDemo2FABlockedModal()
+    return
+  }
   try {
     const res = await api.post('/me/totp/setup')
     const rawQr = res.data.qr_base64
@@ -627,7 +669,7 @@ const startTotpSetup = async () => {
     totpCode.value = ''
     showTotpModal.value = true
   } catch (err: any) {
-    message.error(t('settings.enableTotp'))
+    message.error(getApiErrorMessage(err))
   }
 }
 

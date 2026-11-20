@@ -84,10 +84,13 @@ router.beforeEach(async (to, from, next) => {
   const site = await fetchSiteInfo().catch(() => siteInfo.value)
 
   // 1. Setup check
+  const needsSetup = await checkSetupStatus()
   if (to.path === '/stp' || to.path === '/setup') {
+    if (!needsSetup) {
+      return next('/')
+    }
     return next()
   }
-  const needsSetup = await checkSetupStatus()
   if (needsSetup) {
     return next('/stp')
   }

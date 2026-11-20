@@ -44,6 +44,7 @@ type clientTransformBucket struct {
 }
 
 type DispatchService struct {
+	dbMu             sync.RWMutex
 	db               *gorm.DB
 	storage          storage.StorageDriver
 	driverManager    *storage.PolicyDriverManager
@@ -76,10 +77,13 @@ func (s *DispatchService) processStatsWorker() {
 	for rec := range s.statChan {
 		func() {
 			defer func() { _ = recover() }()
-			if s.db == nil {
+			s.dbMu.RLock()
+			curDB := s.db
+			s.dbMu.RUnlock()
+			if curDB == nil {
 				return
 			}
-			silentDB := s.db.Session(&gorm.Session{Logger: s.db.Logger.LogMode(glogger.Silent)})
+			silentDB := curDB.Session(&gorm.Session{Logger: curDB.Logger.LogMode(glogger.Silent)})
 
 			// 1. Update or create ImageCallStat for PV
 			res := silentDB.Model(&model.ImageCallStat{}).
@@ -165,7 +169,9 @@ func (s *DispatchService) allowTransformRequest(ip string) bool {
 }
 
 func (s *DispatchService) SetDB(db *gorm.DB) {
+	s.dbMu.Lock()
 	s.db = db
+	s.dbMu.Unlock()
 }
 
 func (s *DispatchService) SetDriverManager(dm *storage.PolicyDriverManager) {

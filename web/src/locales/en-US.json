@@ -31,7 +31,8 @@
     "updatedAt": "Updated At",
     "sortBy": "Sort",
     "asc": "Asc",
-    "desc": "Desc"
+    "desc": "Desc",
+    "notice": "Notice"
   },
   "nav": {
     "upload": "File Upload",
@@ -205,7 +206,9 @@
     "verifyAndComplete": "Verify and Complete Sign In",
     "bindPasskeyDesc": "Use device biometric authentication (Windows Hello / Touch ID / security key) as credential.",
     "bindPasskeyBtn": "Register Device Passkey and Sign In",
-    "login": "Log in"
+    "login": "Log in",
+    "demoAdminTip": "Demo administrator username and password are admin and admin",
+    "demoSmtpDisabled": "Email service is disabled in the demo environment"
   },
   "upload": {
     "title": "File Upload",
@@ -660,7 +663,9 @@
     "defaultLandingTip": "The view shown when directly accessing the site root URL. Visitor view follows site settings (Square or Guest Upload), while Console view opens file upload directly.",
     "landingVisitor": "Visitor View",
     "landingConsole": "Console View",
-    "landingSaved": "Default landing view saved"
+    "landingSaved": "Default landing view saved",
+    "demoAdminProfileLocked": "The demo administrator account's username, nickname, email, and password are locked and cannot be modified.",
+    "demoAdmin2FAForbidden": "Two-factor authentication setup is disabled for the demo account"
   },
   "adminSettings": {
     "title": "System Settings",
@@ -773,7 +778,11 @@
     "pageLogin": "Login Page",
     "guestWatermark": "Guest Upload Watermark",
     "guestWatermarkTip": "System watermark automatically applied to guest uploads. Defaults to none.",
-    "noWatermark": "No Watermark"
+    "noWatermark": "No Watermark",
+    "demoSystemTabLockedTip": "In the demo environment, only External Base URL can be modified under the System tab. All other options are locked to defaults.",
+    "demoSmtpDisabledTip": "SMTP email service is disabled in the demo environment. User registration bypasses email verification and activates immediately.",
+    "demoForce2faLocked": "Locked OFF in demo",
+    "demoLockedDefault": "Locked in demo"
   },
   "adminUsers": {
     "title": "User Management",
@@ -810,7 +819,8 @@
     "confirmUnfreeze": "Are you sure you want to unfreeze/activate this user? Their login permissions will be restored.",
     "banSuccess": "User has been banned",
     "unfreezeSuccess": "User has been unlocked and activated",
-    "guestUserLocked": "Guest account cannot be edited or deleted"
+    "guestUserLocked": "Guest account cannot be edited or deleted",
+    "adminUserLocked": "Demo admin cannot be edited or deleted"
   },
   "adminPolicies": {
     "title": "Storage Policies",
@@ -907,7 +917,8 @@
     "driverLocalDesc": "Local files are stored in data/storage and isolated via path prefix.",
     "driverDatabaseDesc": "Images are stored as binary chunks in database with steady memory usage.",
     "customCdn": "Custom CDN",
-    "capacity": "Capacity"
+    "capacity": "Capacity",
+    "demoLockedTip": "Creating, editing, deleting, or testing storage policies is disabled in the demo environment for security."
   },
   "adminStats": {
     "title": "System Dashboard & Monitoring",
@@ -973,7 +984,8 @@
     "guestSinglePolicyTip": "Guest role must have exactly one storage policy",
     "createSuccess": "Role created successfully",
     "updateSuccess": "Role updated successfully",
-    "quotaTip": "0 means unlimited space"
+    "quotaTip": "0 means unlimited space",
+    "adminRoleLocked": "Editing the admin role is disabled in the demo environment"
   },
   "errors": {
     "AUTH_INVALID_CREDENTIALS": "Invalid username or password",
@@ -1017,7 +1029,15 @@
     "ERR_AUTH_USER_INACTIVE": "Account is inactive or suspended. Please check your activation email or contact administrator.",
     "ERR_REGISTRATION_SMTP_REQUIRED": "Registration is unavailable because SMTP mail service is not configured.",
     "ERR_ACTIVATION_TOKEN_INVALID": "Activation token is invalid or expired.",
-    "AUTH_USERNAME_INVALID": "Invalid username format or reserved word, length must be greater than 3 (4-32 characters)"
+    "AUTH_USERNAME_INVALID": "Invalid username format or reserved word, length must be greater than 3 (4-32 characters)",
+    "DEMO_ADMIN_LOCKED": "Demo administrator account is locked and cannot be modified or deleted",
+    "DEMO_ADMIN_2FA_FORBIDDEN": "Two-factor authentication setup is disabled for the demo account",
+    "DEMO_SINGLE_ADMIN_ONLY": "Only the single built-in admin user is allowed in the demo environment",
+    "DEMO_ADMIN_ROLE_LOCKED": "Creating or editing the admin role is disabled in the demo environment",
+    "DEMO_SMTP_DISABLED": "SMTP email service is disabled in the demo environment",
+    "DEMO_SYSTEM_SETTING_LOCKED": "Modifying this system setting is disabled in the demo environment",
+    "DEMO_POLICY_LOCKED": "Modifying or testing storage policies is disabled in the demo environment",
+    "DEMO_FAVICON_LOCKED": "Modifying the site favicon is disabled in the demo environment"
   },
   "adminFiles": {
     "title": "Site-wide Files Management",
@@ -1193,5 +1213,10 @@
     "sizeAsc": "Smallest Size",
     "nameAsc": "Name A-Z",
     "nameDesc": "Name Z-A"
+  },
+  "demo": {
+    "countdownLabel": "Demo resets in {time}",
+    "resetting": "Resetting demo data & storage...",
+    "resetCompletedReloading": "Demo environment reset complete, reloading..."
   }
 }

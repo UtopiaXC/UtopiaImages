@@ -31,7 +31,8 @@
     "updatedAt": "更新时间",
     "sortBy": "排序",
     "asc": "升序",
-    "desc": "降序"
+    "desc": "降序",
+    "notice": "提示"
   },
   "nav": {
     "upload": "文件上传",
@@ -205,7 +206,9 @@
     "verifyAndComplete": "验证并完成登录",
     "bindPasskeyDesc": "使用当前设备生物识别（Windows Hello/Touch ID/物理安全密钥）绑定为登录凭证。",
     "bindPasskeyBtn": "使用当前设备绑定 Passkey 并登录",
-    "login": "登录"
+    "login": "登录",
+    "demoAdminTip": "演示管理员账号与密码为admin与admin",
+    "demoSmtpDisabled": "演示环境已禁用邮件服务，不支持邮件找回功能"
   },
   "upload": {
     "title": "文件上传",
@@ -660,7 +663,9 @@
     "defaultLandingTip": "直接访问站点首页时默认呈现的界面。访客界面将跟随站点默认配置（如广场或游客发图），控制台则直接进入文件上传。",
     "landingVisitor": "访客界面",
     "landingConsole": "控制台界面",
-    "landingSaved": "默认界面设置已保存"
+    "landingSaved": "默认界面设置已保存",
+    "demoAdminProfileLocked": "演示管理员账号的用户名、昵称、电子邮箱与登录密码均已锁定，不可修改。",
+    "demoAdmin2FAForbidden": "演示账号禁止设置二步验证"
   },
   "adminSettings": {
     "title": "系统设置",
@@ -773,7 +778,11 @@
     "pageLogin": "登录页",
     "guestWatermark": "游客发图水印",
     "guestWatermarkTip": "为未登录游客上传的图片自动应用的系统水印，默认无水印。",
-    "noWatermark": "无水印"
+    "noWatermark": "无水印",
+    "demoSystemTabLockedTip": "演示环境中，系统选项卡仅允许修改「对外访问域名」，其余选项均已锁定为默认值。",
+    "demoSmtpDisabledTip": "演示环境已禁用 SMTP 邮件服务，用户注册已自动绕过邮箱验证，注册后即可直接使用。",
+    "demoForce2faLocked": "演示环境已锁定关闭",
+    "demoLockedDefault": "演示环境已锁定默认值"
   },
   "adminUsers": {
     "title": "用户体系管理",
@@ -810,7 +819,8 @@
     "confirmUnfreeze": "确认要解除此用户的冻结/封禁状态吗？解除后用户将恢复正常登录权限。",
     "banSuccess": "用户已被封禁",
     "unfreezeSuccess": "用户已解除冻结并恢复正常",
-    "guestUserLocked": "游客账户不可编辑或删除"
+    "guestUserLocked": "游客账户不可编辑或删除",
+    "adminUserLocked": "演示管理员不可编辑或删除"
   },
   "adminPolicies": {
     "title": "存储策略",
@@ -907,7 +917,8 @@
     "driverLocalDesc": "本地文件统一存储于服务端 data/storage 目录，通过下方保存与URL访问路径进行隔离与组织。",
     "driverDatabaseDesc": "图片切片以二进制存储于数据库中，支持当前配置的 SQLite、MySQL 或 PostgreSQL，分片流式读写，内存开销恒定。",
     "customCdn": "自定义 CDN",
-    "capacity": "容量"
+    "capacity": "容量",
+    "demoLockedTip": "演示环境为保障服务器与凭证安全，已禁止新建、编辑、删除或测试存储策略。"
   },
   "adminStats": {
     "title": "系统看板",
@@ -973,7 +984,8 @@
     "guestSinglePolicyTip": "游客角色组必须且只能绑定一个存储策略",
     "createSuccess": "角色创建成功",
     "updateSuccess": "角色更新成功",
-    "quotaTip": "0 为不限制空间"
+    "quotaTip": "0 为不限制空间",
+    "adminRoleLocked": "演示环境禁止编辑 admin 用户组"
   },
   "errors": {
     "AUTH_INVALID_CREDENTIALS": "用户名或密码错误",
@@ -1017,7 +1029,15 @@
     "ERR_AUTH_USER_INACTIVE": "账号尚未激活或已被冻结，请查收激活邮件或联系管理员",
     "ERR_REGISTRATION_SMTP_REQUIRED": "系统未配置邮件发送服务（SMTP），暂时无法开放新用户注册",
     "ERR_ACTIVATION_TOKEN_INVALID": "激活链接无效或已过期，请重新申请或联系管理员",
-    "AUTH_USERNAME_INVALID": "用户名格式不合法或属于系统保留字，长度必须大于3位（4~32位）"
+    "AUTH_USERNAME_INVALID": "用户名格式不合法或属于系统保留字，长度必须大于3位（4~32位）",
+    "DEMO_ADMIN_LOCKED": "演示管理员账号信息已锁定，禁止修改或删除",
+    "DEMO_ADMIN_2FA_FORBIDDEN": "演示账号禁止设置二步验证",
+    "DEMO_SINGLE_ADMIN_ONLY": "演示环境仅允许存在唯一的 admin 管理员账号",
+    "DEMO_ADMIN_ROLE_LOCKED": "演示环境禁止创建或编辑 admin 用户组",
+    "DEMO_SMTP_DISABLED": "演示环境已禁用 SMTP 邮件服务",
+    "DEMO_SYSTEM_SETTING_LOCKED": "演示环境禁止修改此系统设置",
+    "DEMO_POLICY_LOCKED": "演示环境禁止修改或测试存储策略",
+    "DEMO_FAVICON_LOCKED": "演示环境禁止修改网站图标"
   },
   "adminFiles": {
     "title": "全站图片管理",
@@ -1193,5 +1213,10 @@
     "sizeAsc": "体积最小",
     "nameAsc": "名称升序",
     "nameDesc": "名称降序"
+  },
+  "demo": {
+    "countdownLabel": "距离 Demo 重置还有 {time}",
+    "resetting": "正在重置 Demo 数据与存储...",
+    "resetCompletedReloading": "Demo 环境已重置完成，正在刷新页面..."
   }
 }

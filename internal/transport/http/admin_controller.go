@@ -7,7 +7,6 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -328,6 +327,10 @@ func (ctrl *AdminController) CreateUser(c *gin.Context) {
 	}
 
 	req.Username = strings.ToLower(strings.TrimSpace(req.Username))
+	if req.Username == "admin" {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSingleAdminOnly, "演示环境仅允许存在唯一的 admin 管理员账号")
+		return
+	}
 	if !pathclean.IsValidUsername(req.Username) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名格式不合法或属于系统保留字，长度必须大于3位（4~32位），仅允许字母、数字、下划线及连字符"})
 		return
@@ -343,8 +346,16 @@ func (ctrl *AdminController) CreateUser(c *gin.Context) {
 	if req.RoleID == 0 {
 		req.RoleID = 2 // Default regular user role
 	}
+	if req.RoleID == 1 {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSingleAdminOnly, "演示环境仅允许存在唯一的 admin 管理员账号，禁止创建其他管理员用户")
+		return
+	}
 	var targetRole model.Role
 	if err := ctrl.db.First(&targetRole, req.RoleID).Error; err == nil {
+		if targetRole.Name == "admin" {
+			common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSingleAdminOnly, "演示环境仅允许存在唯一的 admin 管理员账号，禁止创建其他管理员用户")
+			return
+		}
 		if targetRole.Name == "guest" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将用户角色设置为游客组"})
 			return
@@ -395,6 +406,10 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "游客账户不可被编辑"})
 		return
 	}
+	if service.IsDemoAdminUser(&user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdminLocked, "演示管理员账号不可修改或编辑")
+		return
+	}
 
 	var req struct {
 		Nickname string `json:"nickname"`
@@ -441,8 +456,16 @@ func (ctrl *AdminController) UpdateUser(c *gin.Context) {
 		updates["email"] = &em
 	}
 	if req.RoleID > 0 {
+		if req.RoleID == 1 {
+			common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSingleAdminOnly, "演示环境仅允许存在唯一的 admin 管理员账号")
+			return
+		}
 		var targetRole model.Role
 		if err := ctrl.db.First(&targetRole, req.RoleID).Error; err == nil {
+			if targetRole.Name == "admin" {
+				common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSingleAdminOnly, "演示环境仅允许存在唯一的 admin 管理员账号")
+				return
+			}
 			if targetRole.Name == "guest" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将用户角色设置为游客组"})
 				return
@@ -615,6 +638,10 @@ func (ctrl *AdminController) UnfreezeUser(c *gin.Context) {
 		common.RespondError(c, http.StatusNotFound, common.ErrAuthUserNotFound)
 		return
 	}
+	if service.IsDemoAdminUser(&user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdminLocked, "演示管理员账号不可修改或编辑")
+		return
+	}
 	user.Status = "active"
 	user.FailedLoginAttempts = 0
 	user.LockoutUntil = nil
@@ -710,6 +737,10 @@ func (ctrl *AdminController) CreateRole(c *gin.Context) {
 		return
 	}
 
+	if strings.EqualFold(strings.TrimSpace(req.Name), "admin") {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdminRoleLocked, "演示环境禁止创建或编辑 admin 用户组")
+		return
+	}
 	if req.Name == "guest" && len(req.PolicyIDs) != 1 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "游客角色组必须且只能绑定一个存储策略"})
 		return
@@ -743,6 +774,10 @@ func (ctrl *AdminController) UpdateRole(c *gin.Context) {
 	var role model.Role
 	if err := ctrl.db.Where("id = ?", id).First(&role).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "角色不存在"})
+		return
+	}
+	if role.ID == 1 || strings.EqualFold(role.Name, "admin") {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdminRoleLocked, "演示环境禁止编辑 admin 用户组")
 		return
 	}
 
@@ -979,303 +1014,19 @@ func (ctrl *AdminController) checkPathPrefixDuplicate(excludeID uint, driver, pa
 }
 
 func (ctrl *AdminController) TestPolicy(c *gin.Context) {
-	var req struct {
-		ID     uint   `json:"id"`
-		Driver string `json:"driver"`
-		Config string `json:"config"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	driverType := req.Driver
-	configStr := req.Config
-	if req.ID > 0 {
-		var p model.StoragePolicy
-		if err := ctrl.db.First(&p, req.ID).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
-			return
-		}
-		if driverType == "" {
-			driverType = p.Driver
-		}
-		configStr = mergeUnmaskedPolicyConfig(configStr, p.Config)
-	}
-
-	if driverType == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "存储驱动类型不能为空"})
-		return
-	}
-
-	if driverType == "local" {
-		configStr = `{"base_path":"data/storage"}`
-	}
-
-	policy := model.StoragePolicy{
-		Driver: driverType,
-		Config: configStr,
-	}
-	drv, err := storage.BuildDriver(c.Request.Context(), policy, ctrl.db)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "驱动初始化失败: " + err.Error()})
-		return
-	}
-
-	if err := drv.Test(c.Request.Context()); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "连接测试失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "连接测试成功"})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoPolicyLocked, "演示环境禁止修改或测试存储策略")
 }
 
 func (ctrl *AdminController) CreatePolicy(c *gin.Context) {
-	var req struct {
-		Name                string  `json:"name" binding:"required"`
-		Driver              string  `json:"driver" binding:"required"`
-		Config              string  `json:"config"`
-		MaxCapacityBytes    int64   `json:"max_capacity_bytes"`
-		MaxSingleFileSizeMB int64   `json:"max_single_file_size_mb"`
-		IsDefault           bool    `json:"is_default"`
-		PathPrefix          *string `json:"path_prefix"`
-		NamingRule          string  `json:"naming_rule"`
-		RoleIDs             []uint  `json:"role_ids"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	if _, ok := storage.GetDriverFactory(req.Driver); !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的存储驱动类型: " + req.Driver})
-		return
-	}
-
-	if req.Driver == "local" {
-		req.Config = `{"base_path":"data/storage"}`
-	}
-
-	if req.NamingRule == "" {
-		req.NamingRule = "{Y}/{m}/{d}/{random:16}.{ext}"
-	}
-	pathPrefix := ""
-	if req.PathPrefix != nil {
-		pathPrefix = strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
-	}
-	warnMsg := ctrl.checkPathPrefixDuplicate(0, req.Driver, pathPrefix)
-
-	var sysSetting model.Setting
-	sysLimitMB := int64(50)
-	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
-		if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
-			sysLimitMB = v
-		}
-	}
-	if req.MaxSingleFileSizeMB > sysLimitMB {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限: %d MB", sysLimitMB)})
-		return
-	}
-
-	if req.IsDefault {
-		ctrl.db.Model(&model.StoragePolicy{}).Where("1 = 1").Update("is_default", false)
-	}
-
-	cfg := req.Config
-	if cfg == "" && req.Driver == "local" {
-		cfg = `{"base_path":"data/storage"}`
-	}
-
-	policy := model.StoragePolicy{
-		Name:                req.Name,
-		Driver:              req.Driver,
-		Config:              cfg,
-		MaxCapacityBytes:    req.MaxCapacityBytes,
-		MaxSingleFileSizeMB: req.MaxSingleFileSizeMB,
-		IsDefault:           req.IsDefault,
-		PathPrefix:          pathPrefix,
-		NamingRule:          req.NamingRule,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-	}
-
-	if err := ctrl.db.Create(&policy).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	for _, rid := range req.RoleIDs {
-		var guestRole model.Role
-		if ctrl.db.Where("name = 'guest'").First(&guestRole).Error == nil && rid == guestRole.ID {
-			ctrl.db.Where("role_id = ?", guestRole.ID).Delete(&model.RolePolicy{})
-		}
-		ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
-	}
-
-	ctrl.db.Preload("Roles").First(&policy, policy.ID)
-	c.JSON(http.StatusOK, gin.H{
-		"message": "存储策略保存成功",
-		"warning": warnMsg,
-		"policy":  policyToDTO(policy),
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoPolicyLocked, "演示环境禁止修改或测试存储策略")
 }
 
 func (ctrl *AdminController) UpdatePolicy(c *gin.Context) {
-	id := ParseUintSafe(c.Param("id"), 0)
-	var policy model.StoragePolicy
-	if err := ctrl.db.Where("id = ?", id).First(&policy).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
-		return
-	}
-
-	var req struct {
-		Name                string  `json:"name"`
-		Driver              string  `json:"driver"`
-		Config              *string `json:"config"`
-		MaxCapacityBytes    *int64  `json:"max_capacity_bytes"`
-		MaxSingleFileSizeMB *int64  `json:"max_single_file_size_mb"`
-		IsDefault           bool    `json:"is_default"`
-		PathPrefix          *string `json:"path_prefix"`
-		NamingRule          string  `json:"naming_rule"`
-		RoleIDs             []uint  `json:"role_ids"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	var sysSetting model.Setting
-	sysLimitMB := int64(50)
-	if err := ctrl.db.Where("key = 'max_single_file_size'").First(&sysSetting).Error; err == nil {
-		if v, err := strconv.ParseInt(sysSetting.Value, 10, 64); err == nil && v > 0 {
-			sysLimitMB = v
-		}
-	}
-
-	updates := map[string]any{
-		"updated_at": time.Now(),
-		"is_default": req.IsDefault,
-	}
-
-	if req.Driver != "" {
-		if _, ok := storage.GetDriverFactory(req.Driver); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的存储驱动类型: " + req.Driver})
-			return
-		}
-		updates["driver"] = req.Driver
-	}
-	if req.Config != nil {
-		updates["config"] = mergeUnmaskedPolicyConfig(*req.Config, policy.Config)
-	}
-
-	targetDriver := policy.Driver
-	if req.Driver != "" {
-		targetDriver = req.Driver
-	}
-	if targetDriver == "local" {
-		updates["config"] = `{"base_path":"data/storage"}`
-	}
-	if req.Name != "" {
-		updates["name"] = req.Name
-	}
-	if req.MaxCapacityBytes != nil {
-		updates["max_capacity_bytes"] = *req.MaxCapacityBytes
-	}
-	if req.MaxSingleFileSizeMB != nil {
-		if *req.MaxSingleFileSizeMB > sysLimitMB {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("单文件大小限制不能超过系统设置上限: %d MB", sysLimitMB)})
-			return
-		}
-		updates["max_single_file_size_mb"] = *req.MaxSingleFileSizeMB
-	}
-	var warnMsg string
-	if req.PathPrefix != nil {
-		cleanPrefix := strings.Trim(strings.TrimSpace(*req.PathPrefix), "/")
-		warnMsg = ctrl.checkPathPrefixDuplicate(policy.ID, targetDriver, cleanPrefix)
-		updates["path_prefix"] = cleanPrefix
-	}
-	if req.NamingRule != "" {
-		updates["naming_rule"] = req.NamingRule
-	}
-
-	if req.IsDefault {
-		ctrl.db.Model(&model.StoragePolicy{}).Where("id != ?", policy.ID).Update("is_default", false)
-	}
-
-	ctrl.db.Model(&policy).Updates(updates)
-
-	if ctrl.driverManager != nil {
-		ctrl.driverManager.Invalidate(policy.ID)
-	}
-
-	// Update role policy associations
-	if req.RoleIDs != nil {
-		var guestRole model.Role
-		hasGuestRole := ctrl.db.Where("name = 'guest'").First(&guestRole).Error == nil
-		guestInReq := false
-		for _, rid := range req.RoleIDs {
-			if hasGuestRole && rid == guestRole.ID {
-				guestInReq = true
-				break
-			}
-		}
-		if guestInReq {
-			ctrl.db.Where("role_id = ? AND policy_id != ?", guestRole.ID, policy.ID).Delete(&model.RolePolicy{})
-		} else if hasGuestRole {
-			var currentOnThisPolicy int64
-			ctrl.db.Model(&model.RolePolicy{}).Where("role_id = ? AND policy_id = ?", guestRole.ID, policy.ID).Count(&currentOnThisPolicy)
-			if currentOnThisPolicy > 0 {
-				var otherPolicyCount int64
-				ctrl.db.Model(&model.RolePolicy{}).Where("role_id = ? AND policy_id != ?", guestRole.ID, policy.ID).Count(&otherPolicyCount)
-				if otherPolicyCount == 0 {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "游客角色组必须且只能绑定一个存储策略，不能直接解除其仅有的策略"})
-					return
-				}
-			}
-		}
-		ctrl.db.Where("policy_id = ?", policy.ID).Delete(&model.RolePolicy{})
-		for _, rid := range req.RoleIDs {
-			ctrl.db.Create(&model.RolePolicy{RoleID: rid, PolicyID: policy.ID})
-		}
-	}
-
-	ctrl.db.Preload("Roles").First(&policy, policy.ID)
-	ctrl.db.Preload("Roles").First(&policy, policy.ID)
-	c.JSON(http.StatusOK, gin.H{
-		"message": "存储策略保存成功",
-		"warning": warnMsg,
-		"policy":  policyToDTO(policy),
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoPolicyLocked, "演示环境禁止修改或测试存储策略")
 }
 
 func (ctrl *AdminController) DeletePolicy(c *gin.Context) {
-	id := ParseUintSafe(c.Param("id"), 0)
-	var policy model.StoragePolicy
-	if err := ctrl.db.Where("id = ?", id).First(&policy).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "存储策略不存在"})
-		return
-	}
-
-	if policy.IsDefault {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "默认存储策略无法删除"})
-		return
-	}
-
-	var fileCount, replicaCount int64
-	ctrl.db.Model(&model.FileRecord{}).Where("policy_id = ?", policy.ID).Count(&fileCount)
-	ctrl.db.Model(&model.FilePolicyReplica{}).Where("policy_id = ?", policy.ID).Count(&replicaCount)
-	if fileCount > 0 || replicaCount > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "存储策略下存在文件副本，无法删除"})
-		return
-	}
-
-	if ctrl.driverManager != nil {
-		ctrl.driverManager.Invalidate(policy.ID)
-	}
-
-	ctrl.db.Where("policy_id = ?", policy.ID).Delete(&model.RolePolicy{})
-	ctrl.db.Delete(&policy)
-	c.JSON(http.StatusOK, gin.H{"message": "存储策略删除成功"})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoPolicyLocked, "演示环境禁止修改或测试存储策略")
 }
 
 // -------------------------------------------------------------
@@ -1935,100 +1686,9 @@ func (ctrl *AdminController) DeleteAdminWatermark(c *gin.Context) {
 }
 
 func (ctrl *AdminController) OneDriveDeviceCode(c *gin.Context) {
-	var req struct {
-		ClientID    string `json:"client_id"`
-		AccountType string `json:"account_type"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	clientID := strings.TrimSpace(req.ClientID)
-	if clientID == "" {
-		clientID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
-	}
-
-	deviceEndpoint := "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode"
-	if strings.ToLower(req.AccountType) == "china" {
-		deviceEndpoint = "https://login.partner.microsoftonline.cn/common/oauth2/v2.0/devicecode"
-	}
-
-	form := url.Values{}
-	form.Set("client_id", clientID)
-	form.Set("scope", "offline_access Files.ReadWrite Files.ReadWrite.All")
-
-	resp, err := http.PostForm(deviceEndpoint, form)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无法连接微软授权服务: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-
-	var res map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "解析微软授权响应失败"})
-		return
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("微软服务返回错误: %v", res["error_description"])})
-		return
-	}
-
-	res["client_id"] = clientID
-	c.JSON(http.StatusOK, res)
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoPolicyLocked, "演示环境禁止修改或测试存储策略")
 }
 
 func (ctrl *AdminController) OneDriveDeviceToken(c *gin.Context) {
-	var req struct {
-		ClientID    string `json:"client_id" binding:"required"`
-		DeviceCode  string `json:"device_code" binding:"required"`
-		AccountType string `json:"account_type"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	tokenEndpoint := "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-	if strings.ToLower(req.AccountType) == "china" {
-		tokenEndpoint = "https://login.partner.microsoftonline.cn/common/oauth2/v2.0/token"
-	}
-
-	form := url.Values{}
-	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
-	form.Set("client_id", req.ClientID)
-	form.Set("device_code", req.DeviceCode)
-
-	resp, err := http.PostForm(tokenEndpoint, form)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无法连接微软令牌服务: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-
-	var tokenRes map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&tokenRes); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "解析微软令牌响应失败"})
-		return
-	}
-
-	if resp.StatusCode == http.StatusOK {
-		c.JSON(http.StatusOK, gin.H{
-			"status":        "success",
-			"refresh_token": tokenRes["refresh_token"],
-			"access_token":  tokenRes["access_token"],
-		})
-		return
-	}
-
-	errCode, _ := tokenRes["error"].(string)
-	if errCode == "authorization_pending" {
-		c.JSON(http.StatusOK, gin.H{"status": "pending"})
-		return
-	}
-
-	errDesc, _ := tokenRes["error_description"].(string)
-	c.JSON(http.StatusBadRequest, gin.H{"error": errDesc, "code": errCode})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoPolicyLocked, "演示环境禁止修改或测试存储策略")
 }

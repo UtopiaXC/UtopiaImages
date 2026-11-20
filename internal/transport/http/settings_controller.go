@@ -1,22 +1,18 @@
 package http
 
 import (
-	"fmt"
-	"io"
+	"context"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"context"
 	"github.com/UtopiaXC/UtopiaImages/internal/auth"
 	"github.com/UtopiaXC/UtopiaImages/internal/cache"
 	"github.com/UtopiaXC/UtopiaImages/internal/common"
 	"github.com/UtopiaXC/UtopiaImages/internal/config"
 	appLogger "github.com/UtopiaXC/UtopiaImages/internal/logger"
 	"github.com/UtopiaXC/UtopiaImages/internal/model"
-	"github.com/UtopiaXC/UtopiaImages/internal/pkg/mailer"
 	"github.com/UtopiaXC/UtopiaImages/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -121,7 +117,7 @@ func (ctrl *SettingsController) GetUserSettings(c *gin.Context) {
 		"default_link_format":      ctrl.getSettingVal("user_link_fmt_"+strconvUint(userID), "url"),
 		"default_policy_id":        ctrl.getSettingVal("user_default_policy_"+strconvUint(userID), "1"),
 		"default_landing_view":     ctrl.getSettingVal("user_landing_view_"+strconvUint(userID), "visitor"),
-		"global_call_stat_enabled": ctrl.getSettingVal("global_call_stat", "false") == "true",
+		"global_call_stat_enabled": ctrl.getSettingVal("global_call_stat", "true") == "true",
 		"call_stat_enabled":        ctrl.getSettingVal("user_call_stat_"+strconvUint(userID), "false") == "true",
 		"hotlink_enabled":          user.HotlinkEnabled,
 		"hotlink_allow_empty":      user.HotlinkAllowEmpty,
@@ -282,6 +278,10 @@ func (ctrl *SettingsController) UpdateProfile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
+	if service.IsDemoAdminUser(&user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdminLocked, "演示管理员账号禁止修改个人资料")
+		return
+	}
 
 	updates := map[string]any{}
 	if req.Nickname != "" {
@@ -324,6 +324,10 @@ func (ctrl *SettingsController) UpdateProfile(c *gin.Context) {
 func (ctrl *SettingsController) ChangePassword(c *gin.Context) {
 	uVal, _ := c.Get(auth.CtxUserKey)
 	user := uVal.(*model.User)
+	if service.IsDemoAdminUser(user) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoAdminLocked, "演示管理员账号禁止修改登录密码")
+		return
+	}
 
 	var req struct {
 		OldPassword string `json:"old_password" binding:"required"`
@@ -415,7 +419,7 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 
 	res := map[string]string{
 		"site_name":                 "Utopia Images",
-		"site_description":          "Next-generation self-hosted image & static asset host",
+		"site_description":          "又一个Utopia Images自部署图床",
 		"base_url":                  ResolveBaseURL(c, ctrl.db, ""),
 		"max_single_file_size":      "50", // MB
 		"max_process_image_size":    "5",  // MB
@@ -430,15 +434,15 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 		"hotlink_allowed_domains":   "",
 		"hotlink_action":            "forbidden",
 		"restrict_domains":          "false",
-		"global_call_stat":          "false",
-		"log_level":                 appLogger.GetLevel(),
-		"log_permanent_level":       appLogger.GetPermanentLevel(),
+		"global_call_stat":          "true",
+		"log_level":                 "info",
+		"log_permanent_level":       "ERROR",
 		"log_max_size_mb":           "20",
 		"log_max_backups":           "10",
 		"log_max_age_days":          "30",
 		"derived_cache_max_size_mb": "5120",
 		"derived_cache_ttl_days":    "0",
-		"allow_registration":        "false",
+		"allow_registration":        "true",
 		"default_register_role_id":  "2",
 		"smtp_enabled":              "false",
 		"smtp_host":                 "",
@@ -448,9 +452,9 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 		"smtp_from_name":            "Utopia Images",
 		"smtp_user":                 "",
 		"smtp_password":             "",
-		"enable_guest_upload":       "false",
-		"enable_square":             "false",
-		"default_open_page":         "login",
+		"enable_guest_upload":       "true",
+		"enable_square":             "true",
+		"default_open_page":         "guest_upload",
 		"guest_watermark_id":        "",
 	}
 
@@ -460,42 +464,57 @@ func (ctrl *SettingsController) GetSystemSettings(c *gin.Context) {
 		}
 	}
 
-	if ctrl.cfg != nil {
-		if ctrl.cfg.Cache.MaxSizeMB >= 0 {
-			res["derived_cache_max_size_mb"] = strconv.FormatInt(ctrl.cfg.Cache.MaxSizeMB, 10)
-		}
-		if ctrl.cfg.Cache.TTLDays >= 0 {
-			res["derived_cache_ttl_days"] = strconv.Itoa(ctrl.cfg.Cache.TTLDays)
-		}
-		if ctrl.cfg.SMTP.Host != "" {
-			res["smtp_host"] = ctrl.cfg.SMTP.Host
-		}
-		if ctrl.cfg.SMTP.Port > 0 {
-			res["smtp_port"] = strconv.Itoa(ctrl.cfg.SMTP.Port)
-		}
-		if ctrl.cfg.SMTP.From != "" {
-			res["smtp_from"] = ctrl.cfg.SMTP.From
-		}
-		if ctrl.cfg.SMTP.FromName != "" {
-			res["smtp_from_name"] = ctrl.cfg.SMTP.FromName
-		}
-		if ctrl.cfg.SMTP.User != "" {
-			res["smtp_user"] = ctrl.cfg.SMTP.User
-		}
-		if ctrl.cfg.SMTP.Password != "" {
-			res["smtp_password"] = ctrl.cfg.SMTP.Password
-		}
-		if ctrl.cfg.SMTP.Encryption != "" {
-			res["smtp_encryption"] = ctrl.cfg.SMTP.Encryption
-		}
-		res["smtp_enabled"] = strconv.FormatBool(ctrl.cfg.SMTP.Enabled)
-	}
-
-	if res["smtp_password"] != "" {
-		res["smtp_password"] = "********"
-	}
+	// Enforce demo locked defaults in response
+	res["site_name"] = "Utopia Images"
+	res["site_description"] = "又一个Utopia Images自部署图床"
+	res["restrict_domains"] = "false"
+	res["log_level"] = "info"
+	res["log_permanent_level"] = "ERROR"
+	res["log_max_size_mb"] = "20"
+	res["log_max_backups"] = "10"
+	res["log_max_age_days"] = "30"
+	res["derived_cache_max_size_mb"] = "5120"
+	res["derived_cache_ttl_days"] = "0"
+	res["global_call_stat"] = "true"
+	res["allow_registration"] = "true"
+	res["default_register_role_id"] = "2"
+	res["max_single_file_size"] = "50"
+	res["max_process_image_size"] = "5"
+	res["require_2fa"] = "false"
+	res["smtp_enabled"] = "false"
+	res["smtp_host"] = ""
+	res["smtp_port"] = "465"
+	res["smtp_encryption"] = "ssl"
+	res["smtp_from"] = ""
+	res["smtp_from_name"] = "Utopia Images"
+	res["smtp_user"] = ""
+	res["smtp_password"] = ""
 
 	c.JSON(http.StatusOK, res)
+}
+
+var demoLockedSystemTabDefaults = map[string]string{
+	"site_name":                 "Utopia Images",
+	"site_description":          "又一个Utopia Images自部署图床",
+	"restrict_domains":          "false",
+	"log_level":                 "info",
+	"log_permanent_level":       "error",
+	"log_max_size_mb":           "20",
+	"log_max_backups":           "10",
+	"log_max_age_days":          "30",
+	"derived_cache_max_size_mb": "5120",
+	"derived_cache_ttl_days":    "0",
+	"global_call_stat":          "true",
+}
+
+func isDemoBoolFalse(v string) bool {
+	s := strings.ToLower(strings.TrimSpace(v))
+	return s == "" || s == "false" || s == "0"
+}
+
+func isDemoBoolTrue(v string) bool {
+	s := strings.ToLower(strings.TrimSpace(v))
+	return s == "true" || s == "1"
 }
 
 func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
@@ -505,35 +524,76 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 		return
 	}
 
-	// Requirement 5: System must have SMTP configured to enable registration
-	if val, ok := req["allow_registration"]; ok && (val == "true" || val == "1") {
-		smtpEnabled := ctrl.cfg != nil && ctrl.cfg.SMTP.Enabled && ctrl.cfg.SMTP.Host != ""
-		if reqSmtpEnabled, exists := req["smtp_enabled"]; exists {
-			smtpEnabled = (reqSmtpEnabled == "true" || reqSmtpEnabled == "1") && req["smtp_host"] != ""
-		}
-		if !smtpEnabled {
-			common.RespondError(c, http.StatusBadRequest, common.ErrRegistrationSMTPRequired)
-			return
+	// Demo validation 1: System tab options are all locked to defaults except base_url
+	for k, defVal := range demoLockedSystemTabDefaults {
+		if reqVal, ok := req[k]; ok {
+			if k == "restrict_domains" {
+				if !isDemoBoolFalse(reqVal) {
+					common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改系统选项卡配置（仅允许设置对外访问域名）")
+					return
+				}
+			} else if k == "global_call_stat" {
+				if !isDemoBoolTrue(reqVal) {
+					common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改系统选项卡配置（仅允许设置对外访问域名）")
+					return
+				}
+			} else if k == "log_level" || k == "log_permanent_level" {
+				if !strings.EqualFold(strings.TrimSpace(reqVal), defVal) {
+					common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改系统选项卡配置（仅允许设置对外访问域名）")
+					return
+				}
+			} else if strings.TrimSpace(reqVal) != defVal {
+				common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改系统选项卡配置（仅允许设置对外访问域名）")
+				return
+			}
+			delete(req, k)
 		}
 	}
 
-	// Check default_register_role_id cannot be guest or admin role
-	if defaultRoleStr, ok := req["default_register_role_id"]; ok && defaultRoleStr != "" {
-		roleID, err := strconv.Atoi(defaultRoleStr)
-		if err != nil || roleID <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "默认注册角色ID格式不正确"})
-			return
-		}
-		var role model.Role
-		if err := ctrl.db.First(&role, roleID).Error; err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "指定的默认注册角色不存在"})
-			return
-		}
-		if role.Name == "guest" || role.Name == "admin" || role.ID == 1 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "不允许将新注册用户默认角色设置为管理员或游客组"})
-			return
-		}
+	// Demo validation 2: SMTP is completely disabled and decoupled from registration
+	if val, ok := req["smtp_enabled"]; ok && !isDemoBoolFalse(val) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSMTPDisabled, "演示环境已禁用 SMTP 邮件服务")
+		return
 	}
+	for _, smtpKey := range []string{"smtp_enabled", "smtp_host", "smtp_port", "smtp_encryption", "smtp_from", "smtp_from_name", "smtp_user", "smtp_password"} {
+		delete(req, smtpKey)
+	}
+
+	// Demo validation 3: Enforce safe file limits, disable global forced 2FA, and disallow Turnstile without keys
+	if v, ok := req["require_2fa"]; ok && !isDemoBoolFalse(v) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止开启全站强制两步验证")
+		return
+	}
+	delete(req, "require_2fa")
+
+	if v, ok := req["max_single_file_size"]; ok && strings.TrimSpace(v) != "50" {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改单文件大小上限")
+		return
+	}
+	delete(req, "max_single_file_size")
+
+	if v, ok := req["max_process_image_size"]; ok && strings.TrimSpace(v) != "5" {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改动态处理上限")
+		return
+	}
+	delete(req, "max_process_image_size")
+
+	if v, ok := req["captcha_provider"]; ok && strings.EqualFold(strings.TrimSpace(v), "turnstile") {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境不支持切换为 Turnstile 验证码")
+		return
+	}
+
+	if v, ok := req["allow_registration"]; ok && !isDemoBoolTrue(v) {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境固定开启用户自主注册")
+		return
+	}
+	delete(req, "allow_registration")
+
+	if defaultRoleStr, ok := req["default_register_role_id"]; ok && strings.TrimSpace(defaultRoleStr) != "" && strings.TrimSpace(defaultRoleStr) != "2" {
+		common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改新注册用户默认角色")
+		return
+	}
+	delete(req, "default_register_role_id")
 
 	// Auto-adjust default_open_page when guest_upload or square status changes
 	enableGuest := req["enable_guest_upload"] == "true" || req["enable_guest_upload"] == "1"
@@ -673,59 +733,11 @@ func (ctrl *SettingsController) SaveSystemSettings(c *gin.Context) {
 }
 
 func (ctrl *SettingsController) TestSMTPConnection(c *gin.Context) {
-	var req struct {
-		Host       string `json:"host" binding:"required"`
-		Port       int    `json:"port" binding:"required"`
-		From       string `json:"from"`
-		User       string `json:"user"`
-		Password   string `json:"password"`
-		Encryption string `json:"encryption"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请填写完整的 SMTP 主机和端口"})
-		return
-	}
-
-	password := req.Password
-	if password == "********" || password == "" {
-		if ctrl.cfg != nil && ctrl.cfg.SMTP.Password != "" {
-			password = ctrl.cfg.SMTP.Password
-		} else {
-			password = ctrl.getSettingVal("smtp_password", "")
-		}
-	}
-
-	testCfg := config.SMTPConfig{
-		Enabled:    true,
-		Host:       req.Host,
-		Port:       req.Port,
-		From:       req.From,
-		User:       req.User,
-		Password:   password,
-		Encryption: req.Encryption,
-	}
-
-	if err := mailer.TestConnection(testCfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "SMTP 服务器连接测试失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "SMTP 服务器连接测试成功",
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSMTPDisabled, "演示环境已禁用 SMTP 邮件服务")
 }
 
 func (ctrl *SettingsController) ClearCache(c *gin.Context) {
-	count := 0
-	if ctrl.derivedCache != nil {
-		count = ctrl.derivedCache.Clear()
-	}
-	ctrl.db.Model(&model.FileRecord{}).Where("1 = 1").Update("sign_version", gorm.Expr("sign_version + 1"))
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Derived image cache cleared",
-		"cleared": count,
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改系统选项卡配置")
 }
 
 func (ctrl *SettingsController) GetCacheStats(c *gin.Context) {
@@ -748,27 +760,7 @@ func (ctrl *SettingsController) GetCacheStats(c *gin.Context) {
 }
 
 func (ctrl *SettingsController) PruneCache(c *gin.Context) {
-	maxMBStr := ctrl.getSettingVal("derived_cache_max_size_mb", "5120")
-	ttlDaysStr := ctrl.getSettingVal("derived_cache_ttl_days", "0")
-	maxMB, _ := strconv.ParseInt(maxMBStr, 10, 64)
-	ttlDays, _ := strconv.Atoi(ttlDaysStr)
-
-	var count int
-	var freedBytes int64
-	if ctrl.derivedCache != nil {
-		maxBytes := maxMB * 1024 * 1024
-		var maxAge time.Duration
-		if ttlDays > 0 {
-			maxAge = time.Duration(ttlDays) * 24 * time.Hour
-		}
-		count, freedBytes, _ = ctrl.derivedCache.Prune(maxBytes, maxAge)
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"cleared_count": count,
-		"freed_bytes":   freedBytes,
-		"message":       "Cache pruned successfully",
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoSystemSettingLocked, "演示环境禁止修改系统选项卡配置")
 }
 
 func (ctrl *SettingsController) getSettingVal(key, def string) string {
@@ -801,73 +793,11 @@ func strconvUint(u uint) string {
 }
 
 func (ctrl *SettingsController) UploadFavicon(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2*1024*1024)
-
-	fileHeader, err := c.FormFile("file")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded"})
-		return
-	}
-
-	if fileHeader.Size > 2*1024*1024 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Favicon file size must be less than 2MB"})
-		return
-	}
-
-	f, err := fileHeader.Open()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read uploaded file"})
-		return
-	}
-	defer f.Close()
-
-	data, err := io.ReadAll(io.LimitReader(f, 2*1024*1024))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file content"})
-		return
-	}
-
-	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-	contentType := "image/x-icon"
-	switch ext {
-	case ".ico":
-		contentType = "image/x-icon"
-	case ".svg":
-		contentType = "image/svg+xml"
-	case ".png":
-		contentType = "image/png"
-	case ".jpg", ".jpeg":
-		contentType = "image/jpeg"
-	case ".webp":
-		contentType = "image/webp"
-	default:
-		contentType = http.DetectContentType(data)
-	}
-
-	s := model.Setting{
-		Key:         "site_favicon_binary",
-		Value:       contentType,
-		BinaryValue: data,
-		ContentType: contentType,
-		UpdatedAt:   time.Now(),
-	}
-	if err := ctrl.db.Save(&s).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save favicon to database"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Favicon updated successfully",
-		"url":     fmt.Sprintf("/favicon.ico?v=%d", time.Now().UnixNano()),
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoFaviconLocked, "演示环境禁止修改网站图标")
 }
 
 func (ctrl *SettingsController) DeleteFavicon(c *gin.Context) {
-	ctrl.db.Where("key = 'site_favicon_binary'").Delete(&model.Setting{})
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Favicon restored to default",
-		"url":     fmt.Sprintf("/favicon.svg?v=%d", time.Now().UnixNano()),
-	})
+	common.RespondDemoError(c, http.StatusForbidden, common.ErrDemoFaviconLocked, "演示环境禁止修改网站图标")
 }
 
 func (ctrl *SettingsController) handleGuestUploadChange(enableVal string, cleanGuestData bool) error {

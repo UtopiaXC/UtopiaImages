@@ -9,6 +9,9 @@
       <!-- Mode: Login -->
       <div v-if="mode === 'login'">
         <div v-if="!mfaRequired">
+          <n-alert type="info" style="margin-bottom: 16px; font-size: 13px;">
+            {{ $t('login.demoAdminTip') }}
+          </n-alert>
           <n-form :model="form" @submit.prevent="handleLogin">
             <n-form-item :label="$t('login.account')">
               <n-input v-model:value="form.username" :placeholder="$t('login.accountPlaceholder')" size="large" />
@@ -49,9 +52,14 @@
 
             <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
               <n-checkbox v-model:checked="form.remember_me">{{ $t('login.rememberMe') }}</n-checkbox>
-              <n-button text type="primary" size="small" @click="switchMode('forgot')">
-                {{ $t('login.forgotPassword') }}
-              </n-button>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-button text type="primary" size="small" disabled>
+                    {{ $t('login.forgotPassword') }}
+                  </n-button>
+                </template>
+                {{ $t('login.demoSmtpDisabled') }}
+              </n-tooltip>
             </div>
 
             <n-button type="primary" block size="large" :loading="loading" @click="handleLogin">
@@ -125,9 +133,14 @@
           </div>
 
           <div style="margin-top: 14px; display: flex; justify-content: space-between; align-items: center;">
-            <n-button text size="small" type="warning" @click="switchMode('forgot-2fa')">
-              {{ $t('login.lost2FA') }}
-            </n-button>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button text size="small" type="warning" disabled>
+                  {{ $t('login.lost2FA') }}
+                </n-button>
+              </template>
+              {{ $t('login.demoSmtpDisabled') }}
+            </n-tooltip>
             <n-button text size="small" @click="mfaRequired = false">
               {{ $t('login.backToPassword') }}
             </n-button>
@@ -468,8 +481,8 @@ const navigateAfterLogin = async () => {
 }
 
 const form = ref({
-  username: '',
-  password: '',
+  username: 'admin',
+  password: 'admin',
   remember_me: true,
   captcha: ''
 })
@@ -624,9 +637,14 @@ const handleRegister = async () => {
       password: registerForm.password,
       captcha: captcha
     })
-    message.success(t('login.registerSuccessActivationTip'))
+    message.success(t('login.registerSuccess'))
     form.value.username = registerForm.username
     form.value.password = ''
+    registerForm.username = ''
+    registerForm.nickname = ''
+    registerForm.email = ''
+    registerForm.password = ''
+    registerForm.confirm_password = ''
     switchMode('login')
   } catch (err: any) {
     message.error(getApiErrorMessage(err))

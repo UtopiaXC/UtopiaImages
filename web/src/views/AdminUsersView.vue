@@ -59,6 +59,16 @@
                   {{ $t('adminUsers.guestUserLocked') }}
                 </n-tooltip>
               </div>
+              <div v-else-if="isProtectedAdmin(u)" style="display: flex; gap: 8px; justify-content: flex-end;">
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-tag size="tiny" type="warning" style="cursor: default;">
+                      {{ $t('adminUsers.adminUserLocked') }}
+                    </n-tag>
+                  </template>
+                  {{ $t('adminUsers.adminUserLocked') }}
+                </n-tooltip>
+              </div>
               <div v-else style="display: flex; gap: 8px; justify-content: flex-end;">
                 <n-button size="tiny" quaternary type="primary" @click="openEditModal(u)">
                   {{ $t('common.edit') }}
@@ -213,9 +223,14 @@ const editUserForm = ref({
   password: ''
 })
 
+const isProtectedAdmin = (u: any) => {
+  if (!u) return false
+  return u.id === 1 || String(u.username || '').toLowerCase() === 'admin' || u.role_id === 1 || u.role?.name === 'admin'
+}
+
 const roleOptions = computed(() => {
   return roles.value
-    .filter(r => !r.is_guest && r.name !== 'guest')
+    .filter(r => !r.is_guest && r.name !== 'guest' && r.id !== 1 && r.name !== 'admin')
     .map(r => ({
       label: `${r.display_name} · ${r.name}`,
       value: r.id

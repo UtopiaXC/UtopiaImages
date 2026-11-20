@@ -210,6 +210,13 @@ func LoadConfig(path string) (*Config, error) {
 		configChanged = true
 	}
 
+	// Demo mode: always disable SMTP
+	cfg.SMTP.Enabled = false
+	cfg.SMTP.Host = ""
+	cfg.SMTP.User = ""
+	cfg.SMTP.Password = ""
+	cfg.SMTP.From = ""
+
 	if configChanged && path != "" {
 		if err := SaveConfig(path, cfg); err != nil {
 			slog.Error("Failed to auto-update config file with generated/env credentials", "path", path, "error", err)

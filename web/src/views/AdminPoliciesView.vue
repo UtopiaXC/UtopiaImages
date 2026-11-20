@@ -5,8 +5,12 @@
         <div style="font-size: 18px; font-weight: bold;">{{ $t('adminPolicies.title') }}</div>
         <div style="font-size: 13px; color: #888; margin-top: 4px;">{{ $t('adminPolicies.subtitle') }}</div>
       </div>
-      <n-button type="primary" @click="openCreateModal">{{ $t('adminPolicies.new') }}</n-button>
+      <n-button type="primary" disabled>{{ $t('adminPolicies.new') }}</n-button>
     </div>
+
+    <n-alert type="info" style="margin-bottom: 16px; font-size: 13px;">
+      {{ $t('adminPolicies.demoLockedTip') }}
+    </n-alert>
 
     <n-card style="border-radius: 12px;">
       <div class="table-responsive">
@@ -60,17 +64,12 @@
               </td>
               <td style="text-align: right;">
                 <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                  <n-button size="tiny" quaternary type="primary" @click="openEditModal(p)">
+                  <n-button size="tiny" quaternary type="primary" disabled>
                     {{ $t('common.edit') }}
                   </n-button>
-                  <n-popconfirm @positive-click="handleDeletePolicy(p.id)">
-                    <template #trigger>
-                      <n-button size="tiny" quaternary type="error" :disabled="p.is_default && policies.length === 1">
-                        {{ $t('common.delete') }}
-                      </n-button>
-                    </template>
-                    {{ $t('adminPolicies.confirmDelete') }}
-                  </n-popconfirm>
+                  <n-button size="tiny" quaternary type="error" disabled>
+                    {{ $t('common.delete') }}
+                  </n-button>
                 </div>
               </td>
             </tr>

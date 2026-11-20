@@ -100,6 +100,25 @@ func (s *AuthService) IsSetupRequired() bool {
 	return count == 0
 }
 
+// IsDemoAdminUser checks whether the given user is the protected demo admin account.
+func IsDemoAdminUser(u *model.User) bool {
+	if u == nil {
+		return false
+	}
+	return u.ID == 1 || strings.EqualFold(u.Username, "admin") || u.RoleID == 1
+}
+
+// ClearEphemeralState clears in-memory MFA and setup token maps (used during demo reset).
+func (s *AuthService) ClearEphemeralState() {
+	s.mfaLock.Lock()
+	s.mfaTokens = make(map[string]*mfaTokenEntry)
+	s.mfaLock.Unlock()
+
+	s.setupLock.Lock()
+	s.setupTokens = make(map[string]setupTokenEntry)
+	s.setupLock.Unlock()
+}
+
 // SetDB allows updating the database instance if database connection is changed
 func (s *AuthService) SetDB(db *gorm.DB) {
 	s.db = db
@@ -358,6 +377,9 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 	ok, err := auth.VerifyPassword(password, user.PasswordHash)
 	if err != nil || !ok {
 		s.tracker.RecordFailure(trackerKey)
+		if IsDemoAdminUser(&user) {
+			return &LoginResult{RequiresCaptcha: true}, common.ErrAuthInvalidCredentials
+		}
 		_, errCode := s.RecordFailedAttempt(&user)
 		slog.Warn("Failed login attempt", "account", account, "attempts", user.FailedLoginAttempts, "ip", clientIP)
 		return &LoginResult{RequiresCaptcha: true}, errCode
@@ -378,36 +400,38 @@ func (s *AuthService) Login(account, password, clientIP, userAgent string, captc
 		return nil, common.ErrAuthUserFrozen30D
 	}
 
-	// 6. Check 2FA
-	var totpSec model.TOTPSecret
-	hasConfirmedTOTP := s.db.Where("user_id = ? AND confirmed_at IS NOT NULL", user.ID).First(&totpSec).Error == nil
+	// 6. Check 2FA (demo admin never uses 2FA)
+	if !IsDemoAdminUser(&user) {
+		var totpSec model.TOTPSecret
+		hasConfirmedTOTP := s.db.Where("user_id = ? AND confirmed_at IS NOT NULL", user.ID).First(&totpSec).Error == nil
 
-	var passkeyCount int64
-	s.db.Model(&model.WebAuthnCredential{}).Where("user_id = ?", user.ID).Count(&passkeyCount)
-	hasPasskey := passkeyCount > 0
+		var passkeyCount int64
+		s.db.Model(&model.WebAuthnCredential{}).Where("user_id = ?", user.ID).Count(&passkeyCount)
+		hasPasskey := passkeyCount > 0
 
-	var sysReq2FA model.Setting
-	s.db.Where("key = ?", "require_2fa").First(&sysReq2FA)
-	forced2FA := user.Require2FA || sysReq2FA.Value == "true"
+		var sysReq2FA model.Setting
+		s.db.Where("key = ?", "require_2fa").First(&sysReq2FA)
+		forced2FA := user.Require2FA || sysReq2FA.Value == "true"
 
-	if hasConfirmedTOTP || hasPasskey {
-		mfaToken := s.GenerateMFAToken(user.ID)
-		return &LoginResult{
-			RequiresMFA: true,
-			HasTOTP:     hasConfirmedTOTP,
-			HasPasskey:  hasPasskey,
-			MFAToken:    mfaToken,
-			User:        &user,
-		}, ""
-	}
+		if hasConfirmedTOTP || hasPasskey {
+			mfaToken := s.GenerateMFAToken(user.ID)
+			return &LoginResult{
+				RequiresMFA: true,
+				HasTOTP:     hasConfirmedTOTP,
+				HasPasskey:  hasPasskey,
+				MFAToken:    mfaToken,
+				User:        &user,
+			}, ""
+		}
 
-	if forced2FA {
-		setupToken := s.GenerateSetupToken(user.ID)
-		return &LoginResult{
-			Requires2FASetup: true,
-			SetupToken:       setupToken,
-			User:             &user,
-		}, ""
+		if forced2FA {
+			setupToken := s.GenerateSetupToken(user.ID)
+			return &LoginResult{
+				Requires2FASetup: true,
+				SetupToken:       setupToken,
+				User:             &user,
+			}, ""
+		}
 	}
 
 	// 7. Success: reset attempt counter & lockout
@@ -482,7 +506,7 @@ func (s *AuthService) Register(username, email, password, nickname string) (*mod
 		Email:        &email,
 		PasswordHash: hash,
 		RoleID:       roleID,
-		Status:       "inactive", // Permanently frozen until email activated (Requirement 5)
+		Status:       "active", // Demo mode: bypass email verification and activate immediately
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -491,26 +515,9 @@ func (s *AuthService) Register(username, email, password, nickname string) (*mod
 		return nil, "", common.ErrDatabaseError
 	}
 
-	// Generate activation token valid for 24 hours
-	randBytes := make([]byte, 24)
-	_, _ = rand.Read(randBytes)
-	tokenStr := hex.EncodeToString(randBytes)
-
-	tokenRecord := model.PasswordResetToken{
-		UserID:    user.ID,
-		Token:     tokenStr,
-		TokenType: "activation",
-		ExpiresAt: time.Now().Add(24 * time.Hour),
-		Used:      false,
-		CreatedAt: time.Now(),
-	}
-	if err := s.db.Create(&tokenRecord).Error; err != nil {
-		return nil, "", common.ErrDatabaseError
-	}
-
-	slog.Info("New user registered pending email activation", "username", username, "email", email)
+	slog.Info("New demo user registered and activated immediately", "username", username, "email", email)
 	s.db.Preload("Role").First(user, user.ID)
-	return user, tokenStr, ""
+	return user, "", ""
 }
 
 // ActivateAccount marks an inactive user active after validating the activation token
@@ -1023,6 +1030,10 @@ func (s *AuthService) ChangeUsername(userID uint, newUsername string) error {
 	var user model.User
 	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return errors.New("user not found")
+	}
+
+	if IsDemoAdminUser(&user) {
+		return errors.New("演示管理员账号禁止修改用户名")
 	}
 
 	if user.Username == newUsername {

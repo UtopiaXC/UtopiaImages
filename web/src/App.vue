@@ -5,6 +5,7 @@
         <n-notification-provider>
           <n-message-provider>
             <router-view />
+            <DemoResetCountdown />
           </n-message-provider>
         </n-notification-provider>
       </n-dialog-provider>
@@ -16,6 +17,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { darkTheme, zhCN, dateZhCN, enUS, dateEnUS, jaJP, dateJaJP } from 'naive-ui'
+import DemoResetCountdown from './components/DemoResetCountdown.vue'
 
 const { locale } = useI18n()
 

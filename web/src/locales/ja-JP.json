@@ -31,7 +31,8 @@
     "updatedAt": "更新日時",
     "sortBy": "並び順",
     "asc": "昇順",
-    "desc": "降順"
+    "desc": "降順",
+    "notice": "お知らせ"
   },
   "nav": {
     "upload": "ファイルアップロード",
@@ -205,7 +206,9 @@
     "verifyAndComplete": "認証してログイン完了",
     "bindPasskeyDesc": "現在の端末の生体認証（Windows Hello / Touch ID / セキュリティキー）を登録します。",
     "bindPasskeyBtn": "端末の Passkey を登録してログイン",
-    "login": "ログイン"
+    "login": "ログイン",
+    "demoAdminTip": "デモ管理者のユーザー名とパスワードは admin / admin です",
+    "demoSmtpDisabled": "デモ環境ではメールサービスが無効化されています"
   },
   "upload": {
     "title": "ファイルアップロード",
@@ -604,7 +607,9 @@
     "defaultLandingTip": "サイトのトップページに直接アクセスした際に表示する画面。ビジター画面はサイト設定に従い、コンソール画面はファイルアップロードを直接開きます。",
     "landingVisitor": "ビジター画面",
     "landingConsole": "コンソール画面",
-    "landingSaved": "デフォルト画面設定を保存しました"
+    "landingSaved": "デフォルト画面設定を保存しました",
+    "demoAdminProfileLocked": "デモ管理者アカウントのユーザー名、表示名、メールアドレス、パスワードはロックされており変更できません。",
+    "demoAdmin2FAForbidden": "デモアカウントでは2段階認証の設定が禁止されています"
   },
   "adminSettings": {
     "title": "システム設定",
@@ -717,7 +722,11 @@
     "pageLogin": "ログイン",
     "guestWatermark": "ゲスト透かし",
     "guestWatermarkTip": "ゲストがアップロードした画像に自動適用するシステム透かし。",
-    "noWatermark": "透かしなし"
+    "noWatermark": "透かしなし",
+    "demoSystemTabLockedTip": "デモ環境では「システム」タブの「外部公開URL」のみ変更可能で、その他の項目は既定値に固定されています。",
+    "demoSmtpDisabledTip": "デモ環境ではSMTPメールサービスが無効化されています。ユーザー登録はメール認証なしで即座に有効化されます。",
+    "demoForce2faLocked": "デモ環境でロック済み",
+    "demoLockedDefault": "デモ環境でロック済み"
   },
   "adminUsers": {
     "title": "ユーザー管理",
@@ -754,7 +763,8 @@
     "confirmUnfreeze": "このユーザーの停止/凍結状態を解除しますか？解除後、正常にログインできるようになります。",
     "banSuccess": "アカウントを停止しました",
     "unfreezeSuccess": "アカウントの停止を解除しました",
-    "guestUserLocked": "ゲストアカウントは編集・削除できません"
+    "guestUserLocked": "ゲストアカウントは編集・削除できません",
+    "adminUserLocked": "デモ管理者は編集・削除できません"
   },
   "adminPolicies": {
     "title": "ストレージポリシー",
@@ -851,7 +861,8 @@
     "driverLocalDesc": "ローカルファイルはサーバーの data/storage に保存され、パスプレフィックスで管理されます。",
     "driverDatabaseDesc": "画像チャンクはデータベースにバイナリとして保存され、安定したメモリ使用量で動作します。",
     "customCdn": "カスタム CDN",
-    "capacity": "容量"
+    "capacity": "容量",
+    "demoLockedTip": "デモ環境ではセキュリティ保護のため、ストレージポリシーの作成・編集・削除・接続テストが禁止されています。"
   },
   "adminStats": {
     "title": "システムダッシュボードと監視",
@@ -928,7 +939,15 @@
     "ERR_AUTH_USER_INACTIVE": "アカウントが無効または凍結されています。認証メールを確認するか管理者に連絡してください。",
     "ERR_REGISTRATION_SMTP_REQUIRED": "SMTPメールサービスが設定されていないため、新規登録は利用できません。",
     "ERR_ACTIVATION_TOKEN_INVALID": "認証リンクが無効か有効期限が切れています。",
-    "AUTH_USERNAME_INVALID": "無効なユーザー名形式または予約語です。長さは3文字より大きい必要があります（4〜32文字）"
+    "AUTH_USERNAME_INVALID": "無効なユーザー名形式または予約語です。長さは3文字より大きい必要があります（4〜32文字）",
+    "DEMO_ADMIN_LOCKED": "デモ管理者アカウントはロックされており変更・削除できません",
+    "DEMO_ADMIN_2FA_FORBIDDEN": "デモアカウントでは2段階認証の設定が禁止されています",
+    "DEMO_SINGLE_ADMIN_ONLY": "デモ環境では唯一の組み込み管理者アカウントのみ許可されています",
+    "DEMO_ADMIN_ROLE_LOCKED": "デモ環境では admin ロールの作成・編集が禁止されています",
+    "DEMO_SMTP_DISABLED": "デモ環境では SMTP メールサービスが無効化されています",
+    "DEMO_SYSTEM_SETTING_LOCKED": "デモ環境ではこのシステム設定の変更が禁止されています",
+    "DEMO_POLICY_LOCKED": "デモ環境ではストレージポリシーの変更・テストが禁止されています",
+    "DEMO_FAVICON_LOCKED": "デモ環境ではサイトアイコンの変更が禁止されています"
   },
   "editor": {
     "title": "画像編集",
@@ -1017,7 +1036,8 @@
     "guestSinglePolicyTip": "ゲストロールはストレージポリシーを1つだけ設定できます",
     "createSuccess": "ロールを作成しました",
     "updateSuccess": "ロールを更新しました",
-    "quotaTip": "0 は無制限"
+    "quotaTip": "0 は無制限",
+    "adminRoleLocked": "デモ環境では admin ロールの編集が禁止されています"
   },
   "adminFiles": {
     "title": "全画像ファイル管理",
@@ -1193,5 +1213,10 @@
     "sizeAsc": "サイズが小さい順",
     "nameAsc": "名前昇順",
     "nameDesc": "名前降順"
+  },
+  "demo": {
+    "countdownLabel": "デモ初期化まで {time}",
+    "resetting": "デモデータとストレージを初期化中...",
+    "resetCompletedReloading": "デモ環境が初期化されました。ページを更新します..."
   }
 }
